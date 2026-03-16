@@ -38,6 +38,7 @@ pub fn set_context_switch(f: ContextSwitchFn) {
 pub fn init() {
     unsafe {
         CURRENT = None;
+        RR_COUNTER = 0;
         for i in 0..MAX_TASKS {
             TASKS[i] = None;
         }
@@ -126,15 +127,39 @@ pub fn get_task_state(id: usize) -> Option<TaskState> {
     }
 }
 
-/// Select next task to run (round-robin over Ready tasks).
-/// Starts from current + 1 (or 0 if no current). Does not change current.
+/// Monotonic counter used as starting offset for round-robin scanning.
+/// Increments on every schedule() call to guarantee eventual fairness.
+static mut RR_COUNTER: usize = 0;
+
+/// Select next task to run: highest-priority ready task, round-robin among
+/// same priority. Uses a monotonic counter so each call starts from a new
+/// offset, preventing starvation across priority levels.
 pub fn schedule() -> Option<usize> {
     unsafe {
-        let start = CURRENT.map(|c| (c + 1) % MAX_TASKS).unwrap_or(0);
+        let start = RR_COUNTER % MAX_TASKS;
+        RR_COUNTER = RR_COUNTER.wrapping_add(1);
+
+        // Find highest priority among Ready tasks.
+        let mut max_prio: u8 = 0;
+        let mut found_any = false;
+        for id in 0..MAX_TASKS {
+            if let Some(ref t) = TASKS[id] {
+                if t.state == TaskState::Ready {
+                    if !found_any || t.priority > max_prio {
+                        max_prio = t.priority;
+                        found_any = true;
+                    }
+                }
+            }
+        }
+        if !found_any {
+            return None;
+        }
+        // Round-robin among Ready tasks at max_prio.
         for i in 0..MAX_TASKS {
             let id = (start + i) % MAX_TASKS;
             if let Some(ref t) = TASKS[id] {
-                if t.state == TaskState::Ready {
+                if t.state == TaskState::Ready && t.priority == max_prio {
                     return Some(id);
                 }
             }
@@ -178,11 +203,39 @@ mod tests {
         set_current(1);
         assert_eq!(schedule(), Some(0));
     }
+
+    #[test]
+    fn schedule_picks_highest_priority() {
+        init();
+        assert!(register_task(0, 0x1000, 0));
+        assert!(register_task(1, 0x2000, 1));
+        assert!(register_task(2, 0x3000, 0));
+        assert_eq!(schedule(), Some(1));
+        set_current(1);
+        assert_eq!(schedule(), Some(2));
+    }
+}
+
+/// Switch from cur_id to next_id (context switch only; does not change task state).
+/// Caller must ensure next_id is valid and has a valid sp. On return (when we're
+/// resumed) current is set back to cur_id.
+unsafe fn switch_to_task(cur_id: usize, next_id: usize) {
+    let next_sp = match get_task_sp(next_id) {
+        Some(s) => s,
+        None => return,
+    };
+    if let Some(ref mut tcb) = TASKS[cur_id] {
+        let prev_sp_ptr = &mut tcb.sp as *mut usize;
+        set_current(next_id);
+        if let Some(sw) = CONTEXT_SWITCH {
+            sw(prev_sp_ptr, next_sp);
+        }
+        set_current(cur_id);
+    }
 }
 
 /// Block current task and switch to the next ready task.
 /// Call only when at least one other task is ready (e.g. idle).
-/// Updates current task's sp via context_switch, then sets current to next.
 pub fn block_current_and_switch() {
     let cur = get_current();
     let next_id = schedule();
@@ -194,26 +247,63 @@ pub fn block_current_and_switch() {
 
     block_current();
 
-    let next_sp = match get_task_sp(next_id) {
-        Some(s) => s,
-        None => return,
-    };
-
-    // Set current to next task BEFORE context_switch. context_switch suspends
-    // this task, so anything after it only runs when we're resumed later.
-    // If we set_current after, CURRENT stays wrong for the entire duration the
-    // next task is running, breaking any scheduling the next task performs.
     unsafe {
-        let slot = &mut TASKS[cur_id];
-        if let Some(ref mut tcb) = slot {
-            let prev_sp_ptr = &mut tcb.sp as *mut usize;
-            set_current(next_id);
-            if let Some(sw) = CONTEXT_SWITCH {
-                sw(prev_sp_ptr, next_sp);
-            }
-            // Execution resumes here when someone switches back to us.
-            // Restore our own id as current.
-            set_current(cur_id);
-        }
+        switch_to_task(cur_id, next_id);
     }
 }
+
+/// Tick: run from timer ISR or main loop. Picks the highest-priority ready
+/// task. If its priority is >= the current task's priority (same-level
+/// round-robin or higher preemption), switch to it. Lower-priority tasks
+/// never preempt a running higher-priority task.
+pub fn tick() {
+    let next_id = match schedule() {
+        Some(n) => n,
+        None => return,
+    };
+    let cur_id = match get_current() {
+        Some(c) if c != next_id => c,
+        _ => return,
+    };
+
+    // Only preempt if next has priority >= current (same-level RR or higher preemption).
+    let cur_prio = unsafe {
+        match &TASKS[cur_id] {
+            Some(t) => t.priority,
+            None => return,
+        }
+    };
+    let next_prio = unsafe {
+        match &TASKS[next_id] {
+            Some(t) => t.priority,
+            None => return,
+        }
+    };
+    if next_prio < cur_prio {
+        return;
+    }
+
+    unblock(cur_id);
+    unsafe {
+        switch_to_task(cur_id, next_id);
+    }
+}
+
+/// Yield: voluntarily give up the CPU to the next ready task (any priority).
+/// Unlike tick(), this always switches if there is a ready task, even if it
+/// has lower priority. Use for cooperative yielding (idle loops, spin waits).
+pub fn yield_task() {
+    let next_id = match schedule() {
+        Some(n) => n,
+        None => return,
+    };
+    let cur_id = match get_current() {
+        Some(c) if c != next_id => c,
+        _ => return,
+    };
+    unblock(cur_id);
+    unsafe {
+        switch_to_task(cur_id, next_id);
+    }
+}
+

@@ -13,11 +13,10 @@ pub fn install_port() {
     kernel::set_context_switch(arch::context_switch);
 }
 
-/// Tick: call from timer ISR (or from tests). Runs scheduler in critical section.
-/// On real hardware the ISR would call this; the kernel may reschedule.
+/// Tick: call from timer ISR or main loop. Runs scheduler in critical section;
+/// if a higher-priority (or round-robin next) task is ready, preempts and switches.
 pub fn tick() {
     arch::critical_section(|| {
-        // Optional: call scheduler::tick() when we add tick-driven preemption.
-        let _ = kernel::schedule();
+        kernel::tick();
     });
 }

@@ -32,7 +32,11 @@ mod tests {
         kernel::set_current(0);
         let mut sem = BinarySemaphore::new_taken();
         sem.wait();
+        // On RISC-V we actually switch to task 1; on host the stub returns and we stay in task 0.
+        #[cfg(target_arch = "riscv32")]
         assert_eq!(kernel::get_current(), Some(1));
+        #[cfg(target_arch = "riscv32")]
+        assert_eq!(kernel::schedule(), Some(1));
         sem.signal();
         assert_eq!(kernel::get_task_state(0), Some(TaskState::Ready));
     }

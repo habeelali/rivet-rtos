@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
 # Build the QEMU RISC-V example and run it in QEMU (virt machine, semihosting).
+# Usage: ./scripts/run-qemu.sh [full|semaphore|preempt]
+#   full (default): qemu_riscv_full — full-depth test (priority, round-robin, semaphores, tick, 4 tasks)
+#   semaphore:      qemu_riscv — semaphore block/signal only
+#   preempt:        qemu_riscv_preempt — two tasks alternating via tick()
 # Requires: rustup target add riscv32imc-unknown-none-elf
 #           qemu-system-riscv32 (e.g. apt install qemu-system-misc)
 
@@ -11,10 +15,20 @@ if ! command -v qemu-system-riscv32 &>/dev/null; then
   exit 1
 fi
 
-echo "Building qemu_riscv for riscv32imc-unknown-none-elf..."
-cargo build --example qemu_riscv --target riscv32imc-unknown-none-elf --release
+case "${1:-full}" in
+  full)       EXAMPLE=qemu_riscv_full ;;
+  semaphore)  EXAMPLE=qemu_riscv ;;
+  preempt)    EXAMPLE=qemu_riscv_preempt ;;
+  *)
+    echo "Usage: $0 [full|semaphore|preempt]" >&2
+    exit 1
+    ;;
+esac
 
-ELF="target/riscv32imc-unknown-none-elf/release/examples/qemu_riscv"
+echo "Building $EXAMPLE for riscv32imc-unknown-none-elf..."
+cargo build --example "$EXAMPLE" --target riscv32imc-unknown-none-elf --release
+
+ELF="target/riscv32imc-unknown-none-elf/release/examples/$EXAMPLE"
 
 echo "Running in QEMU (virt; UART -> terminal, semihosting for exit)..."
 exec qemu-system-riscv32 \
