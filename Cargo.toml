@@ -11,6 +11,9 @@ readme = "README.md"
 
 [dependencies]
 
+[target.'cfg(target_arch = "riscv32")'.dependencies]
+riscv = "0.12"
+
 [dev-dependencies]
 
 [profile.release]
