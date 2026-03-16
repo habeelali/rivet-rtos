@@ -44,6 +44,32 @@ qemu-system-riscv32 -machine virt -cpu rv32 -bios none -kernel target/riscv32imc
 
 QEMU should exit with code 0 if the test passes.
 
+## ESP32-C3 (real hardware, UART logs)
+
+**Note:** This RTOS is RISC-V. ESP32-**C3** is RISC-V; ESP32-**S3** is Xtensa and would need a separate port.
+
+Build the example (ready to flash; does not flash):
+
+```bash
+rustup target add riscv32imc-unknown-none-elf
+./scripts/build-esp32c3.sh
+```
+
+Or manually:
+
+```bash
+cargo build --example esp32c3_uart --target riscv32imc-unknown-none-elf --release --features esp32c3
+```
+
+Flash and open serial monitor (device on `/dev/ttyACM0`, 115200 8N1):
+
+```bash
+cargo install espflash   # once
+espflash flash --monitor target/riscv32imc-unknown-none-elf/release/examples/esp32c3_uart --port /dev/ttyACM0
+```
+
+You should see UART logs (e.g. `Rivet RTOS ESP32-C3`, `Task 0 running`, `Task 1 running`). Panics are printed to UART.
+
 ## License
 
 Licensed under the [MIT License](LICENSE).

@@ -7,7 +7,13 @@ license = "MIT"
 repository = "https://github.com/habeelali/rivet-rtos"
 readme = "README.md"
 
+[features]
+default = []
+esp32c3 = []
+
 [lib]
+
+[build-dependencies]
 
 [dependencies]
 
