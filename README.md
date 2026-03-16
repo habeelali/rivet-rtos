@@ -25,6 +25,25 @@ cargo test -- --test-threads=1
 
 Use `--test-threads=1` because tests share kernel static state.
 
+## QEMU (RISC-V)
+
+Run the kernel on a RISC-V core in QEMU (two tasks, semaphore ping-pong, then exit via semihosting):
+
+```bash
+rustup target add riscv32imc-unknown-none-elf
+# Install QEMU if needed: apt install qemu-system-misc
+./scripts/run-qemu.sh
+```
+
+Or manually:
+
+```bash
+cargo build --example qemu_riscv --target riscv32imc-unknown-none-elf --release
+qemu-system-riscv32 -machine virt -cpu rv32 -bios none -kernel target/riscv32imc-unknown-none-elf/release/examples/qemu_riscv -nographic -semihosting
+```
+
+QEMU should exit with code 0 if the test passes.
+
 ## License
 
 Licensed under the [MIT License](LICENSE).

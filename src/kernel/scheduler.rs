@@ -199,14 +199,21 @@ pub fn block_current_and_switch() {
         None => return,
     };
 
+    // Set current to next task BEFORE context_switch. context_switch suspends
+    // this task, so anything after it only runs when we're resumed later.
+    // If we set_current after, CURRENT stays wrong for the entire duration the
+    // next task is running, breaking any scheduling the next task performs.
     unsafe {
         let slot = &mut TASKS[cur_id];
         if let Some(ref mut tcb) = slot {
             let prev_sp_ptr = &mut tcb.sp as *mut usize;
+            set_current(next_id);
             if let Some(sw) = CONTEXT_SWITCH {
                 sw(prev_sp_ptr, next_sp);
             }
-            set_current(next_id);
+            // Execution resumes here when someone switches back to us.
+            // Restore our own id as current.
+            set_current(cur_id);
         }
     }
 }

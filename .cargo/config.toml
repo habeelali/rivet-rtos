@@ -1,0 +1,4 @@
+# Linker script for QEMU RISC-V example (virt machine @ 0x80000000).
+# Omit or override when building for a different board (e.g. ESP32-C3).
+[target.riscv32imc-unknown-none-elf]
+rustflags = ["-C", "link-arg=-Tlink-qemu.ld"]
