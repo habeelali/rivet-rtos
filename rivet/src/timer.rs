@@ -4,7 +4,7 @@
 //! instead of busy-polling — the arch timer ISR (`riscv::timer_tick` /
 //! `cortex_m::systick_handler`) calls [`poll_timers`] on every tick, which
 //! wakes any task whose deadline has passed. This is what makes
-//! `arch::sleep()` (WFI) a real power-saving wait instead of a spin loop:
+//! `port::arch::idle()` (WFI) a real power-saving wait instead of a spin loop:
 //! between ticks, no task is marked ready, so the executor actually sleeps.
 //!
 //! Slots are `u64`-deadline `UnsafeCell`s guarded by [`crate::critical`]

@@ -1,5 +1,17 @@
 [workspace]
-members = ["rivet", "rivet-macros", "examples/qemu-cm3", "examples/qemu-riscv", "xtask"]
+members = [
+    "rivet",
+    "rivet-macros",
+    "rivet-arch-riscv",
+    "rivet-arch-cortex-m",
+    "rivet-bsp-support",
+    "rivet-bsp-qemu-virt",
+    "rivet-bsp-lm3s6965",
+    "rivet-rt",
+    "examples/qemu-cm3",
+    "examples/qemu-riscv",
+    "xtask",
+]
 resolver = "2"
 # cargo-fuzz crate: pinned deps + its own lockfile; built only via
 # `cargo +nightly fuzz run`, never as part of workspace builds.

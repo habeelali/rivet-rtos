@@ -18,7 +18,9 @@
 #![no_std]
 #![no_main]
 
-use core::panic::PanicInfo;
+use rivet_bsp_qemu_virt as _;
+use rivet_rt as _;
+
 use rivet::preempt::{sched, tcb, PriorityMutex};
 use rivet::time::{Duration, Sleep};
 
@@ -46,28 +48,28 @@ fn eff_prio() -> u8 {
 fn holder(_: &'static Unit) -> ! {
     let ga = MUTEX_A.lock();
     let gb = MUTEX_B.lock();
-    rivet::arch::debug_print("HOLDS_AB\n");
+    rivet::console::write_str("HOLDS_AB\n");
 
     let _ = rivet::spawn_ptask!(stack = 512, priority = 6, entry = waiter_b, arg = UNIT);
     let _ = rivet::spawn_ptask!(stack = 512, priority = 8, entry = waiter_a, arg = UNIT);
     // Yield so both waiters run and block on the held mutexes (boosting
     // us) before we read our effective priority.
-    rivet::arch::yield_now();
+    rivet::yield_now();
 
     // Both waiters have run and blocked (they preempt us), boosting us to 8.
-    rivet::arch::debug_print("EFF_WHILE_HOLDING=");
+    rivet::console::write_str("EFF_WHILE_HOLDING=");
     print_u32(eff_prio() as u32);
-    rivet::arch::debug_print("\n");
+    rivet::console::write_str("\n");
 
     drop(gb); // unlock B — must NOT drop the boost held for A
-    rivet::arch::debug_print("EFF_AFTER_UNLOCK_B=");
+    rivet::console::write_str("EFF_AFTER_UNLOCK_B=");
     print_u32(eff_prio() as u32);
-    rivet::arch::debug_print("\n");
+    rivet::console::write_str("\n");
 
     drop(ga); // unlock A — waiter_a wakes and preempts
-    rivet::arch::debug_print("EFF_AFTER_UNLOCK_A=");
+    rivet::console::write_str("EFF_AFTER_UNLOCK_A=");
     print_u32(eff_prio() as u32);
-    rivet::arch::debug_print("\n");
+    rivet::console::write_str("\n");
 
     PHASES.fetch_or(1, core::sync::atomic::Ordering::Release);
     rivet::preempt::park_forever();
@@ -75,13 +77,13 @@ fn holder(_: &'static Unit) -> ! {
 
 fn waiter_b(_: &'static Unit) -> ! {
     let _g = MUTEX_B.lock();
-    rivet::arch::debug_print("WB_GOT_B\n");
+    rivet::console::write_str("WB_GOT_B\n");
     rivet::preempt::park_forever();
 }
 
 fn waiter_a(_: &'static Unit) -> ! {
     let _g = MUTEX_A.lock();
-    rivet::arch::debug_print("WA_GOT_A\n");
+    rivet::console::write_str("WA_GOT_A\n");
     rivet::preempt::park_forever();
 }
 
@@ -96,20 +98,20 @@ fn timeout_task(_: &'static Unit) -> ! {
     // Spawn a higher-priority holder that locks T and parks forever, then
     // yield so it actually runs and takes the mutex before we try.
     let _ = rivet::spawn_ptask!(stack = 512, priority = 5, entry = t_holder, arg = UNIT);
-    rivet::arch::yield_now();
+    rivet::yield_now();
 
-    let started = rivet::arch::now_micros();
+    let started = rivet::port::board::now_us();
     match MUTEX_T.lock_timeout(Some(Duration::from_millis(50))) {
         Err(rivet::preempt::mutex::LockError::Timeout) => {
-            let elapsed = rivet::arch::now_micros() - started;
-            rivet::arch::debug_print("TIMEOUT_OK elapsed_us=");
+            let elapsed = rivet::port::board::now_us() - started;
+            rivet::console::write_str("TIMEOUT_OK elapsed_us=");
             print_u64(elapsed);
-            rivet::arch::debug_print("\n");
+            rivet::console::write_str("\n");
         }
         other => {
-            rivet::arch::debug_print("TIMEOUT_FAIL: ");
+            rivet::console::write_str("TIMEOUT_FAIL: ");
             let _ = other;
-            rivet::arch::exit_failure(2);
+            rivet::exit_failure(2);
         }
     }
 
@@ -117,10 +119,10 @@ fn timeout_task(_: &'static Unit) -> ! {
     let free_ok = MUTEX_A.try_lock().is_some();
     let held_ok = MUTEX_T.try_lock().is_none();
     if free_ok && held_ok {
-        rivet::arch::debug_print("TRYLOCK_OK\n");
+        rivet::console::write_str("TRYLOCK_OK\n");
     } else {
-        rivet::arch::debug_print("TRYLOCK_FAIL\n");
-        rivet::arch::exit_failure(3);
+        rivet::console::write_str("TRYLOCK_FAIL\n");
+        rivet::exit_failure(3);
     }
 
     PHASES.fetch_or(2, core::sync::atomic::Ordering::Release);
@@ -150,8 +152,8 @@ fn stress_task(_: &'static Unit) -> ! {
 async fn finisher() {
     loop {
         if PHASES.load(core::sync::atomic::Ordering::Acquire) == 7 {
-            rivet::arch::debug_print("MUTEX_OK\n");
-            rivet::arch::exit_success();
+            rivet::console::write_str("MUTEX_OK\n");
+            rivet::exit_success();
         }
         Sleep::<10_000>::new().await;
     }
@@ -159,7 +161,7 @@ async fn finisher() {
 
 fn print_u32(mut n: u32) {
     if n == 0 {
-        rivet::arch::debug_print("0");
+        rivet::console::write_str("0");
         return;
     }
     let mut digits = [0u8; 10];
@@ -174,13 +176,13 @@ fn print_u32(mut n: u32) {
         buf[j] = digits[i - 1 - j];
     }
     if let Ok(s) = core::str::from_utf8(&buf[..i]) {
-        rivet::arch::debug_print(s);
+        rivet::console::write_str(s);
     }
 }
 
 fn print_u64(mut n: u64) {
     if n == 0 {
-        rivet::arch::debug_print("0");
+        rivet::console::write_str("0");
         return;
     }
     let mut digits = [0u8; 20];
@@ -195,40 +197,13 @@ fn print_u64(mut n: u64) {
         buf[j] = digits[i - 1 - j];
     }
     if let Ok(s) = core::str::from_utf8(&buf[..i]) {
-        rivet::arch::debug_print(s);
+        rivet::console::write_str(s);
     }
 }
 
-// ── Startup ───────────────────────────────────────────────────────
-
-extern "C" {
-    static __stack_top: u8;
-    static __bss_start: u8;
-    static __bss_end: u8;
-}
-
-core::arch::global_asm!(
-    ".section .text._start",
-    ".global _start",
-    "_start:",
-    "  la    sp, __stack_top",
-    "  la    t0, __bss_start",
-    "  la    t1, __bss_end",
-    "1:",
-    "  bgeu  t0, t1, 2f",
-    "  sw    zero, 0(t0)",
-    "  addi  t0, t0, 4",
-    "  j     1b",
-    "2:",
-    "  call  rust_main",
-    "  ebreak",
-);
-
-#[no_mangle]
-fn rust_main() -> ! {
-    rivet::arch::early_init();
-    rivet::init();
-    rivet::arch::debug_print("Rivet mutex_test (B1/B11/lock_timeout)\n");
+#[rivet::main]
+fn main() -> ! {
+    rivet::console::write_str("Rivet mutex_test (B1/B11/lock_timeout)\n");
 
     let _ = rivet::spawn_ptask!(stack = 512, priority = 4, entry = timeout_task, arg = UNIT);
     let _ = rivet::spawn_ptask!(stack = 512, priority = 3, entry = stress_task, arg = UNIT);
@@ -236,18 +211,4 @@ fn rust_main() -> ! {
     let _ = rivet::spawn_ptask!(stack = 512, priority = 2, entry = holder, arg = UNIT);
 
     rivet::run();
-}
-
-#[panic_handler]
-fn panic(info: &PanicInfo) -> ! {
-    rivet::arch::debug_print("PANIC: ");
-    if let Some(loc) = info.location() {
-        rivet::arch::debug_print(loc.file());
-        rivet::arch::debug_print(":");
-        print_u64(loc.line() as u64);
-    }
-    rivet::arch::debug_print("\n");
-    loop {
-        core::hint::spin_loop();
-    }
 }

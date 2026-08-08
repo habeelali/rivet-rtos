@@ -4,15 +4,22 @@
 //! `.task_stacks` section. Stacks are carved from it at spawn time with
 //! size-aligned addresses (sizes must be powers of two), which is exactly
 //! what the CM3 MPU (per-switch current-stack region) and the RISC-V PMP
-//! (NAPUT guard bands at the low end of each stack) require.
+//! (NAPOT guard bands at the low end of each stack) require.
 //!
-//! On host builds there is no linker-defined pool; [`alloc_stack`] returns
-//! `None` and callers fall back to their own static stacks.
+//! `__task_stacks_start`/`__task_stacks_end` are part of the linker
+//! contract every board's linker script provides (documented in
+//! `docs/porting.md`) — not an arch/board API call, just fixed symbol
+//! names, the same on every real target. The host test backend has no
+//! linker-provided pool at all (gated on the `host-port` feature, not
+//! `target_arch`: the distinction is "is there a real linker script",
+//! which is unrelated to which arch a real target happens to be); there,
+//! [`alloc_stack`] always returns `None` and callers fall back to their
+//! own static stacks.
 
-#[cfg(any(target_arch = "riscv32", target_arch = "arm"))]
+#[cfg(not(feature = "host-port"))]
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-#[cfg(any(target_arch = "riscv32", target_arch = "arm"))]
+#[cfg(not(feature = "host-port"))]
 extern "C" {
     static __task_stacks_start: u8;
     static __task_stacks_end: u8;
@@ -21,28 +28,31 @@ extern "C" {
 /// Next free offset into the pool. Single writer (spawn happens on one
 /// context at a time: boot or a running task); readers are the fault
 /// handler and watermarking, which only need the base.
-#[cfg(any(target_arch = "riscv32", target_arch = "arm"))]
+#[cfg(not(feature = "host-port"))]
 static NEXT: AtomicUsize = AtomicUsize::new(0);
 
-/// Number of stacks allocated (RISC-V PMP guard entry index).
-#[cfg(target_arch = "riscv32")]
+/// Number of stacks allocated so far (used as the guard-registration
+/// index — meaningful on arches with a limited number of hardware guard
+/// slots, e.g. RISC-V PMP; `port::arch::guard_register` is a no-op on
+/// arches without that limit, e.g. Cortex-M's two-region MPU design).
+#[cfg(not(feature = "host-port"))]
 static ALLOC_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 /// Guard band size at the low end of every stack (plan.md §3.2): a 64-byte
 /// NAPOT-aligned region the RISC-V PMP denies, so a stack overflow faults
 /// instead of corrupting silently. The CM3 MPU denies the whole pool so
 /// the guard is redundant there (but harmless).
-#[cfg(any(target_arch = "riscv32", target_arch = "arm"))]
+#[cfg(not(feature = "host-port"))]
 const GUARD_SIZE: usize = 64;
 
 /// Pool base address on embedded targets.
-#[cfg(any(target_arch = "riscv32", target_arch = "arm"))]
+#[cfg(not(feature = "host-port"))]
 fn pool_base() -> usize {
     // (Linker symbol; addr_of! is not unsafe on an extern static.)
     core::ptr::addr_of!(__task_stacks_start) as usize
 }
 
-#[cfg(any(target_arch = "riscv32", target_arch = "arm"))]
+#[cfg(not(feature = "host-port"))]
 fn pool_len() -> usize {
     core::ptr::addr_of!(__task_stacks_end) as usize
         - core::ptr::addr_of!(__task_stacks_start) as usize
@@ -52,16 +62,16 @@ fn pool_len() -> usize {
 /// 64-byte guard band at its low end (plan.md §3.2). `size` must be a
 /// power of two (the MPU/PMP region alignment requires it).
 ///
-/// On RISC-V each stack's guard band is registered as a locked PMP entry
-/// (up to 15; the 16th+ stacks fall back to watermark detection — a
-/// documented budget constraint). Returns `None` when the pool is
-/// exhausted or on host builds without a linker pool.
+/// Each stack's guard band is registered via
+/// [`crate::port::arch::guard_register`] (a no-op on arches whose memory
+/// guard doesn't need one, e.g. Cortex-M). Returns `None` when the pool
+/// is exhausted or on the host test backend (no linker-provided pool).
 pub fn alloc_stack(size: usize) -> Option<&'static mut [u8]> {
     debug_assert!(
         size.is_power_of_two(),
         "rivet: task stack size {size} must be a power of two (MPU/PMP region alignment)"
     );
-    #[cfg(any(target_arch = "riscv32", target_arch = "arm"))]
+    #[cfg(not(feature = "host-port"))]
     {
         let base = pool_base();
         let len = pool_len();
@@ -94,18 +104,13 @@ pub fn alloc_stack(size: usize) -> Option<&'static mut [u8]> {
             return None;
         }
         NEXT.store(offset + GUARD_SIZE + size, Ordering::Relaxed);
-        #[cfg(target_arch = "riscv32")]
-        {
-            let entry = ALLOC_COUNT.fetch_add(1, Ordering::Relaxed);
-            if entry < 15 {
-                crate::arch::pmp_register_guard(guard_base, entry);
-            }
-        }
+        let entry = ALLOC_COUNT.fetch_add(1, Ordering::Relaxed);
+        crate::port::arch::guard_register(guard_base, entry);
         // SAFETY: the slice is within the 'static pool, never handed out
         // twice (NEXT only moves forward), and aligned to `size`.
         Some(unsafe { core::slice::from_raw_parts_mut(stack_base as *mut u8, size) })
     }
-    #[cfg(not(any(target_arch = "riscv32", target_arch = "arm")))]
+    #[cfg(feature = "host-port")]
     {
         let _ = size;
         None
@@ -113,7 +118,7 @@ pub fn alloc_stack(size: usize) -> Option<&'static mut [u8]> {
 }
 
 /// Max free-list entries (a released stack per TCB slot).
-#[cfg(any(target_arch = "riscv32", target_arch = "arm"))]
+#[cfg(not(feature = "host-port"))]
 const FREE_LIST_CAP: usize = 16;
 
 /// LIFO free list of released stacks (plan.md §5.4 respawn): pairs of
@@ -122,13 +127,13 @@ const FREE_LIST_CAP: usize = 16;
 /// touched by `alloc_stack`/`release_stack`, which run on one context at a
 /// time (boot or a running task with interrupts logically disabled around
 /// spawn/despawn).
-#[cfg(any(target_arch = "riscv32", target_arch = "arm"))]
+#[cfg(not(feature = "host-port"))]
 struct FreeList {
     count: AtomicUsize,
     entries: [AtomicUsize; FREE_LIST_CAP * 2],
 }
 
-#[cfg(any(target_arch = "riscv32", target_arch = "arm"))]
+#[cfg(not(feature = "host-port"))]
 impl FreeList {
     const fn new() -> Self {
         Self {
@@ -157,14 +162,14 @@ impl FreeList {
     }
 }
 
-#[cfg(any(target_arch = "riscv32", target_arch = "arm"))]
+#[cfg(not(feature = "host-port"))]
 static FREE_LIST: FreeList = FreeList::new();
 
 /// Release a stack back to the pool (plan.md §5.4 despawn/respawn). The
 /// slice is refilled with `0xAA` so watermarking keeps working after the
 /// stack is reused. No-op if the slice did not come from the pool.
 pub fn release_stack(stack: &'static mut [u8]) {
-    #[cfg(any(target_arch = "riscv32", target_arch = "arm"))]
+    #[cfg(not(feature = "host-port"))]
     {
         let base = pool_base();
         let offset = stack.as_mut_ptr() as usize - base;
@@ -177,27 +182,28 @@ pub fn release_stack(stack: &'static mut [u8]) {
         // the same scratch window (and critical section) the spawn path
         // uses; the svc-based frame init is not involved here (plan.md §5.4).
         crate::critical::enter(|| {
-            crate::arch::mpu_allow_scratch(stack.as_ptr() as usize, size);
+            crate::port::arch::scratch_open(stack.as_ptr() as usize, size);
             for b in stack.iter_mut() {
                 *b = 0xAA;
             }
-            crate::arch::mpu_clear_scratch();
+            crate::port::arch::scratch_close();
         });
         FREE_LIST.push(offset, size);
     }
-    #[cfg(not(any(target_arch = "riscv32", target_arch = "arm")))]
+    #[cfg(feature = "host-port")]
     {
         let _ = stack;
     }
 }
 
-/// Pool bounds `(base, len)` on embedded targets; `(0, 0)` on host.
+/// Pool bounds `(base, len)` on embedded targets; `(0, 0)` on the host
+/// test backend.
 pub fn pool_bounds() -> (usize, usize) {
-    #[cfg(any(target_arch = "riscv32", target_arch = "arm"))]
+    #[cfg(not(feature = "host-port"))]
     {
         (pool_base(), pool_len())
     }
-    #[cfg(not(any(target_arch = "riscv32", target_arch = "arm")))]
+    #[cfg(feature = "host-port")]
     {
         (0, 0)
     }
@@ -205,11 +211,11 @@ pub fn pool_bounds() -> (usize, usize) {
 
 /// Is address `addr` inside the task-stack pool?
 pub fn contains(addr: usize) -> bool {
-    #[cfg(any(target_arch = "riscv32", target_arch = "arm"))]
+    #[cfg(not(feature = "host-port"))]
     {
         addr >= pool_base() && addr < pool_base() + pool_len()
     }
-    #[cfg(not(any(target_arch = "riscv32", target_arch = "arm")))]
+    #[cfg(feature = "host-port")]
     {
         let _ = addr;
         false
@@ -219,8 +225,9 @@ pub fn contains(addr: usize) -> bool {
 /// Test-only: reset the allocation cursor (host tests).
 #[cfg(feature = "test-support")]
 pub(crate) fn reset_for_test() {
-    #[cfg(any(target_arch = "riscv32", target_arch = "arm"))]
-    NEXT.store(0, Ordering::Relaxed);
-    #[cfg(target_arch = "riscv32")]
-    ALLOC_COUNT.store(0, Ordering::Relaxed);
+    #[cfg(not(feature = "host-port"))]
+    {
+        NEXT.store(0, Ordering::Relaxed);
+        ALLOC_COUNT.store(0, Ordering::Relaxed);
+    }
 }

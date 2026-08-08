@@ -62,12 +62,12 @@
 #[cfg(feature = "test-support")]
 extern crate std;
 
-pub mod arch;
 pub mod config;
+pub mod console;
 pub mod critical;
 pub mod executor;
 pub mod fault;
-pub mod hal;
+pub mod port;
 pub mod preempt;
 pub mod sync;
 pub mod task;
@@ -84,6 +84,10 @@ pub mod test_support;
 /// coexists with the `task` module (`rivet::task::TaskCell` etc.) at the
 /// same path.
 pub use rivet_macros::task;
+
+/// Declare the application entry point. See [`rivet_macros::main`] for the
+/// full docs and an example.
+pub use rivet_macros::main;
 
 /// Serialize + reset a host test. Every test that touches kernel globals
 /// (task registry, waker bitmaps, timer slots, scheduler state) must be
@@ -134,7 +138,9 @@ fn async_idle_entry(_arg: &'static ()) -> ! {
 /// preemptive task. Call [`spawn_ptask!`] for any additional preemptive
 /// tasks after this, then call [`run`].
 pub fn init() {
-    arch::early_init();
+    port::arch::init();
+    port::board::init();
+    port::board::tick_start(config::TICK_HZ);
     // Safety: EXECUTOR is only accessed here at boot, before run().
     unsafe {
         core::ptr::addr_of_mut!(executor::EXECUTOR)
@@ -161,4 +167,30 @@ pub fn init() {
 /// Must be called after [`init`] (and any [`spawn_ptask!`] calls).
 pub fn run() -> ! {
     preempt::start();
+}
+
+/// Voluntarily give up the CPU: request an immediate reschedule
+/// opportunity, same as a mutex unlock waking a higher-priority waiter.
+/// Safe to call from task or ISR context.
+pub fn yield_now() {
+    port::arch::request_reschedule();
+}
+
+/// Terminate successfully. Never returns. Under QEMU this reduces to the
+/// board's exit device / semihosting path (the `xtask` test harness
+/// asserts on the resulting exit code); on real hardware, boards typically
+/// map this to a reset or halt.
+pub fn exit_success() -> ! {
+    port::board::exit(0)
+}
+
+/// Terminate with a distinguishable non-zero failure code. Never returns.
+pub fn exit_failure(code: u32) -> ! {
+    port::board::exit(code)
+}
+
+/// Trigger a system reset (watchdog / fault-policy recovery). Never
+/// returns.
+pub fn system_reset() -> ! {
+    port::board::reset()
 }

@@ -8,7 +8,7 @@
 //! interrupt a lower-priority one that never calls anything cooperative.
 //!
 //! All switching — tick-driven preemption *and* voluntary yields (blocking
-//! on a mutex, explicit `arch::yield_now()`) — goes through the same
+//! on a mutex, explicit `port::arch::request_reschedule()`) — goes through the same
 //! interrupt/trap path (software interrupt on RISC-V, PendSV on Cortex-M).
 //! There's no separate "synchronous context switch function call" — the
 //! arch trap handler saves the interrupted task's full context, asks
@@ -63,13 +63,14 @@ pub fn spawn_ptask_impl<T: 'static + Send, A: 'static, F: Fn() -> &'static mut [
     let stack = match crate::preempt::stack_pool::alloc_stack(stack_size) {
         Some(s) => s,
         None => {
-            // On embedded targets the pool is authoritative: a fallback
-            // stack outside `.task_stacks` would silently bypass the MPU/
-            // PMP guards (plan.md §4.3). Host builds use the per-invocation
-            // static fallback.
-            #[cfg(any(target_arch = "riscv32", target_arch = "arm"))]
+            // On a real board the pool is authoritative: a fallback stack
+            // outside `.task_stacks` would silently bypass the MPU/PMP
+            // guards (plan.md §4.3). The host test backend (no
+            // linker-provided pool at all) uses the per-invocation static
+            // fallback instead.
+            #[cfg(not(feature = "host-port"))]
             return Err(SpawnError::StackPoolFull);
-            #[cfg(not(any(target_arch = "riscv32", target_arch = "arm")))]
+            #[cfg(feature = "host-port")]
             fallback()
         }
     };
@@ -245,10 +246,10 @@ pub unsafe fn spawn<T: 'static + Send, A: 'static>(
     arg: &'static A,
 ) -> Result<TaskHandle, SpawnError> {
     assert!(
-        stack.len() >= crate::arch::MIN_TASK_STACK,
+        stack.len() >= crate::port::arch::min_task_stack(),
         "rivet: task stack too small: {} bytes < arch minimum {} (context-switch frame + entry trampoline; plan.md §2.7)",
         stack.len(),
-        crate::arch::MIN_TASK_STACK
+        crate::port::arch::min_task_stack()
     );
     // Fill with a known pattern so Phase 3's `stack_usage()` can measure
     // the high-water mark (the deepest untouched 0xAA byte marks how far
@@ -261,10 +262,11 @@ pub unsafe fn spawn<T: 'static + Send, A: 'static>(
     // guards). Held under a critical section so no other task can run in
     // the window.
     let sp = crate::critical::enter(|| {
-        crate::arch::mpu_allow_scratch(base, size);
+        crate::port::arch::scratch_open(base, size);
         stack.fill(0xAA);
-        let sp = crate::arch::init_task_stack(stack, entry as usize, arg as *const A as usize);
-        crate::arch::mpu_clear_scratch();
+        let sp =
+            crate::port::arch::init_task_stack(stack, entry as usize, arg as *const A as usize);
+        crate::port::arch::scratch_close();
         sp
     });
     match tcb::register_full(sp, priority, base, size) {
@@ -368,7 +370,7 @@ pub fn start() -> ! {
     // and let the arch layer enable memory protection for its stack.
     sched::on_dispatch(first);
     let first_tcb = tcb::get(first).unwrap();
-    crate::arch::on_switch_to(
+    crate::port::arch::on_switch_to(
         first_tcb.stack_base.load(Ordering::Acquire),
         first_tcb.stack_size.load(Ordering::Acquire),
     );
@@ -376,7 +378,7 @@ pub fn start() -> ! {
     // SAFETY: `sp` is the freshly-initialized first stack frame of the
     // selected task (produced by `init_task_stack`); `start_first_task`
     // consumes it exactly once and never returns.
-    unsafe { crate::arch::start_first_task(sp) }
+    unsafe { crate::port::arch::start_first_task(sp) }
 }
 
 /// Permanently remove the current preemptive task from scheduling. Useful
@@ -393,10 +395,10 @@ pub fn sleep_ms(ms: u64) {
     let Some(me) = sched::current() else {
         return;
     };
-    let deadline = crate::arch::now_micros().wrapping_add(ms.saturating_mul(1000));
+    let deadline = crate::port::board::now_us().wrapping_add(ms.saturating_mul(1000));
     sched::block_current();
     let _ = crate::timer::register_ptask_deadline(deadline, me);
-    crate::arch::yield_now();
+    crate::port::arch::request_reschedule();
     crate::timer::cancel_ptask_deadline(me);
 }
 
@@ -404,12 +406,12 @@ pub fn park_forever() -> ! {
     sched::current().expect("park_forever() outside preemptive task context");
     sched::block_current();
     loop {
-        crate::arch::yield_now();
+        crate::port::arch::request_reschedule();
     }
 }
 
 /// Called from the arch trap/exception handler (timer tick, or a software
-/// interrupt triggered by [`crate::arch::yield_now`]) with the interrupted
+/// interrupt triggered by [`crate::port::arch::request_reschedule`]) with the interrupted
 /// task's just-saved stack pointer. Consults the scheduler and returns the
 /// stack pointer the arch layer should actually resume — either the same
 /// one (no reschedule needed) or a different task's (real preemption /
@@ -488,7 +490,7 @@ pub fn on_tick(interrupted_sp: usize) -> usize {
     // task (plan.md [B14] — never advance on no-switch ticks), and enable
     // memory protection for the newly-running task's stack (plan.md §3.1).
     sched::on_dispatch(candidate);
-    crate::arch::on_switch_to(
+    crate::port::arch::on_switch_to(
         to_tcb.stack_base.load(Ordering::Acquire),
         to_tcb.stack_size.load(Ordering::Acquire),
     );
@@ -514,7 +516,7 @@ mod stack_tests {
     fn spawn_rejects_too_small_stack() {
         crate::kernel_test! {
             static mut TINY: [u8; 32] = [0; 32];
-            fn entry(_: &'static ()) -> ! { loop { crate::arch::yield_now(); } }
+            fn entry(_: &'static ()) -> ! { loop { crate::port::arch::request_reschedule(); } }
             static UNIT: () = ();
             // SAFETY: TINY is only used here, before the scheduler runs.
             unsafe {

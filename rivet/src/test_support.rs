@@ -37,8 +37,5 @@ pub fn reset_all() {
     crate::executor::reset_for_test();
     crate::preempt::stack_pool::reset_for_test();
     crate::watchdog::reset_for_test();
-    // The dummy host clock (arch::dummy::TICKS) is only present on
-    // non-embedded targets.
-    #[cfg(not(any(target_arch = "riscv32", target_arch = "arm")))]
-    crate::arch::reset_test_clock();
+    crate::port::host::reset_test_clock();
 }

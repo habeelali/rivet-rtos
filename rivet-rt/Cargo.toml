@@ -1,0 +1,19 @@
+[package]
+name = "rivet-rt"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Rivet RTOS: boot code (_start/Reset, bss/data init, vector table, panic handler) shared across boards"
+
+[features]
+default = ["panic-handler"]
+# Provide a default #[panic_handler] that prints via rivet::console and
+# exits with a distinguishable failure code. Application code can disable
+# this (`default-features = false`) and supply its own.
+panic-handler = []
+
+[dependencies]
+rivet = { path = "../rivet" }
+
+[lib]

@@ -4,24 +4,26 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Rivet RTOS: zero-allocation async RTOS for ARM Cortex-M and RISC-V"
+description = "Rivet RTOS: zero-allocation async RTOS kernel — arch/board-independent, see docs/porting.md"
 
 [features]
 default = []
-arch-riscv = ["riscv"]
-arch-cortex-m = ["cortex-m"]
+# Host port: implements the port contract (Group A + B) with no-ops/fakes
+# so the kernel's own test suite (and `cargo check`/`build` on a host
+# target) links and runs without a real rivet-arch-*/rivet-bsp-* crate.
+# Never enabled for embedded builds — those link a real arch+board pair.
+host-port = []
 # Host-test support: serialized, reset-able kernel globals so `cargo test`
 # is deterministic under parallel threads. Never enable this for embedded
-# builds — it pulls in `std` (test harness only).
-test-support = []
+# builds — it pulls in `std` (test harness only). Implies host-port: a
+# test binary needs *some* port implementation to link.
+test-support = ["host-port"]
 # Permutation testing of the lock-free core (plan.md §1.3). Only ever
 # enabled together with RUSTFLAGS='--cfg loom' for the loom test target.
 loom = ["dep:loom"]
 
 [dependencies]
 rivet-macros = { path = "../rivet-macros" }
-riscv = { version = "0.12", optional = true }
-cortex-m = { version = "0.7", optional = true }
 loom = { version = "0.7", optional = true }
 
 [dev-dependencies]

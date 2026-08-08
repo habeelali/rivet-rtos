@@ -1,0 +1,21 @@
+[package]
+name = "rivet-arch-riscv"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Rivet RTOS: RV32 ISA port (context switch, trap entry, PMP) — no board/MMIO knowledge"
+
+[features]
+default = []
+# Stock CLINT-based tick + reschedule-IPI driver (SiFive CLINT: mtime,
+# mtimecmp, MSIP). Used by boards that actually have a CLINT (QEMU virt and
+# most RV32 "virt-like" platforms). Boards without one (e.g. ESP32-C3, which
+# has SYSTIMER instead) leave this off and wire their own tick source.
+clint = []
+
+[dependencies]
+rivet = { path = "../rivet" }
+riscv = "0.12"
+
+[lib]

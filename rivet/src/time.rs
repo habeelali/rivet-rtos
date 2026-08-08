@@ -4,7 +4,7 @@
 //! then returns `Pending` without re-arming its own waker — the platform
 //! timer ISR wakes it when the deadline passes. This means a sleeping task
 //! does not busy-poll: between ticks the executor has nothing ready and
-//! genuinely enters `arch::sleep()` (WFI), which is what makes tickless
+//! genuinely enters `port::arch::idle()` (WFI), which is what makes tickless
 //! idle actually save power instead of spinning.
 //!
 //! ```ignore
@@ -91,7 +91,7 @@ impl<const MICROS: u64> Future for Sleep<MICROS> {
         // SAFETY: `Sleep` is a plain struct with no `!Unpin` fields;
         // projecting through the pinned reference is sound.
         let this = unsafe { self.get_unchecked_mut() };
-        let now = crate::arch::now_micros();
+        let now = crate::port::board::now_us();
 
         if this.deadline == 0 {
             let deadline = now.wrapping_add(MICROS).max(1); // avoid the 0 "unset" sentinel

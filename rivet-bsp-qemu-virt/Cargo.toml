@@ -1,0 +1,17 @@
+[package]
+name = "rivet-bsp-qemu-virt"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Rivet RTOS board support: QEMU RISC-V 'virt' machine (rv32)"
+# Lets this crate's build.rs publish its linker script path to direct
+# dependents as DEP_RIVET_BSP_QEMU_VIRT_LINKER_SCRIPT (see build.rs).
+links = "rivet_bsp_qemu_virt"
+
+[dependencies]
+rivet = { path = "../rivet" }
+rivet-arch-riscv = { path = "../rivet-arch-riscv", features = ["clint"] }
+rivet-bsp-support = { path = "../rivet-bsp-support" }
+
+[lib]

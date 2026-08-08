@@ -1,3 +1,24 @@
+## Update (Phase 2 of the layering refactor): all three now pass
+
+After the RTOS/board separation (Phase 2, "extract the port contract"),
+all three tests below started passing reliably (verified 3/3 consecutive
+runs each: `fault_overflow`, `fault_isolate`, `stress_max_ptasks`, plus the
+full `cm3` smoke suite: 10/10). This was **not a deliberate fix** — no code
+in this pass targeted fault handling or MPU/stack-pool logic — and the
+root cause was not chased down further (would require diffing generated
+code/addresses between the old and new binaries, disproportionate to the
+layering task). The leading hypothesis: a genuine interrupt-enable/disable
+bug was found and fixed in `rivet-arch-cortex-m`'s new
+`__rivet_arch_irq_save`/`__rivet_arch_irq_restore` (a `Primask::is_active()`
+polarity inversion that caused critical sections to *toggle* global
+interrupts rather than correctly restore them, parity-dependent on how
+many critical sections had run) — critical-section timing plausibly
+affected these tests' exact fault/stack timing enough to dodge whatever
+condition previously caused the double-fault escalation described below.
+Left as a pleasant surprise, not a claimed fix; the analysis below is kept
+for the record in case the failure mode resurfaces on a different board or
+kernel change.
+
 # Known pre-existing failures (baseline, before layering refactor)
 
 Captured 2026-08-08, before any layering changes. These are pre-existing bugs

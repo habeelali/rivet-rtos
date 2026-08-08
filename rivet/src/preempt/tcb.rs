@@ -292,7 +292,7 @@ loom::lazy_static! {
 }
 
 /// Register a new preemptive task in the first free slot.
-/// `sp` is the pre-built initial stack pointer (see `arch::init_task_stack`).
+/// `sp` is the pre-built initial stack pointer (see `port::arch::init_task_stack`).
 /// Returns the assigned task id, or `None` if the registry is full.
 ///
 /// Publish ordering (plan.md [B2]): the slot is *claimed* by CASing its
@@ -350,7 +350,7 @@ pub fn register_full(
 }
 
 /// Register a new preemptive task in the first free slot.
-/// `sp` is the pre-built initial stack pointer (see `arch::init_task_stack`).
+/// `sp` is the pre-built initial stack pointer (see `port::arch::init_task_stack`).
 /// Returns the assigned task id, or `None` if the registry is full.
 pub fn register(sp: usize, priority: u8) -> Option<usize> {
     register_full(sp, priority, 0, 0)

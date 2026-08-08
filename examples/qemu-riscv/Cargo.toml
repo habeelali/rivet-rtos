@@ -9,5 +9,6 @@ name = "qemu-riscv"
 test = false
 
 [dependencies]
-rivet = { path = "../../rivet", features = ["arch-riscv"] }
-riscv = "0.12"
+rivet = { path = "../../rivet" }
+rivet-rt = { path = "../../rivet-rt" }
+rivet-bsp-qemu-virt = { path = "../../rivet-bsp-qemu-virt" }

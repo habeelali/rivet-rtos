@@ -88,23 +88,23 @@ pub fn on_fault(info: &FaultInfo) -> usize {
 }
 
 fn dump(info: &FaultInfo) {
-    crate::arch::debug_print("\nRIVET FAULT: ");
+    crate::console::write_str("\nRIVET FAULT: ");
     match info.kind {
-        FaultKind::InstructionAccess => crate::arch::debug_print("instruction-access"),
-        FaultKind::LoadAccess => crate::arch::debug_print("load-access"),
-        FaultKind::StoreAccess => crate::arch::debug_print("store-access"),
-        FaultKind::MemManage(_) => crate::arch::debug_print("memmanage"),
-        FaultKind::StackOverflow => crate::arch::debug_print("stack-overflow"),
+        FaultKind::InstructionAccess => crate::console::write_str("instruction-access"),
+        FaultKind::LoadAccess => crate::console::write_str("load-access"),
+        FaultKind::StoreAccess => crate::console::write_str("store-access"),
+        FaultKind::MemManage(_) => crate::console::write_str("memmanage"),
+        FaultKind::StackOverflow => crate::console::write_str("stack-overflow"),
     }
-    crate::arch::debug_print(" addr=0x");
+    crate::console::write_str(" addr=0x");
     print_hex(info.address);
-    crate::arch::debug_print(" pc=0x");
+    crate::console::write_str(" pc=0x");
     print_hex(info.pc);
     if let Some(id) = info.task_id {
-        crate::arch::debug_print(" task=");
+        crate::console::write_str(" task=");
         print_dec(id);
     }
-    crate::arch::debug_print("\n");
+    crate::console::write_str("\n");
 }
 
 fn panic_policy(info: &FaultInfo) -> ! {
@@ -120,19 +120,19 @@ fn panic_policy(info: &FaultInfo) -> ! {
                 let used = crate::preempt::stack_usage(unsafe {
                     core::slice::from_raw_parts(base as *const u8, size)
                 });
-                crate::arch::debug_print("  task ");
+                crate::console::write_str("  task ");
                 print_dec(id);
-                crate::arch::debug_print(" stack ");
+                crate::console::write_str(" stack ");
                 print_dec(used);
-                crate::arch::debug_print("/");
+                crate::console::write_str("/");
                 print_dec(size);
-                crate::arch::debug_print("\n");
+                crate::console::write_str("\n");
             }
         }
     }
     // Halt with a distinguishable code (reset is reserved for the
     // watchdog path, which the fault tests would otherwise loop on).
-    crate::arch::exit_failure(0xFA)
+    crate::port::board::exit(0xFA)
 }
 
 fn isolate(info: &FaultInfo) -> usize {
@@ -175,7 +175,7 @@ fn isolate(info: &FaultInfo) -> usize {
             if let Some(nt) = crate::preempt::tcb::get(next) {
                 nt.set_state(next, crate::preempt::tcb::TaskState::Running);
                 crate::preempt::sched::set_current(next);
-                crate::arch::on_switch_to(
+                crate::port::arch::on_switch_to(
                     nt.stack_base.load(Ordering::Acquire),
                     nt.stack_size.load(Ordering::Acquire),
                 );
@@ -200,13 +200,13 @@ fn print_hex(mut n: usize) {
         n >>= 4;
     }
     if let Ok(s) = core::str::from_utf8(&buf) {
-        crate::arch::debug_print(s);
+        crate::console::write_str(s);
     }
 }
 
 fn print_dec(mut n: usize) {
     if n == 0 {
-        crate::arch::debug_print("0");
+        crate::console::write_str("0");
         return;
     }
     let mut digits = [0u8; 10];
@@ -221,6 +221,6 @@ fn print_dec(mut n: usize) {
         out[j] = digits[i - 1 - j];
     }
     if let Ok(s) = core::str::from_utf8(&out[..i]) {
-        crate::arch::debug_print(s);
+        crate::console::write_str(s);
     }
 }

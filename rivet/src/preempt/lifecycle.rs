@@ -75,7 +75,7 @@ pub extern "C" fn rivet_task_exit_core(val_lo: usize, val_hi: usize) -> ! {
     // Park forever (the slot stays used until explicitly despawned).
     loop {
         sched::block_current();
-        crate::arch::yield_now();
+        crate::port::arch::request_reschedule();
     }
 }
 
@@ -118,7 +118,7 @@ pub fn join_task<T: 'static + Send>(handle: &super::TaskHandle) -> Result<T, Joi
     // Wait for exit (the exit path wakes us).
     while !t.exited.load(Ordering::Acquire) {
         sched::block_current();
-        crate::arch::yield_now();
+        crate::port::arch::request_reschedule();
     }
 
     // The joiner slot is consumed by the exit path; if we were woken

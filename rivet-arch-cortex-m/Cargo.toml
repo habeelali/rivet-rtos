@@ -1,0 +1,23 @@
+[package]
+name = "rivet-arch-cortex-m"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Rivet RTOS: ARM Cortex-M ISA port (context switch, PendSV, MPU) — no board/MMIO knowledge"
+
+[features]
+default = []
+# Stock SysTick-based tick + PendSV reschedule driver. SysTick and PendSV
+# are both architected (every Cortex-M has them at the same fixed
+# addresses), so unlike RISC-V's CLINT this has no meaningful "off"
+# state for a Cortex-M board — kept as a feature for symmetry with
+# rivet-arch-riscv's `clint` and in case a future board needs a different
+# tick source (e.g. a hardware RTC) instead.
+systick = []
+
+[dependencies]
+rivet = { path = "../rivet" }
+cortex-m = "0.7"
+
+[lib]

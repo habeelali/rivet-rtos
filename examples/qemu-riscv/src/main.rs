@@ -40,7 +40,9 @@
 #![no_std]
 #![no_main]
 
-use core::panic::PanicInfo;
+use rivet_bsp_qemu_virt as _;
+use rivet_rt as _;
+
 use rivet::sync::{Channel, Semaphore};
 use rivet::time::Sleep;
 
@@ -51,9 +53,9 @@ struct Unit;
 static PI_ARG: Unit = Unit;
 
 fn pi_low(_: &'static Unit) -> ! {
-    rivet::arch::debug_print("[pi_low: acquiring mutex]\n");
+    rivet::console::write_str("[pi_low: acquiring mutex]\n");
     let mut guard = PI_MUTEX.lock();
-    rivet::arch::debug_print("[pi_low: holds mutex, spawning medium+high]\n");
+    rivet::console::write_str("[pi_low: holds mutex, spawning medium+high]\n");
 
     let _ = rivet::spawn_ptask!(stack = 512, priority = 6, entry = pi_medium, arg = PI_ARG);
     let _ = rivet::spawn_ptask!(stack = 512, priority = 8, entry = pi_high, arg = PI_ARG);
@@ -67,7 +69,7 @@ fn pi_low(_: &'static Unit) -> ! {
         *guard = i;
         core::hint::black_box(&*guard);
     }
-    rivet::arch::debug_print("[pi_low: critical section done, releasing]\n");
+    rivet::console::write_str("[pi_low: critical section done, releasing]\n");
     drop(guard);
     rivet::preempt::park_forever();
 }
@@ -83,9 +85,9 @@ fn pi_medium(_: &'static Unit) -> ! {
 }
 
 fn pi_high(_: &'static Unit) -> ! {
-    rivet::arch::debug_print("[pi_high: trying to acquire mutex]\n");
+    rivet::console::write_str("[pi_high: trying to acquire mutex]\n");
     let _guard = PI_MUTEX.lock();
-    rivet::arch::debug_print("[pi_high: got mutex — priority inheritance worked]\n");
+    rivet::console::write_str("[pi_high: got mutex — priority inheritance worked]\n");
     rivet::preempt::park_forever();
 }
 
@@ -112,7 +114,7 @@ fn spin_task(arg: &'static SpinArg) -> ! {
         if count % 200_000 == 0 {
             let s = [arg.label];
             if let Ok(s) = core::str::from_utf8(&s) {
-                rivet::arch::debug_print(s);
+                rivet::console::write_str(s);
             }
             rounds += 1;
             if rounds >= 12 {
@@ -131,11 +133,11 @@ static DONE: Semaphore<1> = Semaphore::new(0);
 async fn heartbeat() {
     loop {
         Sleep::<100_000>::new().await; // 100ms
-        rivet::arch::debug_print(".[a=");
+        rivet::console::write_str(".[a=");
         print_u32(PROGRESS_A.load(core::sync::atomic::Ordering::Relaxed));
-        rivet::arch::debug_print(",b=");
+        rivet::console::write_str(",b=");
         print_u32(PROGRESS_B.load(core::sync::atomic::Ordering::Relaxed));
-        rivet::arch::debug_print("]");
+        rivet::console::write_str("]");
     }
 }
 
@@ -150,7 +152,7 @@ async fn producer() {
     while i <= 5 {
         Sleep::<30_000>::new().await; // 30ms between sends
         tx.send(i).await;
-        rivet::arch::debug_print("+");
+        rivet::console::write_str("+");
         i += 1;
     }
 }
@@ -162,25 +164,25 @@ async fn consumer() {
     let mut n = 0;
     while n < 5 {
         sum += rx.recv().await;
-        rivet::arch::debug_print("-");
+        rivet::console::write_str("-");
         n += 1;
     }
-    rivet::arch::debug_print("\nconsumer: sum=");
+    rivet::console::write_str("\nconsumer: sum=");
     print_u32(sum);
-    rivet::arch::debug_print("\n");
+    rivet::console::write_str("\n");
     DONE.release();
 }
 
 #[rivet::task(priority = 3, stack = 256)]
 async fn finisher() {
     DONE.acquire().await;
-    rivet::arch::debug_print("SUCCESS\n");
-    rivet::arch::exit_success();
+    rivet::console::write_str("SUCCESS\n");
+    rivet::exit_success();
 }
 
 fn print_u32(mut n: u32) {
     if n == 0 {
-        rivet::arch::debug_print("0");
+        rivet::console::write_str("0");
         return;
     }
     let mut digits = [0u8; 10];
@@ -195,40 +197,14 @@ fn print_u32(mut n: u32) {
         buf[j] = digits[i - 1 - j];
     }
     if let Ok(s) = core::str::from_utf8(&buf[..i]) {
-        rivet::arch::debug_print(s);
+        rivet::console::write_str(s);
     }
 }
 
-// ── Startup ───────────────────────────────────────────────────────
-
-extern "C" {
-    static __stack_top: u8;
-    static __bss_start: u8;
-    static __bss_end: u8;
-}
-
-core::arch::global_asm!(
-    ".section .text._start",
-    ".global _start",
-    "_start:",
-    "  la    sp, __stack_top",
-    "  la    t0, __bss_start",
-    "  la    t1, __bss_end",
-    "1:",
-    "  bgeu  t0, t1, 2f",
-    "  sw    zero, 0(t0)",
-    "  addi  t0, t0, 4",
-    "  j     1b",
-    "2:",
-    "  call  rust_main",
-    "  ebreak",
-);
-
-#[no_mangle]
-fn rust_main() -> ! {
-    rivet::init(); // (arch::early_init happens inside init)
-    rivet::arch::debug_print("Rivet RTOS v0.1.0 RISC-V (preemptive + async demo)\n");
-    rivet::arch::debug_print("Phase 0: priority inheritance (avoiding priority inversion):\n");
+#[rivet::main]
+fn main() -> ! {
+    rivet::console::write_str("Rivet RTOS v0.1.0 RISC-V (preemptive + async demo)\n");
+    rivet::console::write_str("Phase 0: priority inheritance (avoiding priority inversion):\n");
 
     // Split the SPSC channel exactly once at boot (plan.md [B8]).
     let (tx, rx) = CHAN.split().expect("channel split must succeed");
@@ -237,40 +213,10 @@ fn rust_main() -> ! {
 
     let _ = rivet::spawn_ptask!(stack = 512, priority = 5, entry = pi_low, arg = PI_ARG);
 
-    rivet::arch::debug_print("Phase 1: two same-priority preemptive tasks (A, B), no yielding:\n");
+    rivet::console::write_str("Phase 1: two same-priority preemptive tasks (A, B), no yielding:\n");
 
     let _ = rivet::spawn_ptask!(stack = 512, priority = 1, entry = spin_task, arg = ARG_A);
     let _ = rivet::spawn_ptask!(stack = 512, priority = 1, entry = spin_task, arg = ARG_B);
 
     rivet::run();
-}
-
-#[panic_handler]
-fn panic(info: &PanicInfo) -> ! {
-    rivet::arch::debug_print("PANIC: ");
-    if let Some(loc) = info.location() {
-        rivet::arch::debug_print(loc.file());
-        rivet::arch::debug_print(":");
-        print_u32(loc.line());
-    } else {
-        rivet::arch::debug_print("(no location)");
-    }
-    rivet::arch::debug_print(": ");
-    {
-        use core::fmt::Write;
-        let _ = write!(UartWriter, "{}", info.message());
-    }
-    rivet::arch::debug_print("\n");
-    loop {
-        core::hint::spin_loop();
-    }
-}
-
-/// Formats `core::fmt` output straight to the UART (panic diagnostics).
-struct UartWriter;
-impl core::fmt::Write for UartWriter {
-    fn write_str(&mut self, s: &str) -> core::fmt::Result {
-        rivet::arch::debug_print(s);
-        Ok(())
-    }
 }

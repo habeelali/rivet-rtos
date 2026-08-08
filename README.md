@@ -16,7 +16,7 @@ A zero-allocation, dual-tier RTOS for ARM Cortex-M and RISC-V, written in Rust (
 - **Priority-inheritance mutex** (`preempt::PriorityMutex`), verified against the actual scenario it exists for: a low-priority task holds it, a higher-priority task blocks waiting, and a *third*, medium-priority task that never yields is ready the whole time. Without inheritance the low-priority holder would starve forever (classic priority inversion) and the high-priority waiter would never unblock. With it, the holder's effective priority is boosted for as long as anyone waits, finishes its critical section despite the medium-priority task being ready, and releases promptly.
 - **Parameterized preemptive tasks** — `fn(&'static Arg) -> !` with real, typed arguments (via `spawn_ptask!`), each on its own statically-allocated stack. No heap, no TAIT.
 - **Real `async fn` tasks** via `#[rivet::task(priority = N)]` for the cooperative tier — genuine compiler-generated `Future` state machines, not hand-rolled state enums, and no nightly/TAIT required (see [Design notes](#design-notes)).
-- **Typestate GPIO** (`rivet::hal::gpio`) for the Cortex-M target — pin direction is tracked in the type, not a runtime flag; calling `.set_high()` on a pin still typed as `Input` is a compile error. Real register writes (GPIODIR/GPIODEN/GPIODATA on the LM3S6965), verified fault-free in QEMU.
+- **Typestate GPIO** (`rivet_bsp_lm3s6965::gpio`) for the Cortex-M board — pin direction is tracked in the type, not a runtime flag; calling `.set_high()` on a pin still typed as `Input` is a compile error. Real register writes (GPIODIR/GPIODEN/GPIODATA on the LM3S6965), verified fault-free in QEMU.
 - **Async sync primitives** for the cooperative tier — `Semaphore::acquire().await`, `Channel::send().await`/`recv().await`, lock-free, ISR-safe on the signaling side.
 - **Tickless `Sleep`** — registers a deadline with a timer queue instead of busy-polling; the executor genuinely reaches `WFI` between events.
 - **Two validated targets**: RISC-V (QEMU `virt`) and ARM Cortex-M3 (QEMU `lm3s6965evb`) — both run priority inheritance, real preemption, and the async tier back to back, and both exit QEMU cleanly with code 0.
@@ -60,13 +60,30 @@ A preemptive task's full context — every general-purpose register plus (arch-s
 rustup target add riscv32imac-unknown-none-elf thumbv7m-none-eabi
 ```
 
-Workspace layout:
-- `rivet/` — the kernel (`no_std`, feature-gated `arch-riscv` / `arch-cortex-m`)
+Workspace layout — `rivet` is a pure kernel with **no MMIO and no
+`#[cfg(target_arch)]` of its own**; hardware is reached through the port
+contract (`rivet::port`) and supplied by separate arch/board crates. See
+`plan.md` for the full design and `docs/porting.md` for how to bring
+Rivet up on a new board:
+
+- `rivet/` — the kernel: scheduler, TCB, executor, timers, sync, fault
+  policy. Builds on any host target with zero board/arch crates present
+  (`cargo build -p rivet` never touches MMIO).
   - `preempt/` — the preemptive tier: TCB, scheduler, `PriorityMutex`
   - `executor.rs`, `task.rs`, `waker.rs`, `sync/`, `time.rs` — the cooperative tier
-  - `hal/gpio.rs` — typestate GPIO (Cortex-M)
-- `rivet-macros/` — the `#[rivet::task]` proc macro
-- `examples/qemu-riscv/`, `examples/qemu-cm3/` — runnable demos
+  - `port/` — the `extern "Rust"` contract arch/board crates implement
+- `rivet-arch-riscv/`, `rivet-arch-cortex-m/` — CPU ports: context switch,
+  trap/PendSV entry, MPU/PMP programming. No board knowledge.
+- `rivet-bsp-qemu-virt/`, `rivet-bsp-lm3s6965/` — board support: memory
+  map, clocks, console, tick source, exit/reset, watchdog, linker script.
+  `rivet-bsp-lm3s6965/src/gpio.rs` is the typestate GPIO driver.
+- `rivet-bsp-support/` — shared BSP helpers (software-watchdog fallback,
+  NS16550 UART) so a new board isn't reimplementing them from scratch.
+- `rivet-rt/` — boot glue (`_start`/`Reset`, bss/data init, default panic
+  handler) and the `#[rivet::main]` entry-point macro.
+- `rivet-macros/` — `#[rivet::task]` and `#[rivet::main]` proc macros.
+- `examples/qemu-riscv/`, `examples/qemu-cm3/` — runnable demos, each just
+  `rivet` + one arch crate + one BSP crate + `rivet-rt` + application logic.
 
 ## Tests
 
@@ -152,11 +169,28 @@ fn critical_task(cfg: &'static Config) -> ! {
     }
 }
 
-// After rivet::init(), before rivet::run():
+// Inside a #[rivet::main] fn, before rivet::run():
 rivet::spawn_ptask!(stack = 2048, priority = 10, entry = critical_task, arg = CFG);
 ```
 
-In `main`: `rivet::init()` (sets up the arch layer, discovers `#[rivet::task]`s, spawns the async executor as the lowest-priority preemptive task), then any `spawn_ptask!` calls, then `rivet::run()` (starts the preemptive scheduler — never returns).
+A complete binary links one arch crate and one BSP crate, then declares its
+entry point with `#[rivet::main]` (which calls `rivet::init()` — arch/board
+bring-up, `#[rivet::task]` discovery, spawning the async executor as the
+lowest-priority preemptive task — before your function body runs):
+
+```rust
+#![no_std]
+#![no_main]
+
+use rivet_bsp_qemu_virt as _; // or rivet_bsp_lm3s6965, or your own board
+use rivet_rt as _;            // boot glue + default panic handler
+
+#[rivet::main]
+fn main() -> ! {
+    rivet::spawn_ptask!(stack = 2048, priority = 10, entry = critical_task, arg = CFG);
+    rivet::run() // starts the preemptive scheduler — never returns
+}
+```
 
 ## License
 

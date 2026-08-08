@@ -9,7 +9,9 @@
 #![no_std]
 #![no_main]
 
-use core::panic::PanicInfo;
+use rivet_bsp_qemu_virt as _;
+use rivet_rt as _;
+
 use rivet::preempt::TaskHandle;
 
 fn worker(_: &'static ()) -> u32 {
@@ -36,21 +38,21 @@ fn supervisor(_: &'static ()) -> ! {
 
     // Phase 1: join the worker — must return Ok(42).
     match handle.join::<u32>() {
-        Ok(42) => rivet::arch::debug_print("JOIN_OK v=42\n"),
+        Ok(42) => rivet::console::write_str("JOIN_OK v=42\n"),
         Ok(v) => {
-            rivet::arch::debug_print("JOIN_WRONG\n");
+            rivet::console::write_str("JOIN_WRONG\n");
             let _ = v;
-            rivet::arch::exit_failure(6);
+            rivet::exit_failure(6);
         }
         Err(e) => {
-            rivet::arch::debug_print("JOIN_ERR\n");
-            rivet::arch::debug_print(match e {
+            rivet::console::write_str("JOIN_ERR\n");
+            rivet::console::write_str(match e {
                 rivet::preempt::JoinError::Stale => "STALE\n",
                 rivet::preempt::JoinError::SelfJoin => "SELF\n",
                 rivet::preempt::JoinError::AlreadyJoined => "ALREADY\n",
                 rivet::preempt::JoinError::Faulted => "FAULTED\n",
             });
-            rivet::arch::exit_failure(7);
+            rivet::exit_failure(7);
         }
     }
 
@@ -64,48 +66,22 @@ fn supervisor(_: &'static ()) -> ! {
     };
     let _ = parker_h.join::<()>();
 
-    rivet::arch::debug_print("JOIN_TEST_OK\n");
-    rivet::arch::exit_success();
+    rivet::console::write_str("JOIN_TEST_OK\n");
+    rivet::exit_success();
 }
 
 // rust_main stores the worker's (id | generation<<16) and the parker's id.
 static WORKER_HANDLE: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
 static PARKER_ID: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
 
-// ── Startup ───────────────────────────────────────────────────────
-
-extern "C" {
-    static __stack_top: u8;
-    static __bss_start: u8;
-    static __bss_end: u8;
-}
-
-core::arch::global_asm!(
-    ".section .text._start",
-    ".global _start",
-    "_start:",
-    "  la    sp, __stack_top",
-    "  la    t0, __bss_start",
-    "  la    t1, __bss_end",
-    "1:",
-    "  bgeu  t0, t1, 2f",
-    "  sw    zero, 0(t0)",
-    "  addi  t0, t0, 4",
-    "  j     1b",
-    "2:",
-    "  call  rust_main",
-    "  ebreak",
-);
-
-#[no_mangle]
-fn rust_main() -> ! {
-    rivet::init();
-    rivet::arch::debug_print("Rivet join_test\n");
+#[rivet::main]
+fn main() -> ! {
+    rivet::console::write_str("Rivet join_test\n");
 
     // Spawn the worker; store its handle for the supervisor.
     let h = match rivet::spawn_ptask!(stack = 512, priority = 2, entry = worker, arg = ()) {
         Ok(h) => h,
-        Err(_) => rivet::arch::exit_failure(9),
+        Err(_) => rivet::exit_failure(9),
     };
     WORKER_HANDLE.store(
         h.id as usize | ((h.generation as usize) << 16),
@@ -115,37 +91,9 @@ fn rust_main() -> ! {
     // Spawn the parking task and the supervisor.
     match rivet::spawn_ptask!(stack = 512, priority = 1, entry = parker, arg = ()) {
         Ok(h) => PARKER_ID.store(h.id as usize, core::sync::atomic::Ordering::Release),
-        Err(_) => rivet::arch::exit_failure(10),
+        Err(_) => rivet::exit_failure(10),
     }
     let _ = rivet::spawn_ptask!(stack = 512, priority = 3, entry = supervisor, arg = ());
 
     rivet::run();
-}
-
-#[panic_handler]
-fn panic(info: &PanicInfo) -> ! {
-    rivet::arch::debug_print("PANIC: ");
-    if let Some(loc) = info.location() {
-        rivet::arch::debug_print(loc.file());
-        rivet::arch::debug_print(":");
-        let mut n = loc.line();
-        let mut digits = [0u8; 10];
-        let mut i = 0;
-        while n > 0 {
-            digits[i] = b'0' + (n % 10) as u8;
-            n /= 10;
-            i += 1;
-        }
-        let mut buf = [0u8; 10];
-        for j in 0..i {
-            buf[j] = digits[i - 1 - j];
-        }
-        if let Ok(s) = core::str::from_utf8(&buf[..i]) {
-            rivet::arch::debug_print(s);
-        }
-    }
-    rivet::arch::debug_print("\n");
-    loop {
-        core::hint::spin_loop();
-    }
 }

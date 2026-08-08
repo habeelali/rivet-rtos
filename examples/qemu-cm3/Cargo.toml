@@ -9,5 +9,10 @@ name = "qemu-cm3"
 test = false
 
 [dependencies]
-rivet = { path = "../../rivet", features = ["arch-cortex-m"] }
-cortex-m = "0.7"
+rivet = { path = "../../rivet" }
+rivet-rt = { path = "../../rivet-rt" }
+rivet-bsp-lm3s6965 = { path = "../../rivet-bsp-lm3s6965" }
+# Direct dependency for one test's tick-counter seeding hook
+# (soak_time_wrap); everything else in these examples only touches
+# `rivet`/`rivet-bsp-lm3s6965`.
+rivet-arch-cortex-m = { path = "../../rivet-arch-cortex-m", features = ["systick"] }

@@ -135,7 +135,7 @@ impl<T> PriorityMutex<T> {
         timeout: Option<crate::time::Duration>,
     ) -> Result<PriorityMutexGuard<'_, T>, LockError> {
         let me = sched::current().ok_or(LockError::NotInTask)?;
-        let deadline = timeout.map(|d| crate::arch::now_micros().wrapping_add(d.as_micros()));
+        let deadline = timeout.map(|d| crate::port::board::now_us().wrapping_add(d.as_micros()));
 
         loop {
             // Fast path (lock free).
@@ -153,7 +153,7 @@ impl<T> PriorityMutex<T> {
             }
 
             if let Some(d) = deadline {
-                if crate::arch::now_micros() >= d {
+                if crate::port::board::now_us() >= d {
                     // Deregister so a later unlock can't spuriously wake a
                     // task that is no longer waiting.
                     self.remove_waiter(me);
@@ -190,7 +190,7 @@ impl<T> PriorityMutex<T> {
                     // software-interrupt/PendSV path handles the switch).
                     // Woken spuriously or by unlock/timeout — loop back
                     // and re-test.
-                    crate::arch::yield_now();
+                    crate::port::arch::request_reschedule();
                 }
             }
         }
@@ -394,7 +394,7 @@ impl<'a, T> Drop for PriorityMutexGuard<'a, T> {
         self.mutex.wake_all_waiters();
         // Give a higher-priority waiter (now Ready) an immediate chance to
         // preempt us rather than waiting for the next tick.
-        crate::arch::yield_now();
+        crate::port::arch::request_reschedule();
     }
 }
 
@@ -462,7 +462,7 @@ mod tests {
             );
 
             // `high` contends for the lock (would block — but that calls
-            // arch::yield_now(), which is a no-op on the dummy/host arch).
+            // port::arch::request_reschedule(), which is a no-op on the dummy/host arch).
             // Directly exercise the boost logic used inside lock()'s slow path
             // by simulating one contention iteration.
             sched::set_current(high);

@@ -13,10 +13,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: fmt
         run: cargo fmt --all --check
-      # The embedded examples are no_std/no_main crates that cannot build
-      # for the host; they are linted under their own targets in the qemu job.
+      # rivet (the kernel) is arch/board-independent and builds on host by
+      # design (plan.md: the whole point of the layering split). Everything
+      # else in the workspace is inherently ISA/board-specific (real
+      # asm!/naked_asm! blocks transitively) and is linted under its own
+      # target in the qemu job's per-target clippy step instead.
       - name: clippy (host crates)
-        run: cargo clippy --workspace --exclude qemu-cm3 --exclude qemu-riscv --all-targets -- -D warnings
+        run: cargo clippy -p rivet -p rivet-macros -p xtask -p rivet-bsp-support --all-targets -- -D warnings
       - name: test (debug)
         run: cargo test -p rivet
       - name: test (release) # catch opt-level-dependent UB
@@ -82,9 +85,11 @@ jobs:
       - name: clippy (embedded target)
         run: |
           if [ "${{ matrix.target }}" = riscv ]; then
-            cargo clippy -p qemu-riscv --target riscv32imac-unknown-none-elf --release -- -D warnings
+            cargo clippy -p rivet-arch-riscv -p rivet-bsp-qemu-virt -p rivet-rt -p qemu-riscv \
+              --target riscv32imac-unknown-none-elf --release -- -D warnings
           else
-            cargo clippy -p qemu-cm3 --target thumbv7m-none-eabi --release -- -D warnings
+            cargo clippy -p rivet-arch-cortex-m -p rivet-bsp-lm3s6965 -p rivet-rt -p qemu-cm3 \
+              --target thumbv7m-none-eabi --release -- -D warnings
           fi
       - name: smoke (release)
         run: cargo run -p xtask -- test --target ${{ matrix.target }} --suite smoke

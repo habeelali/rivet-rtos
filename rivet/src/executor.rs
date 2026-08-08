@@ -5,7 +5,7 @@
 //! in a static `TaskCell` referenced by the task's `TaskReg.user_data` —
 //! no per-task stack allocation is needed.
 //!
-//! When all tasks are pending, the executor calls `arch::sleep()` to enter
+//! When all tasks are pending, the executor calls `port::arch::idle()` to enter
 //! a low-power state.
 
 use core::task::Poll;
@@ -170,7 +170,7 @@ impl Executor {
 
             // All tasks pending — sleep until an interrupt wakes us.
             if !waker::has_pending() {
-                crate::arch::sleep();
+                crate::port::arch::idle();
             }
         }
     }

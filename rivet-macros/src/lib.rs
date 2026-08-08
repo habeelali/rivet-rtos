@@ -9,6 +9,58 @@ use proc_macro::TokenStream;
 use quote::{format_ident, quote};
 use syn::{parse_macro_input, ItemFn, LitInt};
 
+/// Declare the application entry point. Expands to the `#[no_mangle]
+/// extern "C" fn rivet_main() -> !` that `rivet-rt`'s boot code (`_start`
+/// on RISC-V, `Reset` on Cortex-M) calls after bss/data init, with
+/// [`rivet::init`](https://docs.rs/rivet) inserted automatically before
+/// the function body runs.
+///
+/// ```ignore
+/// #[rivet::main]
+/// fn main() -> ! {
+///     rivet::println!("hello");
+///     rivet::spawn_ptask!(stack = 512, priority = 1, entry = my_task, arg = ());
+///     rivet::run()
+/// }
+/// ```
+///
+/// Takes no arguments; the annotated function must take no parameters
+/// (link the board/arch you want via `use rivet_bsp_...  as _;` instead —
+/// see `docs/porting.md`).
+#[proc_macro_attribute]
+pub fn main(attr: TokenStream, item: TokenStream) -> TokenStream {
+    if !attr.is_empty() {
+        return syn::Error::new_spanned(
+            proc_macro2::TokenStream::from(attr),
+            "#[rivet::main] takes no arguments",
+        )
+        .to_compile_error()
+        .into();
+    }
+    let input = parse_macro_input!(item as ItemFn);
+    if !input.sig.inputs.is_empty() {
+        return syn::Error::new_spanned(
+            &input.sig.inputs,
+            "#[rivet::main] functions take no parameters",
+        )
+        .to_compile_error()
+        .into();
+    }
+    let fn_attrs = &input.attrs;
+    let fn_block = &input.block;
+
+    let expanded = quote! {
+        #[no_mangle]
+        #(#fn_attrs)*
+        extern "C" fn rivet_main() -> ! {
+            ::rivet::init();
+            #fn_block
+        }
+    };
+
+    TokenStream::from(expanded)
+}
+
 /// Declare a static async task.
 ///
 /// The annotated function must be `async fn name() { ... }` — no

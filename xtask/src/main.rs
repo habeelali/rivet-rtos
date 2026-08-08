@@ -639,7 +639,6 @@ fn build_example(pkg: &str, bin: &str, target: Target, profile: &str) -> PathBuf
         .join(bin)
 }
 
-
 /// Golden-baseline capture (layering-refactor plan.md Phase 1): runs a test
 /// case exactly like `run_test_case` but never asserts — just records raw
 /// guest stdout + exit status to `tests/golden/<target>-<name>.txt`. Used to

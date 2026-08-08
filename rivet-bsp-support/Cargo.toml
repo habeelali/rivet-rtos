@@ -1,0 +1,12 @@
+[package]
+name = "rivet-bsp-support"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Rivet RTOS: shared helpers for rivet-bsp-* crates (software watchdog, NS16550 UART)"
+
+[dependencies]
+rivet = { path = "../rivet" }
+
+[lib]
