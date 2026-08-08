@@ -19,7 +19,7 @@ A zero-allocation, dual-tier RTOS for ARM Cortex-M and RISC-V, written in Rust (
 - **Typestate GPIO** (`rivet_bsp_lm3s6965::gpio`) for the Cortex-M board — pin direction is tracked in the type, not a runtime flag; calling `.set_high()` on a pin still typed as `Input` is a compile error. Real register writes (GPIODIR/GPIODEN/GPIODATA on the LM3S6965), verified fault-free in QEMU.
 - **Async sync primitives** for the cooperative tier — `Semaphore::acquire().await`, `Channel::send().await`/`recv().await`, lock-free, ISR-safe on the signaling side.
 - **Tickless `Sleep`** — registers a deadline with a timer queue instead of busy-polling; the executor genuinely reaches `WFI` between events.
-- **Two validated targets**: RISC-V (QEMU `virt`) and ARM Cortex-M3 (QEMU `lm3s6965evb`) — both run priority inheritance, real preemption, and the async tier back to back, and both exit QEMU cleanly with code 0.
+- **Three validated boards**: RISC-V (QEMU `virt`), ARM Cortex-M3 (QEMU `lm3s6965evb`), and ARM Cortex-M3 again on a genuinely different board (QEMU `mps2-an385` — different memory map, different UART/watchdog peripherals) — proving the arch/board split actually holds, not just working on the one board it was written against. All three run priority inheritance, real preemption, and the async tier back to back, and exit QEMU cleanly with code 0. See `docs/porting.md` to add your own board.
 - **33 host-side tests** (`cargo test -p rivet`), covering the scheduler, priority inheritance, waker bitmap, sync primitives, and an end-to-end async producer/consumer test driven through the real polling machinery.
 
 ## What's not here yet

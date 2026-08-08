@@ -1,0 +1,14 @@
+[package]
+name = "mps2-an385"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[[bin]]
+name = "mps2-an385"
+test = false
+
+[dependencies]
+rivet = { path = "../../rivet" }
+rivet-rt = { path = "../../rivet-rt" }
+rivet-bsp-mps2-an385 = { path = "../../rivet-bsp-mps2-an385" }

@@ -118,8 +118,22 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Stack reserved for the cooperative-tier task (the async executor,
 /// spawned automatically at priority 0 by [`init`]).
+///
+/// Aligned to its own size (unlike [`preempt::Stack`]'s general 16-byte
+/// alignment, which is enough for a context-switch frame but not for
+/// this): this is the one task stack in the kernel that bypasses the
+/// pool's own size-aligned carving (`stack_pool::alloc_stack`) — spawned
+/// directly from a fixed `'static` buffer in [`init`] — yet still gets
+/// handed to `port::arch::on_switch_to`, which on Cortex-M reprograms an
+/// MPU region sized to it. An MPU region's base must be aligned to its
+/// own size; a plain `.bss` array has no such guarantee (found via a
+/// board with a different `.bss` layout than the one this was first
+/// written against — same class of bug the pool's alignment math exists
+/// to prevent, just missed for this one non-pool stack).
 const ASYNC_IDLE_STACK_SIZE: usize = 4096;
-static mut ASYNC_IDLE_STACK: preempt::Stack<ASYNC_IDLE_STACK_SIZE> = preempt::Stack::new();
+#[repr(align(4096))]
+struct AlignedIdleStack([u8; ASYNC_IDLE_STACK_SIZE]);
+static mut ASYNC_IDLE_STACK: AlignedIdleStack = AlignedIdleStack([0; ASYNC_IDLE_STACK_SIZE]);
 static ASYNC_IDLE_ARG: () = ();
 
 fn async_idle_entry(_arg: &'static ()) -> ! {

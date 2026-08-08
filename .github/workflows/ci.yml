@@ -75,7 +75,7 @@ jobs:
       # more string here plus its registry entry in xtask/src/main.rs —
       # nothing else in this workflow changes.
       matrix:
-        target: [riscv, cm3]
+        target: [riscv, cm3, mps2]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -89,13 +89,20 @@ jobs:
           rustup target add riscv32imac-unknown-none-elf thumbv7m-none-eabi
       - name: clippy (embedded target)
         run: |
-          if [ "${{ matrix.target }}" = riscv ]; then
-            cargo clippy -p rivet-arch-riscv -p rivet-bsp-qemu-virt -p rivet-rt -p qemu-riscv \
-              --target riscv32imac-unknown-none-elf --release -- -D warnings
-          else
-            cargo clippy -p rivet-arch-cortex-m -p rivet-bsp-lm3s6965 -p rivet-rt -p qemu-cm3 \
-              --target thumbv7m-none-eabi --release -- -D warnings
-          fi
+          case "${{ matrix.target }}" in
+            riscv)
+              cargo clippy -p rivet-arch-riscv -p rivet-bsp-qemu-virt -p rivet-rt -p qemu-riscv \
+                --target riscv32imac-unknown-none-elf --release -- -D warnings
+              ;;
+            cm3)
+              cargo clippy -p rivet-arch-cortex-m -p rivet-bsp-lm3s6965 -p rivet-rt -p qemu-cm3 \
+                --target thumbv7m-none-eabi --release -- -D warnings
+              ;;
+            mps2)
+              cargo clippy -p rivet-arch-cortex-m -p rivet-bsp-mps2-an385 -p rivet-rt -p mps2-an385 \
+                --target thumbv7m-none-eabi --release -- -D warnings
+              ;;
+          esac
       - name: smoke (release)
         run: cargo run -p xtask -- test --target ${{ matrix.target }} --suite smoke
       - name: smoke (release-checked)

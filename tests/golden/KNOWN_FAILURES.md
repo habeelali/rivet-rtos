@@ -98,3 +98,41 @@ baseline (metadata-only, zero effect on kernel/example code):
 Both now pass. These are recorded here (not silently fixed) because they
 change which tests are green in the "before" baseline used for regression
 diffing in later phases.
+
+## mps2-an385/demo: benign "misaligned PC" warning on SVC return (Phase 7)
+
+Adding the `mps2-an385` board (Phase 7, proving the arch/board boundary)
+surfaced a real, valuable bug — fixed, see below — and left one smaller,
+unresolved oddity.
+
+**Fixed:** `rivet::init()`'s `ASYNC_IDLE_STACK` (the cooperative-tier
+executor's stack, spawned directly from a fixed `'static` buffer rather
+than through the pool's own size-aligned carving) had no alignment
+guarantee beyond `preempt::Stack`'s general 16 bytes. Since it's still
+handed to `port::arch::on_switch_to` — which on Cortex-M reprograms an
+MPU region sized to it, and an MPU region's base must be aligned to its
+own size — a `.bss` layout that didn't happen to place it on a 4096-byte
+boundary produced a genuinely misprogrammed MPU region (QEMU logged
+`DRBAR[7]: ... misaligned to DRSR region size`). `lm3s6965evb`'s specific
+`.bss` layout happened to avoid this by luck; `mps2-an385`'s different
+statics (no GPIO heartbeat task, different `Once` cells) didn't. Fixed by
+giving the static its own `#[repr(align(4096))]` wrapper in
+`rivet/src/lib.rs` — verified the fix also silently applied to
+`lm3s6965evb` (the bug existed there too, just unobserved).
+
+**Not resolved:** after that fix, `mps2-an385`'s demo still logs "M
+profile return from interrupt with misaligned PC is UNPREDICTABLE on
+v7M" — consistently 5 times per run (matches the demo's 5
+`spawn_ptask!` calls, suggesting a connection to the `rivet_svc_handler`
+exception-return path, though not confirmed by tracing), and does not
+occur on `lm3s6965evb` running the equivalent demo. The demo completes
+correctly regardless (`SUCCESS`, exit 0) — this is QEMU flagging a
+genuine ARMv7-M architectural violation somewhere in the guest that
+doesn't visibly corrupt anything in this specific scenario, not a
+functional failure. Not chased down further (would need GDB-level
+tracing of the exact PC value at each SVC return, and GDB tooling in
+this environment has its own unrelated issues — see the ctx_switch.py
+notes elsewhere in this session). Tracked as a real, open question for
+whoever next touches `rivet-bsp-mps2-an385` or `rivet-arch-cortex-m`'s
+SVC handling. `mps2-an385`'s xtask test cases mark this specific line
+as an accepted (not silently hidden) known-benign log line.

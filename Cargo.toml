@@ -7,9 +7,11 @@ members = [
     "rivet-bsp-support",
     "rivet-bsp-qemu-virt",
     "rivet-bsp-lm3s6965",
+    "rivet-bsp-mps2-an385",
     "rivet-rt",
     "examples/qemu-cm3",
     "examples/qemu-riscv",
+    "examples/mps2-an385",
     "xtask",
 ]
 resolver = "2"

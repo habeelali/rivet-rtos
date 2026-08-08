@@ -1,0 +1,18 @@
+[package]
+name = "rivet-bsp-mps2-an385"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Rivet RTOS board support: ARM MPS2 AN385 FPGA image (Cortex-M3), as modeled by QEMU's mps2-an385 machine"
+# Lets this crate's build.rs publish its linker script path to direct
+# dependents as DEP_RIVET_BSP_MPS2_AN385_LINKER_SCRIPT (see build.rs).
+links = "rivet_bsp_mps2_an385"
+
+[dependencies]
+rivet = { path = "../rivet" }
+
+[target.'cfg(target_arch = "arm")'.dependencies]
+rivet-arch-cortex-m = { path = "../rivet-arch-cortex-m", features = ["systick"] }
+
+[lib]
