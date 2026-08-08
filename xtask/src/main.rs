@@ -1,4 +1,4 @@
-//! Rivet QEMU test harness (plan.md §1.6, §1.7).
+//! Rivet QEMU test harness (plan.md §1.6, §1.7, Phase 6).
 //!
 //! Replaces `scripts/run-*.sh` with a typed, in-tree harness:
 //!
@@ -14,11 +14,17 @@
 //!   `0x3333 | code << 16` = fail with a distinguishable code) — the
 //!   semihosting workaround is a secondary path only.
 //!
+//! Boards are a data-driven registry ([`BOARDS`]), not a hardcoded enum —
+//! adding a board to the suite (Phase 7) is one table entry plus its test
+//! cases, never a new match arm scattered across the file.
+//!
 //! Usage:
 //! ```text
-//! cargo xtask test --target riscv|cm3 [--suite smoke|stress|gdb] [--profile release|release-checked] [--icount N]
-//! cargo xtask soak --target riscv|cm3 --sim-hours N
-//! cargo xtask list --target riscv|cm3
+//! cargo xtask test --target <board> [--suite smoke|stress|gdb] [--profile release|release-checked] [--icount N] [--only NAME]
+//! cargo xtask soak --target <board> --sim-hours N
+//! cargo xtask list --target <board>
+//! cargo xtask boards
+//! cargo xtask capture --target <board>
 //! ```
 
 use std::env;
@@ -29,38 +35,72 @@ use std::time::{Duration, Instant};
 
 use regex::Regex;
 
-// ── Target definitions ──────────────────────────────────────────────
+// ── Board registry ───────────────────────────────────────────────────
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Target {
-    Riscv,
-    Cm3,
+/// Everything the harness needs to know about a board, in one place. A
+/// new board (Phase 7) is one more entry here plus a case list in
+/// [`smoke_tests`] — nothing else in this file changes.
+struct BoardSpec {
+    /// Registry key, used as `--target <name>` and in golden filenames.
+    name: &'static str,
+    rust_target: &'static str,
+    qemu_binary: &'static str,
+    /// QEMU args identifying the machine (before `-kernel`/`-serial`/etc).
+    machine_args: &'static [&'static str],
+    /// Append `-semihosting` (boards whose exit path is ARM/ADP semihosting).
+    semihosting: bool,
+    /// QEMU machine-model log lines that are always benign for this board
+    /// (device-reset chatter, lock-contention re-touches, etc.), allowed
+    /// in `qemu.log` regardless of which test is running.
+    ignore_log_lines: &'static [&'static str],
+    /// Does this board's QEMU machine model support `-smp > 1`? Single-core
+    /// machine models (e.g. lm3s6965evb) reject it outright; the `-smp 4`
+    /// safety check (plan.md §9.1) only makes sense where it's possible.
+    supports_smp: bool,
 }
 
-impl Target {
-    fn from_str(s: &str) -> Result<Self, String> {
-        match s {
-            "riscv" => Ok(Target::Riscv),
-            "cm3" => Ok(Target::Cm3),
-            other => Err(format!(
-                "unknown target `{other}` (expected `riscv` or `cm3`)"
-            )),
-        }
-    }
+const BOARDS: &[BoardSpec] = &[
+    BoardSpec {
+        name: "riscv",
+        rust_target: "riscv32imac-unknown-none-elf",
+        qemu_binary: "qemu-system-riscv32",
+        machine_args: &["-machine", "virt", "-cpu", "rv32", "-bios", "none"],
+        semihosting: false,
+        // QEMU logs a line whenever a pmpcfg write re-touches an
+        // already-locked entry's byte (the guards in the same register
+        // are configured at different spawn times; QEMU still applies the
+        // unlocked bytes). Benign by design.
+        ignore_log_lines: &[
+            "ignoring pmpcfg write - locked",
+            "ignoring pmpaddr write - locked",
+            "ignoring pmpaddr write - pmpcfg + 1 locked",
+        ],
+        supports_smp: true,
+    },
+    BoardSpec {
+        name: "cm3",
+        rust_target: "thumbv7m-none-eabi",
+        qemu_binary: "qemu-system-arm",
+        machine_args: &["-machine", "lm3s6965evb"],
+        semihosting: true,
+        // lm3s6965evb's stellaris watchdog/gptm models emit this at
+        // device reset (period zero), before any guest instruction runs.
+        ignore_log_lines: &["Timer with period zero, disabling"],
+        // lm3s6965evb is QEMU-modeled as strictly single-core:
+        // `qemu-system-arm -machine lm3s6965evb -smp 4` fails outright
+        // ("Invalid SMP CPUs 4. The max CPUs supported ... is 1").
+        supports_smp: false,
+    },
+];
 
-    fn triple(self) -> &'static str {
-        match self {
-            Target::Riscv => "riscv32imac-unknown-none-elf",
-            Target::Cm3 => "thumbv7m-none-eabi",
-        }
-    }
-
-    fn qemu_bin(self) -> &'static str {
-        match self {
-            Target::Riscv => "qemu-system-riscv32",
-            Target::Cm3 => "qemu-system-arm",
-        }
-    }
+fn board(name: &str) -> &'static BoardSpec {
+    BOARDS.iter().find(|b| b.name == name).unwrap_or_else(|| {
+        eprintln!(
+            "unknown board `{name}`; available: {}",
+            BOARDS.iter().map(|b| b.name).collect::<Vec<_>>().join(", ")
+        );
+        std::process::exit(2);
+    })
 }
 
 // ── Test cases ─────────────────────────────────────────────────────
@@ -88,13 +128,6 @@ struct TestCase {
     /// Assert the golden output even when the guest never exits (fault
     /// tests under Panic policy halt or reset instead of exiting cleanly).
     assert_golden_on_timeout: bool,
-    /// Known-benign QEMU machine-model lines allowed in qemu.log (e.g. the
-    /// lm3s6965evb stellaris watchdog emits "Timer with period zero,
-    /// disabling" at device reset, before any guest code runs). Every
-    /// *other* line still fails the test.
-    ignore_log_lines: &'static [&'static str],
-    /// Extra QEMU args appended verbatim.
-    extra_qemu_args: &'static [&'static str],
 }
 
 fn demo_golden() -> &'static [&'static str] {
@@ -115,9 +148,32 @@ fn demo_golden() -> &'static [&'static str] {
     ]
 }
 
-fn smoke_tests(target: Target) -> Vec<TestCase> {
-    match target {
-        Target::Riscv => vec![
+fn mutex_test_golden() -> &'static [&'static str] {
+    &[
+        r"TIMEOUT_OK",
+        r"TRYLOCK_OK",
+        r"HOLDS_AB",
+        r"EFF_WHILE_HOLDING=8",
+        r"EFF_AFTER_UNLOCK_B=8",
+        r"WA_GOT_A",
+        r"WB_GOT_B",
+        r"EFF_AFTER_UNLOCK_A=2",
+        r"MUTEX_OK",
+    ]
+}
+
+fn fault_isolate_golden() -> &'static [&'static str] {
+    &[
+        r"RIVET FAULT",
+        r"HOOK_SAW_TASK=1",
+        r"POISONED_OK",
+        r"ISOLATION_OK",
+    ]
+}
+
+fn smoke_tests(board_name: &str) -> Vec<TestCase> {
+    match board_name {
+        "riscv" => vec![
             TestCase {
                 name: "demo",
                 pkg: "qemu-riscv",
@@ -129,16 +185,6 @@ fn smoke_tests(target: Target) -> Vec<TestCase> {
                 log_int: false,
                 allow_traps: false,
                 assert_golden_on_timeout: false,
-                // QEMU logs a line whenever a pmpcfg write re-touches an
-                // already-locked entry's byte (the guards in the same
-                // register are configured at different spawn times; QEMU
-                // still applies the unlocked bytes). Benign by design.
-                ignore_log_lines: &[
-                    "ignoring pmpcfg write - locked",
-                    "ignoring pmpaddr write - locked",
-                    "ignoring pmpaddr write - pmpcfg + 1 locked",
-                ],
-                extra_qemu_args: &["-machine", "virt", "-cpu", "rv32", "-bios", "none"],
             },
             // plan.md §2.3 acceptance: nested inheritance trace ([B11]),
             // lock_timeout/try_lock, and 1M-cycle contention stress ([B1]).
@@ -146,29 +192,13 @@ fn smoke_tests(target: Target) -> Vec<TestCase> {
                 name: "mutex_test",
                 pkg: "qemu-riscv",
                 bin: "mutex_test",
-                golden: &[
-                    r"TIMEOUT_OK",
-                    r"TRYLOCK_OK",
-                    r"HOLDS_AB",
-                    r"EFF_WHILE_HOLDING=8",
-                    r"EFF_AFTER_UNLOCK_B=8",
-                    r"WA_GOT_A",
-                    r"WB_GOT_B",
-                    r"EFF_AFTER_UNLOCK_A=2",
-                    r"MUTEX_OK",
-                ],
+                golden: mutex_test_golden(),
                 exit_code: 0,
                 timeout: Duration::from_secs(120),
                 icount: None,
                 log_int: false,
                 allow_traps: false,
                 assert_golden_on_timeout: false,
-                ignore_log_lines: &[
-                    "ignoring pmpcfg write - locked",
-                    "ignoring pmpaddr write - locked",
-                    "ignoring pmpaddr write - pmpcfg + 1 locked",
-                ],
-                extra_qemu_args: &["-machine", "virt", "-cpu", "rv32", "-bios", "none"],
             },
             // plan.md §2.4 [B2] acceptance: spawn workers from a running
             // task under -icount (deterministic ticks mid-registration);
@@ -184,12 +214,6 @@ fn smoke_tests(target: Target) -> Vec<TestCase> {
                 log_int: false,
                 allow_traps: false,
                 assert_golden_on_timeout: false,
-                ignore_log_lines: &[
-                    "ignoring pmpcfg write - locked",
-                    "ignoring pmpaddr write - locked",
-                    "ignoring pmpaddr write - pmpcfg + 1 locked",
-                ],
-                extra_qemu_args: &["-machine", "virt", "-cpu", "rv32", "-bios", "none"],
             },
             // ── Phase 3 fault suite ────────────────────────────────────
             // plan.md §3.6: stack overflow → Panic policy dump + exit 0xFA.
@@ -204,12 +228,6 @@ fn smoke_tests(target: Target) -> Vec<TestCase> {
                 log_int: false,
                 allow_traps: true, // the fault itself logs a trap
                 assert_golden_on_timeout: false,
-                ignore_log_lines: &[
-                    "ignoring pmpcfg write - locked",
-                    "ignoring pmpaddr write - locked",
-                    "ignoring pmpaddr write - pmpcfg + 1 locked",
-                ],
-                extra_qemu_args: &["-machine", "virt", "-cpu", "rv32", "-bios", "none"],
             },
             // plan.md §3.4: IsolateTask policy — the system survives a
             // faulting task; its mutex is poisoned.
@@ -217,24 +235,13 @@ fn smoke_tests(target: Target) -> Vec<TestCase> {
                 name: "fault_isolate",
                 pkg: "qemu-riscv",
                 bin: "fault_isolate",
-                golden: &[
-                    r"RIVET FAULT",
-                    r"HOOK_SAW_TASK=1",
-                    r"POISONED_OK",
-                    r"ISOLATION_OK",
-                ],
+                golden: fault_isolate_golden(),
                 exit_code: 0,
                 timeout: Duration::from_secs(30),
                 icount: None,
                 log_int: false,
                 allow_traps: true,
                 assert_golden_on_timeout: false,
-                ignore_log_lines: &[
-                    "ignoring pmpcfg write - locked",
-                    "ignoring pmpaddr write - locked",
-                    "ignoring pmpaddr write - pmpcfg + 1 locked",
-                ],
-                extra_qemu_args: &["-machine", "virt", "-cpu", "rv32", "-bios", "none"],
             },
             // plan.md §5.2/§5.3: task entry returns → kernel exit trampoline
             // stores the result and wakes the joiner.
@@ -249,11 +256,6 @@ fn smoke_tests(target: Target) -> Vec<TestCase> {
                 log_int: false,
                 allow_traps: false,
                 assert_golden_on_timeout: true,
-                extra_qemu_args: &["-machine", "virt", "-cpu", "rv32", "-bios", "none"],
-                ignore_log_lines: &[
-                    "ignoring pmpcfg write - locked",
-                    "ignoring pmpaddr write - locked",
-                ],
             },
             // plan.md §5.4/§5.5: despawn → slot+stack recycle → respawn with
             // stale-handle detection, plus pause/resume.
@@ -268,11 +270,6 @@ fn smoke_tests(target: Target) -> Vec<TestCase> {
                 log_int: false,
                 allow_traps: false,
                 assert_golden_on_timeout: true,
-                extra_qemu_args: &["-machine", "virt", "-cpu", "rv32", "-bios", "none"],
-                ignore_log_lines: &[
-                    "ignoring pmpcfg write - locked",
-                    "ignoring pmpaddr write - locked",
-                ],
             },
             // plan.md §3.5: software watchdog fires and resets (0x7777 →
             // QEMU reboots; the marker proves the timeout was diagnosed).
@@ -287,12 +284,6 @@ fn smoke_tests(target: Target) -> Vec<TestCase> {
                 log_int: false,
                 allow_traps: false,
                 assert_golden_on_timeout: true,
-                ignore_log_lines: &[
-                    "ignoring pmpcfg write - locked",
-                    "ignoring pmpaddr write - locked",
-                    "ignoring pmpaddr write - pmpcfg + 1 locked",
-                ],
-                extra_qemu_args: &["-machine", "virt", "-cpu", "rv32", "-bios", "none"],
             },
             // plan.md §4.4: fill the registry, typed error on overflow.
             TestCase {
@@ -306,12 +297,6 @@ fn smoke_tests(target: Target) -> Vec<TestCase> {
                 log_int: false,
                 allow_traps: false,
                 assert_golden_on_timeout: false,
-                ignore_log_lines: &[
-                    "ignoring pmpcfg write - locked",
-                    "ignoring pmpaddr write - locked",
-                    "ignoring pmpaddr write - pmpcfg + 1 locked",
-                ],
-                extra_qemu_args: &["-machine", "virt", "-cpu", "rv32", "-bios", "none"],
             },
             // plan.md §2.2 [B6] acceptance: 10 x 100ms sleeps must elapse
             // exactly 1s ± 30ms under -icount (tick re-armed from previous
@@ -328,15 +313,9 @@ fn smoke_tests(target: Target) -> Vec<TestCase> {
                 log_int: false,
                 allow_traps: false,
                 assert_golden_on_timeout: false,
-                ignore_log_lines: &[
-                    "ignoring pmpcfg write - locked",
-                    "ignoring pmpaddr write - locked",
-                    "ignoring pmpaddr write - pmpcfg + 1 locked",
-                ],
-                extra_qemu_args: &["-machine", "virt", "-cpu", "rv32", "-bios", "none"],
             },
         ],
-        Target::Cm3 => vec![
+        "cm3" => vec![
             TestCase {
                 name: "demo",
                 pkg: "qemu-cm3",
@@ -348,11 +327,6 @@ fn smoke_tests(target: Target) -> Vec<TestCase> {
                 log_int: false,
                 allow_traps: false,
                 assert_golden_on_timeout: false,
-                // lm3s6965evb's stellaris watchdog/gptm models emit this at
-                // device reset (period zero), before any guest instruction
-                // runs.
-                ignore_log_lines: &["Timer with period zero, disabling"],
-                extra_qemu_args: &["-machine", "lm3s6965evb"],
             },
             // plan.md §2.3 acceptance: nested inheritance trace ([B11]),
             // lock_timeout/try_lock, and 1M-cycle contention stress ([B1]).
@@ -360,25 +334,13 @@ fn smoke_tests(target: Target) -> Vec<TestCase> {
                 name: "mutex_test",
                 pkg: "qemu-cm3",
                 bin: "mutex_test",
-                golden: &[
-                    r"TIMEOUT_OK",
-                    r"TRYLOCK_OK",
-                    r"HOLDS_AB",
-                    r"EFF_WHILE_HOLDING=8",
-                    r"EFF_AFTER_UNLOCK_B=8",
-                    r"WA_GOT_A",
-                    r"WB_GOT_B",
-                    r"EFF_AFTER_UNLOCK_A=2",
-                    r"MUTEX_OK",
-                ],
+                golden: mutex_test_golden(),
                 exit_code: 0,
                 timeout: Duration::from_secs(120),
                 icount: None,
                 log_int: false,
                 allow_traps: false,
                 assert_golden_on_timeout: false,
-                ignore_log_lines: &["Timer with period zero, disabling"],
-                extra_qemu_args: &["-machine", "lm3s6965evb"],
             },
             // plan.md §2.4 [B2] acceptance: spawn workers from a running
             // task under -icount; one spawn past capacity must return None.
@@ -397,8 +359,6 @@ fn smoke_tests(target: Target) -> Vec<TestCase> {
                 log_int: false,
                 allow_traps: false,
                 assert_golden_on_timeout: false,
-                ignore_log_lines: &["Timer with period zero, disabling"],
-                extra_qemu_args: &["-machine", "lm3s6965evb"],
             },
             // ── Phase 3 fault suite ────────────────────────────────────
             // plan.md §3.6: stack overflow → MemManage → Panic dump + halt.
@@ -413,28 +373,19 @@ fn smoke_tests(target: Target) -> Vec<TestCase> {
                 log_int: false,
                 allow_traps: true, // the fault itself logs a trap
                 assert_golden_on_timeout: true,
-                ignore_log_lines: &["Timer with period zero, disabling"],
-                extra_qemu_args: &["-machine", "lm3s6965evb"],
             },
             // plan.md §3.4: IsolateTask policy via the asm MemManage entry.
             TestCase {
                 name: "fault_isolate",
                 pkg: "qemu-cm3",
                 bin: "fault_isolate",
-                golden: &[
-                    r"RIVET FAULT",
-                    r"HOOK_SAW_TASK=1",
-                    r"POISONED_OK",
-                    r"ISOLATION_OK",
-                ],
+                golden: fault_isolate_golden(),
                 exit_code: 0,
                 timeout: Duration::from_secs(30),
                 icount: None,
                 log_int: false,
                 allow_traps: true,
                 assert_golden_on_timeout: false,
-                ignore_log_lines: &["Timer with period zero, disabling"],
-                extra_qemu_args: &["-machine", "lm3s6965evb"],
             },
             // plan.md §5.2/§5.3: task exit + join on the Cortex-M3 port.
             TestCase {
@@ -448,8 +399,6 @@ fn smoke_tests(target: Target) -> Vec<TestCase> {
                 log_int: false,
                 allow_traps: false,
                 assert_golden_on_timeout: true,
-                extra_qemu_args: &["-machine", "lm3s6965evb"],
-                ignore_log_lines: &["Timer with period zero, disabling"],
             },
             // plan.md §5.4/§5.5: respawn + pause/resume on the Cortex-M3 port.
             TestCase {
@@ -463,8 +412,6 @@ fn smoke_tests(target: Target) -> Vec<TestCase> {
                 log_int: false,
                 allow_traps: false,
                 assert_golden_on_timeout: true,
-                extra_qemu_args: &["-machine", "lm3s6965evb"],
-                ignore_log_lines: &["Timer with period zero, disabling"],
             },
             // plan.md §3.5: real hardware WDT reset — the banner appearing
             // twice (ordered golden) proves the guest rebooted.
@@ -479,8 +426,6 @@ fn smoke_tests(target: Target) -> Vec<TestCase> {
                 log_int: false,
                 allow_traps: false,
                 assert_golden_on_timeout: true,
-                ignore_log_lines: &["Timer with period zero, disabling"],
-                extra_qemu_args: &["-machine", "lm3s6965evb"],
             },
             // plan.md §4.4: fill the registry, typed error on overflow.
             TestCase {
@@ -494,8 +439,6 @@ fn smoke_tests(target: Target) -> Vec<TestCase> {
                 log_int: false,
                 allow_traps: false,
                 assert_golden_on_timeout: false,
-                ignore_log_lines: &["Timer with period zero, disabling"],
-                extra_qemu_args: &["-machine", "lm3s6965evb"],
             },
             // plan.md §2.2 [B5] acceptance: run past 2^32 µs of kernel
             // time (tick accelerated to 10 µs in the test binary);
@@ -512,10 +455,12 @@ fn smoke_tests(target: Target) -> Vec<TestCase> {
                 log_int: false,
                 allow_traps: false,
                 assert_golden_on_timeout: false,
-                ignore_log_lines: &["Timer with period zero, disabling"],
-                extra_qemu_args: &["-machine", "lm3s6965evb"],
             },
         ],
+        other => {
+            eprintln!("[xtask] no smoke tests defined for board `{other}`");
+            Vec::new()
+        }
     }
 }
 
@@ -611,7 +556,7 @@ fn assert_ordered_golden(stdout: &str, golden: &[&str], name: &str) {
     }
 }
 
-fn build_example(pkg: &str, bin: &str, target: Target, profile: &str) -> PathBuf {
+fn build_example(pkg: &str, bin: &str, b: &BoardSpec, profile: &str) -> PathBuf {
     let mut cmd = Command::new(env::var("CARGO").unwrap_or_else(|_| "cargo".into()));
     cmd.args([
         "build",
@@ -620,7 +565,7 @@ fn build_example(pkg: &str, bin: &str, target: Target, profile: &str) -> PathBuf
         "--bin",
         bin,
         "--target",
-        target.triple(),
+        b.rust_target,
     ]);
     if profile != "release" {
         cmd.arg("--profile").arg(profile);
@@ -634,37 +579,35 @@ fn build_example(pkg: &str, bin: &str, target: Target, profile: &str) -> PathBuf
 
     workspace_root()
         .join("target")
-        .join(target.triple())
+        .join(b.rust_target)
         .join(profile)
         .join(bin)
 }
 
-/// Golden-baseline capture (layering-refactor plan.md Phase 1): runs a test
-/// case exactly like `run_test_case` but never asserts — just records raw
-/// guest stdout + exit status to `tests/golden/<target>-<name>.txt`. Used to
-/// snapshot current behavior before a refactor so later phases can diff
-/// against it byte-for-byte instead of re-deriving expectations.
-fn capture_test_case(target: Target, tc: &TestCase, profile: &str, out_dir: &PathBuf) {
-    let el = build_example(tc.pkg, tc.bin, target, profile);
-    let logs_dir = workspace_root().join("target").join("qemu-logs");
-    std::fs::create_dir_all(&logs_dir).expect("create qemu-logs dir");
-    let log_file = logs_dir.join(format!("{}-{}.log", target_name(target), tc.name));
-    let _ = std::fs::remove_file(&log_file);
-
+/// Assemble the standard QEMU arg list shared by run/capture/smp paths:
+/// machine args, `-kernel`, headless I/O, optional `-icount`, the
+/// guest-error/trap log, and semihosting if the board needs it.
+fn base_qemu_args(
+    b: &BoardSpec,
+    elf: &std::path::Path,
+    icount: Option<u32>,
+    log_int: bool,
+    log_file: &std::path::Path,
+) -> Vec<String> {
     let mut args: Vec<String> = vec![];
-    args.extend(tc.extra_qemu_args.iter().map(|s| s.to_string()));
+    args.extend(b.machine_args.iter().map(|s| s.to_string()));
     args.push("-kernel".into());
-    args.push(el.to_str().unwrap().into());
+    args.push(elf.to_str().unwrap().into());
     args.push("-nographic".into());
     args.push("-monitor".into());
     args.push("none".into());
     args.push("-serial".into());
     args.push("stdio".into());
-    if let Some(shift) = tc.icount {
+    if let Some(shift) = icount {
         args.push("-icount".to_string());
         args.push(format!("shift={shift}"));
     }
-    if tc.log_int {
+    if log_int {
         args.push("-d".into());
         args.push("int,guest_errors".into());
     } else {
@@ -673,15 +616,31 @@ fn capture_test_case(target: Target, tc: &TestCase, profile: &str, out_dir: &Pat
     }
     args.push("-D".into());
     args.push(log_file.to_str().unwrap().into());
-    if target == Target::Cm3 {
+    if b.semihosting {
         args.push("-semihosting".into());
     }
+    args
+}
 
-    eprintln!("[xtask] capturing {}/{}", target_name(target), tc.name);
-    let result = run_qemu(target.qemu_bin(), &args, tc.timeout, &log_file);
+/// Golden-baseline capture (layering-refactor plan.md Phase 1): runs a test
+/// case exactly like `run_test_case` but never asserts — just records raw
+/// guest stdout + exit status to `tests/golden/<board>-<name>.txt`. Used to
+/// snapshot current behavior before a refactor so later phases can diff
+/// against it byte-for-byte instead of re-deriving expectations.
+fn capture_test_case(b: &BoardSpec, tc: &TestCase, profile: &str, out_dir: &PathBuf) {
+    let el = build_example(tc.pkg, tc.bin, b, profile);
+    let logs_dir = workspace_root().join("target").join("qemu-logs");
+    std::fs::create_dir_all(&logs_dir).expect("create qemu-logs dir");
+    let log_file = logs_dir.join(format!("{}-{}.log", b.name, tc.name));
+    let _ = std::fs::remove_file(&log_file);
+
+    let args = base_qemu_args(b, &el, tc.icount, tc.log_int, &log_file);
+
+    eprintln!("[xtask] capturing {}/{}", b.name, tc.name);
+    let result = run_qemu(b.qemu_binary, &args, tc.timeout, &log_file);
 
     std::fs::create_dir_all(out_dir).expect("create golden out dir");
-    let out_file = out_dir.join(format!("{}-{}.txt", target_name(target), tc.name));
+    let out_file = out_dir.join(format!("{}-{}.txt", b.name, tc.name));
     let header = format!(
         "# exit_code={:?} timed_out={}\n",
         result.exit_code, result.timed_out
@@ -696,63 +655,30 @@ fn capture_test_case(target: Target, tc: &TestCase, profile: &str, out_dir: &Pat
     );
 }
 
-fn run_test_case(target: Target, tc: &TestCase, profile: &str) {
-    let el = build_example(tc.pkg, tc.bin, target, profile);
+fn run_test_case(b: &BoardSpec, tc: &TestCase, profile: &str) {
+    let el = build_example(tc.pkg, tc.bin, b, profile);
     let logs_dir = workspace_root().join("target").join("qemu-logs");
     std::fs::create_dir_all(&logs_dir).expect("create qemu-logs dir");
-    let log_file = logs_dir.join(format!("{}-{}.log", target_name(target), tc.name));
+    let log_file = logs_dir.join(format!("{}-{}.log", b.name, tc.name));
     let _ = std::fs::remove_file(&log_file);
 
-    let mut args: Vec<String> = vec![];
-    args.extend(tc.extra_qemu_args.iter().map(|s| s.to_string()));
-    args.push("-kernel".into());
-    args.push(el.to_str().unwrap().into());
-    args.push("-nographic".into());
-    args.push("-monitor".into());
-    args.push("none".into());
-    args.push("-serial".into());
-    args.push("stdio".into());
-    if let Some(shift) = tc.icount {
-        args.push("-icount".to_string());
-        args.push(format!("shift={shift}"));
-    }
-    // `-d guest_errors` always; add `int` only when the test declares it
-    // (fault/interrupt suites). The log written via -D is asserted empty
-    // unless `allow_traps`.
-    if tc.log_int {
-        args.push("-d".into());
-        args.push("int,guest_errors".into());
-    } else {
-        args.push("-d".into());
-        args.push("guest_errors".into());
-    }
-    args.push("-D".into());
-    args.push(log_file.to_str().unwrap().into());
-    // Cortex-M needs semihosting for its exit path; RISC-V exits via
-    // riscv.sifive.test.
-    if target == Target::Cm3 {
-        args.push("-semihosting".into());
-    }
+    let args = base_qemu_args(b, &el, tc.icount, tc.log_int, &log_file);
 
     eprintln!(
         "[xtask] running {}/{}: {} (timeout {}s)",
-        target_name(target),
+        b.name,
         tc.name,
         tc.name,
         tc.timeout.as_secs()
     );
-    let result = run_qemu(target.qemu_bin(), &args, tc.timeout, &log_file);
+    let result = run_qemu(b.qemu_binary, &args, tc.timeout, &log_file);
 
     if result.timed_out {
         if tc.assert_golden_on_timeout {
             // The guest intentionally never exits (fault test halted or
             // reset); still verify the ordered golden output.
             assert_ordered_golden(&result.stdout, tc.golden, tc.name);
-            eprintln!(
-                "[xtask] PASS {}/{} (halted as expected)",
-                target_name(target),
-                tc.name
-            );
+            eprintln!("[xtask] PASS {}/{} (halted as expected)", b.name, tc.name);
             return;
         }
         panic!(
@@ -772,7 +698,7 @@ fn run_test_case(target: Target, tc: &TestCase, profile: &str) {
     assert_ordered_golden(&result.stdout, tc.golden, tc.name);
 
     // qemu.log must be empty unless the test declares expected traps or
-    // the lines are in the known-benign allow-list.
+    // the lines are in the board's known-benign allow-list.
     if !tc.allow_traps {
         let log = std::fs::read_to_string(&log_file).unwrap_or_default();
         let unexpected: Vec<&str> = log
@@ -780,7 +706,7 @@ fn run_test_case(target: Target, tc: &TestCase, profile: &str) {
             .filter(|line| {
                 let trimmed = line.trim();
                 !trimmed.is_empty()
-                    && !tc
+                    && !b
                         .ignore_log_lines
                         .iter()
                         .any(|pat| trimmed.starts_with(pat))
@@ -795,32 +721,95 @@ fn run_test_case(target: Target, tc: &TestCase, profile: &str) {
         );
     }
 
-    eprintln!("[xtask] PASS {}/{}", target_name(target), tc.name);
+    eprintln!("[xtask] PASS {}/{}", b.name, tc.name);
+}
+
+/// `-smp N > 1` safety check (plan.md §9.1 / Phase 5 acceptance): every
+/// hart but 0 must park in `rivet-rt`'s `wfi` loop without touching kernel
+/// state, so a multi-hart run produces the same *structural* output as
+/// `-smp 1` — same phase markers, same success line, same exit code. The
+/// A/B preemption interleaving itself is expected to vary run-to-run
+/// (real timer-tick jitter) even at `-smp 1`, so this strips runs of `A`s
+/// and `B`s down to a single placeholder before comparing.
+fn run_smp_check(b: &BoardSpec, profile: &str) {
+    if !b.supports_smp {
+        eprintln!(
+            "[xtask] board `{}` doesn't support -smp; skipping smp check",
+            b.name
+        );
+        return;
+    }
+    let cases = smoke_tests(b.name);
+    let Some(tc) = cases.iter().find(|c| c.name == "demo") else {
+        eprintln!(
+            "[xtask] no `demo` case for board `{}`; skipping smp check",
+            b.name
+        );
+        return;
+    };
+    let el = build_example(tc.pkg, tc.bin, b, profile);
+    let logs_dir = workspace_root().join("target").join("qemu-logs");
+    std::fs::create_dir_all(&logs_dir).expect("create qemu-logs dir");
+
+    let run_once = |smp: u32| -> String {
+        let log_file = logs_dir.join(format!("{}-smp{smp}.log", b.name));
+        let mut args = base_qemu_args(b, &el, tc.icount, tc.log_int, &log_file);
+        args.push("-smp".into());
+        args.push(smp.to_string());
+        let result = run_qemu(b.qemu_binary, &args, tc.timeout, &log_file);
+        assert!(!result.timed_out, "smp{smp} run of `{}` timed out", tc.name);
+        normalize_ab_runs(&result.stdout)
+    };
+
+    eprintln!("[xtask] running {}/smp: -smp 1 vs -smp 4", b.name);
+    let smp1 = run_once(1);
+    let smp4 = run_once(4);
+    assert_eq!(
+        smp1, smp4,
+        "`-smp 4` produced different structural output than `-smp 1` for `{}` — a hart \
+         other than 0 may not be parking correctly:\n--- smp1 ---\n{smp1}\n--- smp4 ---\n{smp4}",
+        tc.name
+    );
+    eprintln!("[xtask] PASS {}/smp", b.name);
+}
+
+/// Collapse any run of `A`/`B` characters to a single `#` placeholder, so
+/// two demo runs can be compared for structural equality while ignoring
+/// the expected (and desired — it's the proof of real preemption)
+/// run-to-run jitter in the exact interleaving pattern.
+fn normalize_ab_runs(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut in_run = false;
+    for c in s.chars() {
+        if c == 'A' || c == 'B' {
+            if !in_run {
+                out.push('#');
+                in_run = true;
+            }
+        } else {
+            in_run = false;
+            out.push(c);
+        }
+    }
+    out
 }
 
 /// Run the GDB-scripted context-switch verification (plan.md §1.8):
 /// start QEMU halted with the gdb stub on :1234, run the gdb script against
 /// it, then kill QEMU. Requires `gdb-multiarch` (or `$RIVET_GDB`).
-fn run_gdb_test(target: Target, profile: &str) {
-    let pkg = match target {
-        Target::Riscv => "qemu-riscv",
-        Target::Cm3 => "qemu-cm3",
+fn run_gdb_test(b: &BoardSpec, profile: &str) {
+    let pkg = match b.name {
+        "riscv" => "qemu-riscv",
+        "cm3" => "qemu-cm3",
+        other => {
+            eprintln!("[xtask] no gdb suite defined for board `{other}`");
+            return;
+        }
     };
-    let el = build_example(pkg, pkg, target, profile);
+    let el = build_example(pkg, pkg, b, profile);
     let gdb = env::var("RIVET_GDB").unwrap_or_else(|_| "gdb-multiarch".into());
 
-    let mut args: Vec<String> = vec![];
-    args.extend(match target {
-        Target::Riscv => vec![
-            "-machine".into(),
-            "virt".into(),
-            "-cpu".into(),
-            "rv32".into(),
-            "-bios".into(),
-            "none".into(),
-        ],
-        Target::Cm3 => vec!["-machine".into(), "lm3s6965evb".into()],
-    });
+    let mut args: Vec<String> = b.machine_args.iter().map(|s| s.to_string()).collect();
     args.push("-kernel".into());
     args.push(el.to_str().unwrap().into());
     args.push("-nographic".into());
@@ -831,9 +820,9 @@ fn run_gdb_test(target: Target, profile: &str) {
 
     eprintln!(
         "[xtask] starting QEMU with gdbstub for {}/ctx_switch",
-        target_name(target)
+        b.name
     );
-    let mut qemu = Command::new(target.qemu_bin())
+    let mut qemu = Command::new(b.qemu_binary)
         .args(&args)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -857,25 +846,21 @@ fn run_gdb_test(target: Target, profile: &str) {
     assert!(
         status.success(),
         "{}/ctx_switch: GDB verification FAILED (exit {})",
-        target_name(target),
+        b.name,
         status.code().unwrap_or(-1)
     );
-    eprintln!("[xtask] PASS {}/gdb: ctx_switch", target_name(target));
-}
-
-fn target_name(t: Target) -> &'static str {
-    match t {
-        Target::Riscv => "riscv",
-        Target::Cm3 => "cm3",
-    }
+    eprintln!("[xtask] PASS {}/gdb: ctx_switch", b.name);
 }
 
 // ── CLI ────────────────────────────────────────────────────────────
 
 fn usage() -> ! {
     eprintln!(
-        "usage: cargo xtask <test|soak|list> --target <riscv|cm3> [--suite <smoke|stress|gdb>] \
-         [--profile <release|release-checked>] [--icount N]"
+        "usage: cargo xtask <test|soak|list|boards|capture> --target <board> \
+         [--suite <smoke|stress|gdb>] [--profile <release|release-checked>] \
+         [--icount N] [--only NAME]\n\
+         boards: {}",
+        BOARDS.iter().map(|b| b.name).collect::<Vec<_>>().join(", ")
     );
     std::process::exit(2);
 }
@@ -886,7 +871,15 @@ fn main() {
         usage();
     }
     let cmd = args[0].as_str();
-    let mut target: Option<Target> = None;
+
+    if cmd == "boards" {
+        for b in BOARDS {
+            println!("{}", b.name);
+        }
+        return;
+    }
+
+    let mut target: Option<&'static BoardSpec> = None;
     let mut suite = "smoke".to_string();
     let mut profile = "release".to_string();
     let mut icount: Option<u32> = None;
@@ -898,10 +891,7 @@ fn main() {
         match args[i].as_str() {
             "--target" => {
                 i += 1;
-                target = Some(Target::from_str(&args[i]).unwrap_or_else(|e| {
-                    eprintln!("{e}");
-                    std::process::exit(2);
-                }));
+                target = Some(board(&args[i]));
             }
             "--suite" => {
                 i += 1;
@@ -931,37 +921,41 @@ fn main() {
         i += 1;
     }
 
-    let target = target.unwrap_or_else(|| {
-        eprintln!("--target <riscv|cm3> is required");
+    let b = target.unwrap_or_else(|| {
+        eprintln!("--target <board> is required (see `cargo xtask boards`)");
         usage();
     });
 
     match cmd {
         "list" => {
-            for tc in smoke_tests(target) {
+            for tc in smoke_tests(b.name) {
                 println!("{}", tc.name);
             }
         }
         "capture" => {
             let out_dir = workspace_root().join("tests").join("golden");
-            for tc in smoke_tests(target) {
-                capture_test_case(target, &tc, &profile, &out_dir);
+            for tc in smoke_tests(b.name) {
+                capture_test_case(b, &tc, &profile, &out_dir);
             }
         }
         "test" => {
             if suite == "gdb" {
-                run_gdb_test(target, &profile);
-                eprintln!("[xtask] {}/gdb: 1 test(s) passed", target_name(target));
+                run_gdb_test(b, &profile);
+                eprintln!("[xtask] {}/gdb: 1 test(s) passed", b.name);
+                return;
+            }
+            if suite == "smp" {
+                run_smp_check(b, &profile);
                 return;
             }
 
             let mut cases: Vec<TestCase> = match suite.as_str() {
-                "smoke" => smoke_tests(target),
+                "smoke" => smoke_tests(b.name),
                 // stress suite is populated by Phase 4's stress binaries.
                 other => {
                     eprintln!(
                         "[xtask] suite `{other}` has no tests defined for {} yet",
-                        target_name(target)
+                        b.name
                     );
                     Vec::new()
                 }
@@ -973,14 +967,17 @@ fn main() {
                 if let Some(shift) = icount {
                     tc.icount = Some(shift);
                 }
-                run_test_case(target, &tc, &profile);
+                run_test_case(b, &tc, &profile);
             }
             eprintln!(
                 "[xtask] {}/{}: {} test(s) passed",
-                target_name(target),
+                b.name,
                 suite,
                 cases.len()
             );
+            if suite == "smoke" && only.is_none() {
+                run_smp_check(b, &profile);
+            }
         }
         "soak" => {
             let hours = sim_hours.unwrap_or_else(|| {
@@ -988,9 +985,8 @@ fn main() {
                 usage();
             });
             eprintln!(
-                "[xtask] soak for {} not implemented until Phase 8 (requested {}h sim)",
-                target_name(target),
-                hours
+                "[xtask] soak for {} not implemented until Phase 9 (requested {}h sim)",
+                b.name, hours
             );
         }
         _ => usage(),

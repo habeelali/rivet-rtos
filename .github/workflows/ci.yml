@@ -69,6 +69,11 @@ jobs:
   qemu:
     runs-on: ubuntu-latest
     strategy:
+      # xtask's board registry (`cargo xtask boards`) is the source of
+      # truth for which boards exist; this matrix just has to list the
+      # ones CI should exercise. Adding a board (plan.md Phase 7) is one
+      # more string here plus its registry entry in xtask/src/main.rs —
+      # nothing else in this workflow changes.
       matrix:
         target: [riscv, cm3]
     steps:
