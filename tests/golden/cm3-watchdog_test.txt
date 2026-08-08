@@ -1,0 +1,85 @@
+# exit_code=None timed_out=true
+Rivet CM3 watchdog_test: feeding then going silent
+HARD_FAULT
+Rivet CM3 watchdog_test: feeding then going silent
+HARD_FAULT
+Rivet CM3 watchdog_test: feeding then going silent
+HARD_FAULT
+Rivet CM3 watchdog_test: feeding then going silent
+HARD_FAULT
+Rivet CM3 watchdog_test: feeding then going silent
+HARD_FAULT
+Rivet CM3 watchdog_test: feeding then going silent
+HARD_FAULT
+Rivet CM3 watchdog_test: feeding then going silent
+HARD_FAULT
+Rivet CM3 watchdog_test: feeding then going silent
+HARD_FAULT
+Rivet CM3 watchdog_test: feeding then going silent
+HARD_FAULT
+Rivet CM3 watchdog_test: feeding then going silent
+HARD_FAULT
+Rivet CM3 watchdog_test: feeding then going silent
+HARD_FAULT
+Rivet CM3 watchdog_test: feeding then going silent
+HARD_FAULT
+Rivet CM3 watchdog_test: feeding then going silent
+HARD_FAULT
+Rivet CM3 watchdog_test: feeding then going silent
+HARD_FAULT
+Rivet CM3 watchdog_test: feeding then going silent
+HARD_FAULT
+Rivet CM3 watchdog_test: feeding then going silent
+HARD_FAULT
+Rivet CM3 watchdog_test: feeding then going silent
+HARD_FAULT
+Rivet CM3 watchdog_test: feeding then going silent
+HARD_FAULT
+Rivet CM3 watchdog_test: feeding then going silent
+HARD_FAULT
+Rivet CM3 watchdog_test: feeding then going silent
+HARD_FAULT
+Rivet CM3 watchdog_test: feeding then going silent
+HARD_FAULT
+Rivet CM3 watchdog_test: feeding then going silent
+HARD_FAULT
+Rivet CM3 watchdog_test: feeding then going silent
+HARD_FAULT
+Rivet CM3 watchdog_test: feeding then going silent
+HARD_FAULT
+Rivet CM3 watchdog_test: feeding then going silent
+HARD_FAULT
+Rivet CM3 watchdog_test: feeding then going silent
+HARD_FAULT
+Rivet CM3 watchdog_test: feeding then going silent
+HARD_FAULT
+Rivet CM3 watchdog_test: feeding then going silent
+HARD_FAULT
+Rivet CM3 watchdog_test: feeding then going silent
+HARD_FAULT
+Rivet CM3 watchdog_test: feeding then going silent
+HARD_FAULT
+Rivet CM3 watchdog_test: feeding then going silent
+HARD_FAULT
+Rivet CM3 watchdog_test: feeding then going silent
+HARD_FAULT
+Rivet CM3 watchdog_test: feeding then going silent
+HARD_FAULT
+Rivet CM3 watchdog_test: feeding then going silent
+HARD_FAULT
+Rivet CM3 watchdog_test: feeding then going silent
+HARD_FAULT
+Rivet CM3 watchdog_test: feeding then going silent
+HARD_FAULT
+Rivet CM3 watchdog_test: feeding then going silent
+HARD_FAULT
+Rivet CM3 watchdog_test: feeding then going silent
+HARD_FAULT
+Rivet CM3 watchdog_test: feeding then going silent
+HARD_FAULT
+Rivet CM3 watchdog_test: feeding then going silent
+HARD_FAULT
+Rivet CM3 watchdog_test: feeding then going silent
+HARD_FAULT
+Rivet CM3 watchdog_test: feeding then going silent
+HARD_FAULT

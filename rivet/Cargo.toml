@@ -1,0 +1,37 @@
+[package]
+name = "rivet"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Rivet RTOS: zero-allocation async RTOS for ARM Cortex-M and RISC-V"
+
+[features]
+default = []
+arch-riscv = ["riscv"]
+arch-cortex-m = ["cortex-m"]
+# Host-test support: serialized, reset-able kernel globals so `cargo test`
+# is deterministic under parallel threads. Never enable this for embedded
+# builds — it pulls in `std` (test harness only).
+test-support = []
+# Permutation testing of the lock-free core (plan.md §1.3). Only ever
+# enabled together with RUSTFLAGS='--cfg loom' for the loom test target.
+loom = ["dep:loom"]
+
+[dependencies]
+rivet-macros = { path = "../rivet-macros" }
+riscv = { version = "0.12", optional = true }
+cortex-m = { version = "0.7", optional = true }
+loom = { version = "0.7", optional = true }
+
+[dev-dependencies]
+# Enable the test-support feature when building any test target of this
+# crate (unit tests and tests/integration.rs alike).
+rivet = { path = ".", features = ["test-support"] }
+# Property-based testing of the scheduler/timer pure logic (Phase 1.4).
+proptest = "1"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(loom)"] }
+
+[lib]

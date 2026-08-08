@@ -1,0 +1,7 @@
+# exit_code=Some(0) timed_out=false
+Rivet fault_isolate: faulting task will be isolated
+
+RIVET FAULT: store-access addr=0x8000c1c0 pc=0x80002f40 task=1
+HOOK_SAW_TASK=1
+POISONED_OK
+ISOLATION_OK

@@ -1,0 +1,111 @@
+name: ci
+
+on: [push, pull_request]
+
+jobs:
+  host:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: fmt
+        run: cargo fmt --all --check
+      # The embedded examples are no_std/no_main crates that cannot build
+      # for the host; they are linted under their own targets in the qemu job.
+      - name: clippy (host crates)
+        run: cargo clippy --workspace --exclude qemu-cm3 --exclude qemu-riscv --all-targets -- -D warnings
+      - name: test (debug)
+        run: cargo test -p rivet
+      - name: test (release) # catch opt-level-dependent UB
+        run: cargo test -p rivet --release
+      - name: test (release-checked)
+        run: cargo test -p rivet --profile release-checked
+
+  miri:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: miri
+      - uses: Swatinem/rust-cache@v2
+      # lib + integration tests under the interpreter; proptest is excluded
+      # (its case volume is impractical under miri's ~1000x slowdown).
+      - name: miri (lib)
+        run: cargo +nightly miri test -p rivet --lib
+      - name: miri (integration)
+        run: cargo +nightly miri test -p rivet --test integration
+
+  loom:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: loom models
+        run: RUSTFLAGS='--cfg loom' cargo test -p rivet --features loom --test loom --release
+
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+      - name: install cargo-fuzz
+        run: cargo +nightly install cargo-fuzz --locked
+      - name: fuzz sched
+        run: cargo +nightly fuzz run fuzz_sched -- -max_total_time=60
+      - name: fuzz waker bitmap
+        run: cargo +nightly fuzz run fuzz_waker_bitmap -- -max_total_time=60
+      - name: fuzz channel ring
+        run: cargo +nightly fuzz run fuzz_channel_ring -- -max_total_time=60
+
+  qemu:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target: [riscv, cm3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: apt deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-misc qemu-system-arm gdb-multiarch
+      - uses: Swatinem/rust-cache@v2
+      - name: rust targets
+        run: |
+          rustup target add riscv32imac-unknown-none-elf thumbv7m-none-eabi
+      - name: clippy (embedded target)
+        run: |
+          if [ "${{ matrix.target }}" = riscv ]; then
+            cargo clippy -p qemu-riscv --target riscv32imac-unknown-none-elf --release -- -D warnings
+          else
+            cargo clippy -p qemu-cm3 --target thumbv7m-none-eabi --release -- -D warnings
+          fi
+      - name: smoke (release)
+        run: cargo run -p xtask -- test --target ${{ matrix.target }} --suite smoke
+      - name: smoke (release-checked)
+        run: cargo run -p xtask -- test --target ${{ matrix.target }} --suite smoke --profile release-checked
+      - name: stress
+        run: cargo run -p xtask -- test --target ${{ matrix.target }} --suite stress
+      - name: gdb context-switch verification
+        run: cargo run -p xtask -- test --target ${{ matrix.target }} --suite gdb
+
+  soak:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target: [riscv, cm3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: sudo apt-get update && sudo apt-get install -y qemu-system-misc qemu-system-arm
+      - uses: Swatinem/rust-cache@v2
+      - run: rustup target add riscv32imac-unknown-none-elf thumbv7m-none-eabi
+      - name: 4-hour soak
+        run: cargo run -p xtask -- soak --target ${{ matrix.target }} --sim-hours 4

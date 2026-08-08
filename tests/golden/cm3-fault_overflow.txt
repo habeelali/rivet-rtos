@@ -1,0 +1,4 @@
+# exit_code=None timed_out=true
+Rivet CM3 fault_overflow
+about to overflow a stack
+HARD_FAULT

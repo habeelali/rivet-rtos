@@ -1,3 +1,5 @@
-# Linker script is chosen in build.rs by feature: default = QEMU, esp32c3 = ESP32-C3.
-[target.riscv32imc-unknown-none-elf]
-# rustflags set by build.rs: -T link-qemu.ld or -T link-esp32c3.ld
+[target.thumbv7m-none-eabi]
+rustflags = ["-C", "link-arg=-Tlink-cm3.ld"]
+
+[target.riscv32imac-unknown-none-elf]
+rustflags = ["-C", "link-arg=-Tlink-qemu.ld"]

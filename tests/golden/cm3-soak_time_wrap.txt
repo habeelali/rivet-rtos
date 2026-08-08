@@ -1,0 +1,3 @@
+# exit_code=Some(0) timed_out=false
+Rivet CM3 soak_time_wrap: crossing 2^32 µs
+AFTER_WRAP now=4295057000 fires=1

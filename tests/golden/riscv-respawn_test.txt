@@ -1,0 +1,11 @@
+# exit_code=Some(0) timed_out=false
+Rivet respawn_test
+JOIN1_OK
+DESPAWN_OK
+STALE_CHECK_OK
+STALE_JOIN_OK
+JOIN2_OK
+PAUSE_OK
+PAUSED_STILL
+RESUME_OK
+RESPAWN_TEST_OK

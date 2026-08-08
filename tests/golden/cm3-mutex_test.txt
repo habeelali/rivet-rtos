@@ -1,0 +1,11 @@
+# exit_code=Some(0) timed_out=false
+Rivet mutex_test (B1/B11/lock_timeout)
+TIMEOUT_OK elapsed_us=50000
+TRYLOCK_OK
+HOLDS_AB
+EFF_WHILE_HOLDING=8
+EFF_AFTER_UNLOCK_B=8
+WA_GOT_A
+WB_GOT_B
+EFF_AFTER_UNLOCK_A=2
+MUTEX_OK

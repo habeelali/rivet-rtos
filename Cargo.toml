@@ -1,29 +1,31 @@
-[package]
-name = "rivet-rtos"
+[workspace]
+members = ["rivet", "rivet-macros", "examples/qemu-cm3", "examples/qemu-riscv", "xtask"]
+resolver = "2"
+# cargo-fuzz crate: pinned deps + its own lockfile; built only via
+# `cargo +nightly fuzz run`, never as part of workspace builds.
+exclude = ["fuzz"]
+
+[workspace.package]
 version = "0.1.0"
 edition = "2021"
-description = "A small, preemptive RTOS for RISC-V written in Rust. ESP32-C3 target."
 license = "MIT"
 repository = "https://github.com/habeelali/rivet-rtos"
 readme = "README.md"
-
-[features]
-default = []
-esp32c3 = []
-
-[lib]
-
-[build-dependencies]
-
-[dependencies]
-
-[target.'cfg(target_arch = "riscv32")'.dependencies]
-riscv = "0.12"
-
-[dev-dependencies]
 
 [profile.release]
 lto = true
 opt-level = "z"
 codegen-units = 1
 debug = true
+panic = "abort"
+
+[profile.dev]
+panic = "abort"
+
+# Run the QEMU suite under both `release` and `release-checked` — kernel
+# time arithmetic ([B4]/[B5]/[B6]) is exactly where silent wrapping hides,
+# so the checked build is part of CI (plan.md §1.9).
+[profile.release-checked]
+inherits = "release"
+overflow-checks = true
+debug-assertions = true

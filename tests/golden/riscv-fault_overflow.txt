@@ -1,0 +1,6 @@
+# exit_code=Some(250) timed_out=false
+Rivet fault_overflow: about to overflow a stack
+
+RIVET FAULT: store-access addr=0x8000c1c0 pc=0x80002480 task=1
+  task 0 stack 128/4096
+  task 1 stack 128/512

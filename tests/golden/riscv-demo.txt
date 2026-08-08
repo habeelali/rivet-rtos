@@ -1,0 +1,12 @@
+# exit_code=Some(0) timed_out=false
+Rivet RTOS v0.1.0 RISC-V (preemptive + async demo)
+Phase 0: priority inheritance (avoiding priority inversion):
+Phase 1: two same-priority preemptive tasks (A, B), no yielding:
+[pi_low: acquiring mutex]
+[pi_low: holds mutex, spawning medium+high]
+[pi_high: trying to acquire mutex]
+[pi_low: critical section done, releasing]
+[pi_high: got mutex — priority inheritance worked]
+BAAABABABBABBAABABBABAAB+-+-+-.[a=2400000,b=2400000]+-+-
+consumer: sum=15
+SUCCESS

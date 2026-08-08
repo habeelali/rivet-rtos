@@ -1,0 +1,13 @@
+[package]
+name = "qemu-riscv"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[[bin]]
+name = "qemu-riscv"
+test = false
+
+[dependencies]
+rivet = { path = "../../rivet", features = ["arch-riscv"] }
+riscv = "0.12"

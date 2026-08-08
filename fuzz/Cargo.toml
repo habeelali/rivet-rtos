@@ -1,0 +1,33 @@
+[package]
+name = "rivet-fuzz"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+rivet = { path = "../rivet", features = ["test-support"] }
+
+[[bin]]
+name = "fuzz_sched"
+path = "fuzz_targets/fuzz_sched.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_waker_bitmap"
+path = "fuzz_targets/fuzz_waker_bitmap.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_channel_ring"
+path = "fuzz_targets/fuzz_channel_ring.rs"
+test = false
+doc = false
+bench = false

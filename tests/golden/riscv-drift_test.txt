@@ -1,0 +1,4 @@
+# exit_code=Some(0) timed_out=false
+Rivet RISC-V drift_test: 10 x 100ms sleeps
+
+DRIFT elapsed_us=1015044 expected_us=1000000 DRIFT_OK

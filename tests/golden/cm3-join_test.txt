@@ -1,0 +1,4 @@
+# exit_code=Some(0) timed_out=false
+Rivet join_test
+JOIN_OK v=42
+JOIN_TEST_OK

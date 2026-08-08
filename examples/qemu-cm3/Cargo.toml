@@ -1,0 +1,13 @@
+[package]
+name = "qemu-cm3"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[[bin]]
+name = "qemu-cm3"
+test = false
+
+[dependencies]
+rivet = { path = "../../rivet", features = ["arch-cortex-m"] }
+cortex-m = "0.7"

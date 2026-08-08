@@ -1,0 +1,12 @@
+[package]
+name = "xtask"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Rivet QEMU test harness: build, run with timeout, assert exit code + ordered golden output + clean qemu.log"
+
+[dependencies]
+regex = "1"
+
+[[bin]]
+name = "xtask"

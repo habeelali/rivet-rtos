@@ -1,0 +1,4 @@
+# exit_code=Some(0) timed_out=false
+Rivet stress_spawn (B2 publish ordering)
+SPAWNER_FULL_OK
+SPAWN_STRESS_OK

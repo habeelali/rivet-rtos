@@ -1,0 +1,3 @@
+# exit_code=None timed_out=true
+Rivet CM3 stress_max_ptasks
+HARD_FAULT

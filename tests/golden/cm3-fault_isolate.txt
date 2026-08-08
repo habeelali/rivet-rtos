@@ -1,0 +1,4 @@
+# exit_code=None timed_out=true
+Rivet CM3 fault_isolate
+faulting task will be isolated
+HARD_FAULT

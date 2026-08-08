@@ -1,0 +1,3 @@
+# exit_code=Some(0) timed_out=false
+Rivet stress_max_ptasks
+STRESS_MAX_OK ran=14

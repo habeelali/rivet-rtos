@@ -12,3 +12,10 @@ Cargo.lock
 # OS
 .DS_Store
 Thumbs.db
+
+# QEMU instruction traces (can reach 100s of MB) and tool state
+*.trace
+qemu.log
+/archive/
+/.reasonix/
+fuzz/target/
