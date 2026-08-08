@@ -67,8 +67,13 @@ pub mod console;
 pub mod critical;
 pub mod executor;
 pub mod fault;
+pub mod log;
 pub mod port;
 pub mod preempt;
+pub mod report;
+/// Dump kernel state to the console. See the [`report`] module docs for
+/// exactly what's included and what's deliberately left out.
+pub use report::report;
 pub mod sync;
 pub mod task;
 pub mod time;
@@ -155,6 +160,7 @@ pub fn init() {
     port::arch::init();
     port::board::init();
     port::board::tick_start(config::TICK_HZ);
+    log::init();
     // Safety: EXECUTOR is only accessed here at boot, before run().
     unsafe {
         core::ptr::addr_of_mut!(executor::EXECUTOR)

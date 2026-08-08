@@ -231,9 +231,8 @@ pub(crate) fn reset_for_test() {
     });
 }
 
-/// Test-only: count of timer slots currently in use. Part of the global
-/// reset/inspection helpers behind `feature = "test-support"` (host tests).
-#[cfg(feature = "test-support")]
+/// Count of timer slots currently in use. Used by host-test reset/
+/// inspection helpers and by [`crate::report`].
 pub fn slots_in_use() -> usize {
     crate::critical::enter(|| {
         TIMER_SLOTS

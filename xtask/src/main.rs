@@ -337,6 +337,26 @@ fn smoke_tests(board_name: &str) -> Vec<TestCase> {
                 allow_traps: false,
                 assert_golden_on_timeout: false,
             },
+            // plan.md Phase 8: rivet::log!/rivet::report() end-to-end —
+            // two concurrent producers through the critical-section-
+            // guarded multi-producer path, a hand-written drain loop, and
+            // a full kernel state dump.
+            TestCase {
+                name: "report_test",
+                pkg: "qemu-riscv",
+                bin: "report_test",
+                golden: &[
+                    r"DRAINED 10",
+                    r"=== rivet::report\(\) ===",
+                    r"REPORT_TEST_OK",
+                ],
+                exit_code: 0,
+                timeout: Duration::from_secs(30),
+                icount: None,
+                log_int: false,
+                allow_traps: false,
+                assert_golden_on_timeout: false,
+            },
         ],
         "cm3" => vec![
             TestCase {
@@ -479,6 +499,24 @@ fn smoke_tests(board_name: &str) -> Vec<TestCase> {
                 allow_traps: false,
                 assert_golden_on_timeout: false,
             },
+            // plan.md Phase 8: rivet::log!/rivet::report() end-to-end (see
+            // riscv's report_test for the full rationale).
+            TestCase {
+                name: "report_test",
+                pkg: "qemu-cm3",
+                bin: "report_test",
+                golden: &[
+                    r"DRAINED 10",
+                    r"=== rivet::report\(\) ===",
+                    r"REPORT_TEST_OK",
+                ],
+                exit_code: 0,
+                timeout: Duration::from_secs(30),
+                icount: None,
+                log_int: false,
+                allow_traps: false,
+                assert_golden_on_timeout: false,
+            },
         ],
         // Third board (plan.md Phase 7): the same Cortex-M3 test bodies as
         // `cm3` (bin sources are shared verbatim, just re-linked against
@@ -577,6 +615,24 @@ fn smoke_tests(board_name: &str) -> Vec<TestCase> {
                 golden: &[r"STRESS_MAX_OK ran=14"],
                 exit_code: 0,
                 timeout: Duration::from_secs(40),
+                icount: None,
+                log_int: false,
+                allow_traps: false,
+                assert_golden_on_timeout: false,
+            },
+            // plan.md Phase 8: rivet::log!/rivet::report() end-to-end (see
+            // riscv's report_test for the full rationale).
+            TestCase {
+                name: "report_test",
+                pkg: "mps2-an385",
+                bin: "report_test",
+                golden: &[
+                    r"DRAINED 10",
+                    r"=== rivet::report\(\) ===",
+                    r"REPORT_TEST_OK",
+                ],
+                exit_code: 0,
+                timeout: Duration::from_secs(30),
                 icount: None,
                 log_int: false,
                 allow_traps: false,
