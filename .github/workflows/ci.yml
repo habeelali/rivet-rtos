@@ -51,6 +51,27 @@ jobs:
       - name: loom models
         run: RUSTFLAGS='--cfg loom' cargo test -p rivet --features loom --test loom --release
 
+  coverage:
+    # Informational only (plan.md Phase 9): host-test line coverage is
+    # ~47% as of this job's introduction, well under old-plan §8.3's
+    # aspirational 80% floor on sched/waker/timer/sync/preempt — and much
+    # of the gap is code that's exercised by the *QEMU* suite (fault
+    # handling, task lifecycle join/despawn, log/report, watchdog, Sleep),
+    # not the host suite llvm-cov measures here. Reports the number every
+    # run rather than gating on it, so regressions are visible without
+    # blocking merges on a floor nobody's deliberately hit yet.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+      - name: install cargo-llvm-cov
+        run: cargo install cargo-llvm-cov --locked
+      - name: coverage (host suite)
+        run: cargo llvm-cov -p rivet --tests --summary-only
+
   fuzz:
     runs-on: ubuntu-latest
     steps:

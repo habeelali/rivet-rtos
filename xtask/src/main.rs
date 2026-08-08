@@ -337,6 +337,30 @@ fn smoke_tests(board_name: &str) -> Vec<TestCase> {
                 allow_traps: false,
                 assert_golden_on_timeout: false,
             },
+            // plan.md Phase 9: soak-test infrastructure proof (see
+            // examples/qemu-riscv/src/bin/soak_smoke.rs for scope notes —
+            // a bounded slice of what a real multi-hour soak exercises,
+            // checking pool-occupancy invariants rather than "survives
+            // 4 hours").
+            TestCase {
+                name: "soak_smoke",
+                pkg: "qemu-riscv",
+                bin: "soak_smoke",
+                golden: &[
+                    r"SPAWN_CYCLE_OK",
+                    r"CHANNEL_TRAFFIC_OK",
+                    r"NO_PTASK_LEAK",
+                    r"NO_TIMER_LEAK",
+                    r"=== rivet::report\(\) ===",
+                    r"SOAK_SMOKE_OK",
+                ],
+                exit_code: 0,
+                timeout: Duration::from_secs(60),
+                icount: Some(0),
+                log_int: false,
+                allow_traps: false,
+                assert_golden_on_timeout: false,
+            },
             // plan.md Phase 8: rivet::log!/rivet::report() end-to-end —
             // two concurrent producers through the critical-section-
             // guarded multi-producer path, a hand-written drain loop, and
@@ -1166,10 +1190,26 @@ fn main() {
                 eprintln!("--sim-hours N is required for soak");
                 usage();
             });
+            // Plan.md Phase 9: `soak_smoke` runs a fixed, bounded
+            // iteration count (see its own doc comment) regardless of
+            // `--sim-hours` — this proves the invariant-checking
+            // infrastructure (pool occupancy returns to baseline after
+            // spawn/join/despawn cycling, channel traffic, timer usage)
+            // rather than actually running for `hours` of simulated time.
+            // Scaling `ITERATIONS` in the soak binary and this timeout
+            // together is how this becomes the real multi-hour nightly
+            // run old-plan §8.1 describes.
             eprintln!(
-                "[xtask] soak for {} not implemented until Phase 9 (requested {}h sim)",
-                b.name, hours
+                "[xtask] soak for {}: running the bounded soak_smoke proof \
+                 (requested {hours}h sim; scaling to real multi-hour runs is a documented \
+                 follow-up, not implemented in this pass — see plan.md Phase 9)",
+                b.name
             );
+            let cases = smoke_tests(b.name);
+            match cases.iter().find(|c| c.name == "soak_smoke") {
+                Some(tc) => run_test_case(b, tc, &profile),
+                None => eprintln!("[xtask] no soak_smoke case defined for board `{}`", b.name),
+            }
         }
         _ => usage(),
     }
