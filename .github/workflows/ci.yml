@@ -51,15 +51,37 @@ jobs:
       - name: loom models
         run: RUSTFLAGS='--cfg loom' cargo test -p rivet --features loom --test loom --release
 
+  kani:
+    # plan.md Phase 17: bounded model-checked proof (not just tested
+    # against example sequences) that preempt::sched's core invariant —
+    # a priority's READY_BITMAP bit is set iff its QUEUES word is
+    # non-empty — holds after ready_add/ready_remove, for every possible
+    # task id/priority in range, including the two-task interleaving
+    # that a handful of example-based #[test]s can't exhaustively cover.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: install cargo-kani
+        run: cargo install kani-verifier --locked
+      - name: kani setup
+        run: cargo kani setup
+      - name: kani proofs (preempt::sched invariant)
+        run: cargo kani -p rivet --features test-support
+
   coverage:
-    # Informational only (plan.md Phase 9): host-test line coverage is
-    # ~47% as of this job's introduction, well under old-plan §8.3's
-    # aspirational 80% floor on sched/waker/timer/sync/preempt — and much
-    # of the gap is code that's exercised by the *QEMU* suite (fault
-    # handling, task lifecycle join/despawn, log/report, watchdog, Sleep),
-    # not the host suite llvm-cov measures here. Reports the number every
-    # run rather than gating on it, so regressions are visible without
-    # blocking merges on a floor nobody's deliberately hit yet.
+    # Crate-wide is informational only (plan.md Phase 9): host-test line
+    # coverage is ~49% as of this job's introduction, well under old-plan
+    # §8.3's aspirational 80% floor on sched/waker/timer/sync/preempt —
+    # and much of the gap is code the *QEMU* suite exercises instead
+    # (fault handling, task lifecycle join/despawn, log/report, watchdog,
+    # Sleep), which llvm-cov can't see here. Phase 17 adds a real gate,
+    # scoped to only the modules the host suite can actually reach in
+    # full: sched/waker/mutex/channel/timer were already 71-93% at Phase
+    # 9's baseline, so a 70% floor on exactly those five is enforceable
+    # without demanding coverage of code structurally outside this job's
+    # reach.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -69,8 +91,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: install cargo-llvm-cov
         run: cargo install cargo-llvm-cov --locked
-      - name: coverage (host suite)
+      - name: coverage (host suite, informational summary)
         run: cargo llvm-cov -p rivet --tests --summary-only
+      - name: coverage floor (sched/waker/mutex/channel/timer, gating)
+        run: |
+          cargo llvm-cov -p rivet --tests --json --output-path cov.json
+          python3 scripts/check-coverage-floor.py cov.json
 
   fuzz:
     runs-on: ubuntu-latest
@@ -158,5 +184,9 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y qemu-system-misc qemu-system-arm
       - uses: Swatinem/rust-cache@v2
       - run: rustup target add riscv32imac-unknown-none-elf thumbv7m-none-eabi
-      - name: 4-hour soak
+      # plan.md Phase 17: --sim-hours 4 scales to a real 8200-iteration
+      # spawn/join/despawn/channel/mutex soak (not a literal 4-hour
+      # runtime — see `soak_smoke.rs`'s doc comment), completing in
+      # minutes, not hours.
+      - name: scaled soak (4h-equivalent iteration count)
         run: cargo run -p xtask -- soak --target ${{ matrix.target }} --sim-hours 4

@@ -360,3 +360,94 @@ mod tests {
         }
     }
 }
+
+/// Kani proof harnesses (plan.md Phase 17): the core scheduler invariant
+/// that `schedule()`'s O(1) selection depends on — "priority `p`'s bit in
+/// `READY_BITMAP` is set if and only if `QUEUES[p]` is non-empty" — proven
+/// for the two operations that mutate it, not just tested against a
+/// handful of example sequences (the `#[test]`s above). `MAX_PTASKS` is
+/// fixed at compile time via `RIVET_*` env vars (default 16); these
+/// harnesses run against whatever the default build configures, which is
+/// enough to exercise every code path in `ready_add`/`ready_remove` (the
+/// "word becomes empty, clear the bitmap bit" branch included) regardless
+/// of the exact width.
+#[cfg(kani)]
+mod kani_proofs {
+    use super::*;
+
+    /// `ready_add`/`ready_remove` never observe a bit set in
+    /// `READY_BITMAP` whose `QUEUES` word is actually empty, or vice
+    /// versa — checked after every mutation, not just at the end, so a
+    /// harness that fails pins down exactly which operation broke it.
+    fn assert_bitmap_matches_queues() {
+        let bitmap = READY_BITMAP.load(Ordering::Acquire);
+        for prio in 0..32usize {
+            let word = QUEUES[prio].load(Ordering::Acquire);
+            let bit_set = (bitmap & (1u32 << prio)) != 0;
+            assert_eq!(
+                bit_set,
+                word != 0,
+                "READY_BITMAP bit {prio} = {bit_set} but QUEUES[{prio}] = {word:#x}"
+            );
+        }
+    }
+
+    /// One `ready_add` then one `ready_remove` of the same task, at an
+    /// arbitrary (in-range) id and priority, preserves the invariant at
+    /// every step — including the empty-initial-state precondition,
+    /// which `reset_for_test` establishes deterministically so Kani
+    /// doesn't have to reason about whatever prior harness state might
+    /// otherwise leak in.
+    #[kani::proof]
+    fn ready_add_remove_preserves_invariant() {
+        reset_for_test();
+        assert_bitmap_matches_queues();
+
+        let id: usize = kani::any();
+        kani::assume(id < MAX_PTASKS);
+        let prio: u8 = kani::any();
+        kani::assume((prio as usize) < 32);
+        TASKS[id].effective_priority.store(prio, Ordering::Release);
+
+        ready_add(id);
+        assert_bitmap_matches_queues();
+
+        ready_remove(id);
+        assert_bitmap_matches_queues();
+    }
+
+    /// Two distinct tasks at arbitrary (possibly equal) priorities,
+    /// added and removed in an arbitrary order — the invariant must hold
+    /// after every single mutation, including the "two tasks share a
+    /// priority word, one leaves, the bitmap bit must survive" case that
+    /// a single-task harness can't reach.
+    #[kani::proof]
+    fn two_task_interleaving_preserves_invariant() {
+        reset_for_test();
+
+        let id_a: usize = kani::any();
+        let id_b: usize = kani::any();
+        kani::assume(id_a < MAX_PTASKS);
+        kani::assume(id_b < MAX_PTASKS);
+        kani::assume(id_a != id_b);
+        let prio_a: u8 = kani::any();
+        let prio_b: u8 = kani::any();
+        kani::assume((prio_a as usize) < 32);
+        kani::assume((prio_b as usize) < 32);
+        TASKS[id_a]
+            .effective_priority
+            .store(prio_a, Ordering::Release);
+        TASKS[id_b]
+            .effective_priority
+            .store(prio_b, Ordering::Release);
+
+        ready_add(id_a);
+        assert_bitmap_matches_queues();
+        ready_add(id_b);
+        assert_bitmap_matches_queues();
+        ready_remove(id_a);
+        assert_bitmap_matches_queues();
+        ready_remove(id_b);
+        assert_bitmap_matches_queues();
+    }
+}

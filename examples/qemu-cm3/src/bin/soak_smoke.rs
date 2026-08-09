@@ -25,7 +25,7 @@
 #![no_std]
 #![no_main]
 
-use rivet_bsp_qemu_virt as _;
+use rivet_bsp_lm3s6965 as _;
 use rivet_rt as _;
 
 use core::sync::atomic::{AtomicU32, Ordering};

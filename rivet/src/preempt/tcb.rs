@@ -339,6 +339,24 @@ pub fn register_full(
                 f(tcb.result_buf.get() as *mut u8);
                 tcb.result_drop.store(0, Ordering::Release);
             }
+            // Slot recycling must be self-sufficient: don't rely on the
+            // previous occupant's own exit/fault path having drained
+            // `joiner` back to `NO_TASK` (found via soak testing at
+            // scale, plan.md Phase 17 — a task that exits at a *higher*
+            // priority than a not-yet-registered joiner drains a
+            // `joiner` field that's still `NO_TASK`, then the joiner's
+            // own CAS lands on a slot with nobody left to ever clear it,
+            // and the *next* occupant of the recycled slot inherits a
+            // permanently-stuck `joiner`). Resetting every join/exit-
+            // lifecycle field here, inside the RESERVED window (`used`
+            // is still `false`, so nothing else can observe this slot
+            // yet), makes this the single authoritative reset point
+            // regardless of how the previous occupant left.
+            tcb.joiner.store(NO_TASK, Ordering::Release);
+            tcb.exited.store(false, Ordering::Release);
+            tcb.stop_requested.store(false, Ordering::Release);
+            tcb.result_size.store(0, Ordering::Release);
+            tcb.held_count.store(0, Ordering::Release);
             tcb.state.store(READY, Ordering::Release);
             tcb.used.store(true, Ordering::Release);
             tcb.generation.fetch_add(1, Ordering::Release);

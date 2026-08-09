@@ -585,6 +585,30 @@ fn smoke_tests(board_name: &str) -> Vec<TestCase> {
                 allow_traps: false,
                 assert_golden_on_timeout: false,
             },
+            // plan.md Phase 9/17: soak-test infrastructure proof (see
+            // riscv's soak_smoke for the full rationale) — cm3's own
+            // copy, so `cargo xtask soak --target cm3` (the nightly CI
+            // job's actual target) has a real case to scale up, not just
+            // riscv's.
+            TestCase {
+                name: "soak_smoke",
+                pkg: "qemu-cm3",
+                bin: "soak_smoke",
+                golden: &[
+                    r"SPAWN_CYCLE_OK",
+                    r"CHANNEL_TRAFFIC_OK",
+                    r"NO_PTASK_LEAK",
+                    r"NO_TIMER_LEAK",
+                    r"=== rivet::report\(\) ===",
+                    r"SOAK_SMOKE_OK",
+                ],
+                exit_code: 0,
+                timeout: Duration::from_secs(60),
+                icount: None,
+                log_int: false,
+                allow_traps: false,
+                assert_golden_on_timeout: false,
+            },
             // plan.md Phase 8: rivet::log!/rivet::report() end-to-end (see
             // riscv's report_test for the full rationale).
             TestCase {
@@ -911,6 +935,21 @@ fn assert_ordered_golden(stdout: &str, golden: &[&str], name: &str) {
 }
 
 fn build_example(pkg: &str, bin: &str, b: &BoardSpec, profile: &str) -> PathBuf {
+    build_example_with_env(pkg, bin, b, profile, &[])
+}
+
+/// Like [`build_example`], but with extra environment variables set for
+/// the `cargo build` invocation — used by `soak` (plan.md Phase 17) to
+/// pass `SOAK_ITERATIONS` so a real `--sim-hours N` run actually compiles
+/// a binary that runs `N`-hours-scaled iterations, not the CI smoke-scale
+/// default.
+fn build_example_with_env(
+    pkg: &str,
+    bin: &str,
+    b: &BoardSpec,
+    profile: &str,
+    extra_env: &[(&str, String)],
+) -> PathBuf {
     let mut cmd = Command::new(env::var("CARGO").unwrap_or_else(|_| "cargo".into()));
     cmd.args([
         "build",
@@ -925,6 +964,9 @@ fn build_example(pkg: &str, bin: &str, b: &BoardSpec, profile: &str) -> PathBuf 
         cmd.arg("--profile").arg(profile);
     } else {
         cmd.arg("--release");
+    }
+    for (k, v) in extra_env {
+        cmd.env(k, v);
     }
     let status = cmd
         .status()
@@ -1010,7 +1052,31 @@ fn capture_test_case(b: &BoardSpec, tc: &TestCase, profile: &str, out_dir: &Path
 }
 
 fn run_test_case(b: &BoardSpec, tc: &TestCase, profile: &str) {
-    let el = build_example(tc.pkg, tc.bin, b, profile);
+    run_test_case_impl(b, tc, profile, &[], tc.timeout);
+}
+
+/// Like [`run_test_case`], but builds with extra environment variables
+/// and a caller-supplied timeout instead of the `TestCase`'s own —
+/// `soak` (plan.md Phase 17) uses this to pass `SOAK_ITERATIONS` and a
+/// timeout scaled from `--sim-hours`.
+fn run_soak_case(b: &BoardSpec, tc: &TestCase, profile: &str, iterations: u32, timeout: Duration) {
+    run_test_case_impl(
+        b,
+        tc,
+        profile,
+        &[("SOAK_ITERATIONS", iterations.to_string())],
+        timeout,
+    );
+}
+
+fn run_test_case_impl(
+    b: &BoardSpec,
+    tc: &TestCase,
+    profile: &str,
+    extra_env: &[(&str, String)],
+    timeout: Duration,
+) {
+    let el = build_example_with_env(tc.pkg, tc.bin, b, profile, extra_env);
     let logs_dir = workspace_root().join("target").join("qemu-logs");
     std::fs::create_dir_all(&logs_dir).expect("create qemu-logs dir");
     let log_file = logs_dir.join(format!("{}-{}.log", b.name, tc.name));
@@ -1023,9 +1089,9 @@ fn run_test_case(b: &BoardSpec, tc: &TestCase, profile: &str) {
         b.name,
         tc.name,
         tc.name,
-        tc.timeout.as_secs()
+        timeout.as_secs()
     );
-    let result = run_qemu(b.qemu_binary, &args, tc.timeout, &log_file);
+    let result = run_qemu(b.qemu_binary, &args, timeout, &log_file);
 
     if result.timed_out {
         if tc.assert_golden_on_timeout {
@@ -1038,7 +1104,7 @@ fn run_test_case(b: &BoardSpec, tc: &TestCase, profile: &str) {
         panic!(
             "test `{}` TIMED OUT after {}s; last output:\n---\n{}\n---",
             tc.name,
-            tc.timeout.as_secs(),
+            timeout.as_secs(),
             result.stdout
         );
     }
@@ -1338,24 +1404,39 @@ fn main() {
                 eprintln!("--sim-hours N is required for soak");
                 usage();
             });
-            // Plan.md Phase 9: `soak_smoke` runs a fixed, bounded
-            // iteration count (see its own doc comment) regardless of
-            // `--sim-hours` — this proves the invariant-checking
-            // infrastructure (pool occupancy returns to baseline after
-            // spawn/join/despawn cycling, channel traffic, timer usage)
-            // rather than actually running for `hours` of simulated time.
-            // Scaling `ITERATIONS` in the soak binary and this timeout
-            // together is how this becomes the real multi-hour nightly
-            // run old-plan §8.1 describes.
+            // plan.md Phase 17: `soak_smoke`'s `ITERATIONS` is now a
+            // build-time env var (`SOAK_ITERATIONS`, default 200 — the
+            // CI smoke-scale run baked into `smoke_tests`); scale it and
+            // the wall-clock timeout from `--sim-hours` here. This is a
+            // **scaled iteration count, not a literal simulated-device-
+            // uptime clock** (see the binary's own doc comment for why,
+            // and for the u32-overflow bound `expected_sum` needs) — but
+            // it genuinely runs far more spawn/join/despawn/channel/
+            // mutex cycles than the smoke baseline, which already found
+            // a real bug (see KNOWN_FAILURES.md) that 200 iterations
+            // never triggered.
+            const BASE_ITERATIONS: u32 = 200;
+            const PER_HOUR_ITERATIONS: u32 = 2_000;
+            // Keeps `(0..N).sum::<u32>()` (soak_smoke's channel-sum
+            // check) safely under u32::MAX even at the largest hours
+            // value anyone should reasonably pass here.
+            const MAX_ITERATIONS: u32 = 80_000;
+            let iterations =
+                (BASE_ITERATIONS + (hours as u32).saturating_mul(PER_HOUR_ITERATIONS))
+                    .min(MAX_ITERATIONS);
+            // Generous, empirically-informed headroom: cm3's QEMU model
+            // ran 1000 iterations in under 90s real time; riscv is
+            // faster. 150ms/iteration covers both boards with margin.
+            let timeout = Duration::from_secs(30 + (iterations as u64) / 6);
             eprintln!(
-                "[xtask] soak for {}: running the bounded soak_smoke proof \
-                 (requested {hours}h sim; scaling to real multi-hour runs is a documented \
-                 follow-up, not implemented in this pass — see plan.md Phase 9)",
-                b.name
+                "[xtask] soak for {}: {iterations} iterations (requested {hours}h sim scale), \
+                 timeout {}s",
+                b.name,
+                timeout.as_secs()
             );
             let cases = smoke_tests(b.name);
             match cases.iter().find(|c| c.name == "soak_smoke") {
-                Some(tc) => run_test_case(b, tc, &profile),
+                Some(tc) => run_soak_case(b, tc, &profile, iterations, timeout),
                 None => eprintln!("[xtask] no soak_smoke case defined for board `{}`", b.name),
             }
         }

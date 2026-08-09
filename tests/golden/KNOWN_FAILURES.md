@@ -184,3 +184,44 @@ fixed with an explicit `sub sp, #4`/`add sp, #4` pair rather than padding the pu
 register list (r4 specifically is *not* a safe padding choice — it's overwritten with
 the new task's real value by the `ldmia` a few instructions later, and popping over it
 afterward would have silently restored the *old* task's stale r4).
+
+## Phase 17 — pre-existing race: `joiner` leak on respawn causes intermittent AlreadyJoined
+
+Found by scaling `soak_smoke`'s iteration count past the 200-iteration CI baseline (a
+real, pre-Phase-10 kernel bug — not introduced by this session's Phase 10-16 work, just
+never exercised hard enough to hit before). Fixed; recorded because the mechanism and
+the debugging path are both instructive.
+
+**Symptom:** intermittent `JOIN_MISMATCH ... got=AlreadyJoined` from a tight spawn/join/
+despawn loop, non-monotonic in iteration count (N=200/300/500/8200/20000 all passed;
+N=250 failed at iteration 216, N=1000 failed at iteration 56) — a timing-dependent race,
+not a scale-dependent one.
+
+**Root cause** (confirmed by an advisor after independent investigation had correctly
+localized but not fully explained it): a worker task spawned at *higher* priority than
+its joiner can run to completion — including `rivet_task_exit_core`'s
+`joiner.swap(NO_TASK)` — before the joiner ever reaches its own registration CAS. The
+swap drains a `joiner` field that's still `NO_TASK` (a no-op, correctly so at that
+moment), the joiner's subsequent CAS then succeeds and sets `joiner` to itself, and
+*nothing is ever left to clear it again* — `despawn`/`register_full` never touched
+`joiner`, on the (false, for this ordering) assumption that the previous occupant's exit
+path had already handled it. The next task spawned into the same recycled slot inherits
+a permanently-stuck `joiner`, and its join CAS fails with `AlreadyJoined`.
+
+A related, not-yet-observed-but-real second bug in the same area, found in the same
+investigation: `join_task`'s `while !exited.load() { block_current(); ... }` loop's
+check-then-block wasn't atomic, so a tick landing between the load and `block_current()`
+could mark the joiner Ready-then-immediately-self-Blocked with nothing left to ever wake
+it — a permanent hang, not just a wrong error. And a third: `spawn()` published a new
+task as schedulable (`register_full`'s `ready_add`) *before* writing its result-size
+metadata, so a fast-exiting higher-priority task could have its return value silently
+never written.
+
+**Fix:** `tcb::register_full` now unconditionally resets `joiner`/`exited`/
+`stop_requested`/`result_size`/`held_count` inside its RESERVED publish window (self-
+sufficient slot recycling, no cross-task ordering assumption); `join_task` releases its
+own `joiner` registration via CAS on every return path; the wait loop's check-then-block
+is atomic under `critical::enter` (the same `[B1]` pattern `PriorityMutex::lock_timeout`
+already uses); `spawn()` publishes registration and result metadata together in one
+critical section. Verified against the exact failing N values (250, 1000), plus every
+value up to 20,000 tested during the fix — all pass.

@@ -19,3 +19,4 @@ qemu.log
 /archive/
 /.reasonix/
 fuzz/target/
+__pycache__/

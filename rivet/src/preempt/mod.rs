@@ -293,37 +293,44 @@ pub unsafe fn spawn<T: 'static + Send, A: 'static>(
         crate::port::arch::scratch_close();
         sp
     });
-    match tcb::register_full(sp, priority, base, size) {
-        Some(id) => {
-            let handle = TaskHandle {
-                id: id as u16,
-                generation: tcb::get(id)
-                    .map(|t| t.generation.load(Ordering::Acquire))
-                    .unwrap_or(0),
-            };
-            // Record the return-value metadata for the exit/join machinery
-            // (plan.md §5.2). Returns larger than 8 bytes need the hidden
-            // sret pointer the asm trampoline cannot provide.
-            if let Some(t) = tcb::get(id) {
-                let sz = core::mem::size_of::<T>();
-                debug_assert!(
-                    sz <= 8,
-                    "rivet: task return values > 8 bytes are not supported (got {sz})"
-                );
-                t.result_size.store(sz as u8, Ordering::Release);
-                t.result_drop.store(
-                    if core::mem::needs_drop::<T>() {
-                        // Cast through a function pointer: `fn` → usize
-                        // (clippy fn_to_numeric_cast).
-                        drop_in_place_erased::<T> as *const () as usize
-                    } else {
-                        0
-                    },
-                    Ordering::Release,
-                );
-            }
-            Ok(handle)
-        }
+    // plan.md Phase 17 (found via soak testing, same investigation as the
+    // `joiner`-reset fix in `tcb::register_full`): `register_full` calls
+    // `sched::ready_add`, making the new task immediately dispatchable —
+    // if it's higher priority than the spawning task, a tick can dispatch
+    // and run it to completion (`rivet_task_exit_core`) *before* this
+    // function ever reaches the `result_size`/`result_drop` stores below.
+    // `rivet_task_exit_core` then sees `result_size == 0`, so `size > 0`
+    // is false and the return value is silently never written (and a
+    // droppable `T` leaks, since `result_drop` is also still 0). Wrapping
+    // registration and the metadata stores in one critical section closes
+    // the window: nothing can dispatch the new task until both are
+    // published together.
+    let registered = crate::critical::enter(|| {
+        let id = tcb::register_full(sp, priority, base, size)?;
+        let t = tcb::get(id).expect("just registered");
+        let sz = core::mem::size_of::<T>();
+        debug_assert!(
+            sz <= 8,
+            "rivet: task return values > 8 bytes are not supported (got {sz})"
+        );
+        t.result_size.store(sz as u8, Ordering::Release);
+        t.result_drop.store(
+            if core::mem::needs_drop::<T>() {
+                // Cast through a function pointer: `fn` → usize (clippy
+                // fn_to_numeric_cast).
+                drop_in_place_erased::<T> as *const () as usize
+            } else {
+                0
+            },
+            Ordering::Release,
+        );
+        Some((id, t.generation.load(Ordering::Acquire)))
+    });
+    match registered {
+        Some((id, generation)) => Ok(TaskHandle {
+            id: id as u16,
+            generation,
+        }),
         None => Err(SpawnError::RegistryFull),
     }
 }
