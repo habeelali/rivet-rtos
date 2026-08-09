@@ -13,6 +13,9 @@ default = []
 # most RV32 "virt-like" platforms). Boards without one (e.g. ESP32-C3, which
 # has SYSTIMER instead) leave this off and wire their own tick source.
 clint = []
+# Stock SiFive PLIC interrupt-controller driver (plan.md Phase 13). Same
+# "mechanism is arch, base address is board" split as `clint`.
+plic = []
 # Forwards to `rivet/latency-histograms` (plan.md Phase 12): this crate's
 # trap entry records interrupt-to-`on_tick` latency when it's on.
 latency-histograms = ["rivet/latency-histograms"]

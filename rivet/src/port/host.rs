@@ -89,6 +89,15 @@ extern "Rust" fn __rivet_arch_cycle_count() -> u64 {
     CYCLES.fetch_add(1, Ordering::Relaxed)
 }
 
+#[no_mangle]
+extern "Rust" fn __rivet_arch_irq_enable(_irq_num: u32) {}
+
+#[no_mangle]
+extern "Rust" fn __rivet_arch_irq_disable(_irq_num: u32) {}
+
+#[no_mangle]
+extern "Rust" fn __rivet_arch_irq_set_priority(_irq_num: u32, _priority: u8) {}
+
 // ── Group B (board) ──────────────────────────────────────────────────
 
 #[no_mangle]

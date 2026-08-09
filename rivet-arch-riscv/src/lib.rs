@@ -28,6 +28,9 @@ pub mod pmp;
 #[cfg(feature = "clint")]
 pub mod clint;
 
+#[cfg(feature = "plic")]
+pub mod plic;
+
 /// Minimum task stack: the 128-byte trap frame plus slack for the entry
 /// trampoline.
 pub const MIN_TASK_STACK: usize = 128 + 128;
@@ -101,6 +104,28 @@ extern "Rust" fn __rivet_arch_min_task_stack() -> usize {
 #[no_mangle]
 extern "Rust" fn __rivet_arch_cycle_count() -> u64 {
     riscv::register::mcycle::read64()
+}
+
+/// plan.md Phase 13: hard-required by the port contract (every existing
+/// binary must still link even without the `plic` feature), so defined
+/// unconditionally — a board without a PLIC (e.g. ESP32-C3) gets a
+/// harmless no-op instead of a link error naming a symbol it doesn't need.
+#[no_mangle]
+extern "Rust" fn __rivet_arch_irq_enable(_irq_num: u32) {
+    #[cfg(feature = "plic")]
+    plic::enable(_irq_num);
+}
+
+#[no_mangle]
+extern "Rust" fn __rivet_arch_irq_disable(_irq_num: u32) {
+    #[cfg(feature = "plic")]
+    plic::disable(_irq_num);
+}
+
+#[no_mangle]
+extern "Rust" fn __rivet_arch_irq_set_priority(_irq_num: u32, _priority: u8) {
+    #[cfg(feature = "plic")]
+    plic::set_priority(_irq_num, _priority);
 }
 
 /// Save/restore only `mstatus.MIE` (not the whole `mstatus`): restoring all
@@ -275,7 +300,19 @@ unsafe extern "C" fn rivet_trap_handler_rust(interrupted_sp: usize) -> usize {
             );
             resume_sp = rivet::preempt::on_tick(interrupted_sp);
         }
-        #[cfg(not(feature = "clint"))]
+        #[cfg(feature = "plic")]
+        if code == 11 {
+            // Machine external interrupt: claim the highest-priority
+            // pending PLIC source, dispatch it through `rivet::irq`, and
+            // complete it. No reschedule decision here directly — a
+            // handler that wakes a task does so through the normal
+            // wake paths (channel/semaphore/mutex), which already trigger
+            // their own `request_reschedule()` as needed.
+            plic::claim_dispatch_complete();
+        }
+        // Silences "unused" when neither `clint` nor `plic` is enabled;
+        // harmless (and not a duplicate-use error) when one already read
+        // `code` above.
         let _ = code;
     } else {
         // Synchronous exception. Access faults (mcause 1/5/7) are routed

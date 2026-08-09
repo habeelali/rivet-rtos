@@ -409,6 +409,21 @@ fn smoke_tests(board_name: &str) -> Vec<TestCase> {
                 allow_traps: false,
                 assert_golden_on_timeout: false,
             },
+            // plan.md Phase 13: end-to-end IRQ dispatch — a real PLIC-
+            // claimed UART TX-empty interrupt reaches a handler registered
+            // through rivet::irq, not a software-only stand-in.
+            TestCase {
+                name: "irq_test",
+                pkg: "qemu-riscv",
+                bin: "irq_test",
+                golden: &[r"IRQ_FIRED", r"IRQ_TEST_OK"],
+                exit_code: 0,
+                timeout: Duration::from_secs(20),
+                icount: None,
+                log_int: false,
+                allow_traps: false,
+                assert_golden_on_timeout: false,
+            },
         ],
         "cm3" => vec![
             TestCase {
@@ -583,6 +598,20 @@ fn smoke_tests(board_name: &str) -> Vec<TestCase> {
                 allow_traps: false,
                 assert_golden_on_timeout: false,
             },
+            // plan.md Phase 13: end-to-end IRQ dispatch (see riscv's
+            // irq_test for the full rationale) — NVIC IRQ 5, UART0.
+            TestCase {
+                name: "irq_test",
+                pkg: "qemu-cm3",
+                bin: "irq_test",
+                golden: &[r"IRQ_FIRED", r"IRQ_TEST_OK"],
+                exit_code: 0,
+                timeout: Duration::from_secs(20),
+                icount: None,
+                log_int: false,
+                allow_traps: false,
+                assert_golden_on_timeout: false,
+            },
         ],
         // Third board (plan.md Phase 7): the same Cortex-M3 test bodies as
         // `cm3` (bin sources are shared verbatim, just re-linked against
@@ -713,6 +742,20 @@ fn smoke_tests(board_name: &str) -> Vec<TestCase> {
                 golden: &[r"PERIOD_OK", r"BUDGET_OK", r"DEADLINE_TEST_OK"],
                 exit_code: 0,
                 timeout: Duration::from_secs(30),
+                icount: None,
+                log_int: false,
+                allow_traps: false,
+                assert_golden_on_timeout: false,
+            },
+            // plan.md Phase 13: end-to-end IRQ dispatch (see riscv's
+            // irq_test for the full rationale) — NVIC IRQ 1, UART0 TX.
+            TestCase {
+                name: "irq_test",
+                pkg: "mps2-an385",
+                bin: "irq_test",
+                golden: &[r"IRQ_FIRED", r"IRQ_TEST_OK"],
+                exit_code: 0,
+                timeout: Duration::from_secs(20),
                 icount: None,
                 log_int: false,
                 allow_traps: false,

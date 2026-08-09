@@ -12,6 +12,16 @@
 
 pub mod gpio;
 
+/// Board IRQ number map (plan.md Phase 13): which NVIC IRQ number is
+/// which peripheral. `UART0 = 5` verified empirically (not assumed) by
+/// enabling a probe range of IRQs and confirming which one fires on a
+/// genuine UART0 TX-empty condition — matches the Stellaris LM3S6965
+/// datasheet's exception table (GPIO ports A-E occupy positions 16-20,
+/// i.e. IRQ 0-4; UART0 is position 21, IRQ 5).
+pub mod irq {
+    pub const UART0: u32 = 5;
+}
+
 // Everything below is genuinely Cortex-M specific (real asm!/naked_asm!
 // blocks transitively, via rivet-arch-cortex-m) and target-gated so
 // `cargo test -p rivet-bsp-lm3s6965` on host still runs `gpio`'s

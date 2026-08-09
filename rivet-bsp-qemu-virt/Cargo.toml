@@ -11,7 +11,7 @@ links = "rivet_bsp_qemu_virt"
 
 [dependencies]
 rivet = { path = "../rivet" }
-rivet-arch-riscv = { path = "../rivet-arch-riscv", features = ["clint"] }
+rivet-arch-riscv = { path = "../rivet-arch-riscv", features = ["clint", "plic"] }
 rivet-bsp-support = { path = "../rivet-bsp-support" }
 
 [lib]

@@ -96,6 +96,15 @@ extern "Rust" {
     /// take deltas, so a coarser-than-ideal but still monotonic source is
     /// still correct, just less precise.
     fn __rivet_arch_cycle_count() -> u64;
+
+    /// Enable/disable/prioritize an external interrupt at the arch's
+    /// controller (plan.md Phase 13: NVIC on Cortex-M, PLIC on RISC-V).
+    /// The IRQ *number* is board-defined (each `rivet-bsp-*` publishes its
+    /// own map); the controller itself is architectural, so these live in
+    /// Group A, not Group B/C.
+    fn __rivet_arch_irq_enable(irq_num: u32);
+    fn __rivet_arch_irq_disable(irq_num: u32);
+    fn __rivet_arch_irq_set_priority(irq_num: u32, priority: u8);
 }
 
 pub fn init() {
@@ -174,4 +183,19 @@ pub fn min_task_stack() -> usize {
 pub fn cycle_count() -> u64 {
     // SAFETY: see `init`.
     unsafe { __rivet_arch_cycle_count() }
+}
+
+pub fn irq_enable(irq_num: u32) {
+    // SAFETY: see `init`.
+    unsafe { __rivet_arch_irq_enable(irq_num) }
+}
+
+pub fn irq_disable(irq_num: u32) {
+    // SAFETY: see `init`.
+    unsafe { __rivet_arch_irq_disable(irq_num) }
+}
+
+pub fn irq_set_priority(irq_num: u32, priority: u8) {
+    // SAFETY: see `init`.
+    unsafe { __rivet_arch_irq_set_priority(irq_num, priority) }
 }

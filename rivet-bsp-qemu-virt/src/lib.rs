@@ -21,10 +21,23 @@ const SIFIVE_TEST_BASE: *mut u32 = 0x0010_0000 as *mut u32;
 const SIFIVE_TEST_PASS: u32 = 0x5555;
 const SIFIVE_TEST_FAIL: u32 = 0x3333;
 const SIFIVE_TEST_RESET: u32 = 0x7777;
+/// PLIC, verified empirically via QEMU monitor `info mtree`
+/// (`riscv.sifive.plic` at this base) — see plan.md Phase 13.
+const PLIC_BASE: usize = 0x0c00_0000;
+
+/// Board IRQ number map (plan.md Phase 13): which PLIC source is which
+/// peripheral. `UART0` = 10 is QEMU's `hw/riscv/virt.c` `UART0_IRQ`
+/// constant — a long-stable, widely-relied-on value in the RV32
+/// bare-metal ecosystem (used unchanged by, e.g., xv6-riscv's own `virt`
+/// port), not just an assumption made here.
+pub mod irq {
+    pub const UART0: u32 = 10;
+}
 
 #[no_mangle]
 extern "Rust" fn __rivet_board_init() {
     rivet_arch_riscv::clint::configure(CLINT_BASE, MTIME_HZ);
+    rivet_arch_riscv::plic::configure(PLIC_BASE);
 }
 
 #[no_mangle]

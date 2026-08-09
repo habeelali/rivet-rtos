@@ -27,6 +27,8 @@
 
 pub mod dwt;
 pub mod mpu;
+#[cfg(feature = "nvic")]
+pub mod nvic;
 pub mod semihosting;
 #[cfg(feature = "systick")]
 pub mod systick;
@@ -77,6 +79,29 @@ extern "Rust" fn __rivet_arch_min_task_stack() -> usize {
 #[no_mangle]
 extern "Rust" fn __rivet_arch_cycle_count() -> u64 {
     dwt::cycle_count()
+}
+
+/// plan.md Phase 13: these three are hard-required by the port contract
+/// (every existing binary must still link even if it never enables the
+/// `nvic` feature), so they're defined unconditionally here rather than
+/// only inside `nvic.rs` — a board that doesn't enable `nvic` gets a
+/// harmless no-op instead of a link error naming a symbol it doesn't need.
+#[no_mangle]
+extern "Rust" fn __rivet_arch_irq_enable(_irq_num: u32) {
+    #[cfg(feature = "nvic")]
+    nvic::enable(_irq_num);
+}
+
+#[no_mangle]
+extern "Rust" fn __rivet_arch_irq_disable(_irq_num: u32) {
+    #[cfg(feature = "nvic")]
+    nvic::disable(_irq_num);
+}
+
+#[no_mangle]
+extern "Rust" fn __rivet_arch_irq_set_priority(_irq_num: u32, _priority: u8) {
+    #[cfg(feature = "nvic")]
+    nvic::set_priority(_irq_num, _priority);
 }
 
 /// plan.md Phase 12: cycle stamp at the moment a reschedule was

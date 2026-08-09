@@ -15,6 +15,10 @@ default = []
 # rivet-arch-riscv's `clint` and in case a future board needs a different
 # tick source (e.g. a hardware RTC) instead.
 systick = []
+# Stock NVIC interrupt-controller driver (plan.md Phase 13). Architected,
+# same as `systick` — kept as a feature so a board can opt out and supply
+# its own dispatch if it ever needs to.
+nvic = []
 # Forwards to `rivet/latency-histograms` (plan.md Phase 12).
 latency-histograms = ["rivet/latency-histograms"]
 

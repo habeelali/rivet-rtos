@@ -33,7 +33,18 @@ SECTIONS
     LONG(0);
     LONG(PendSV);
     LONG(SysTick);
-    /* IRQ 0-31 */
+    /* IRQ 0-31 (plan.md Phase 13): one shared trampoline reads
+     * SCB.ICSR.VECTACTIVE to tell which IRQ actually fired and dispatches
+     * through rivet::irq — see rivet-arch-cortex-m/src/nvic.rs. Defaults
+     * to DefaultHandler (PROVIDE below) if the `nvic` feature is off. */
+    LONG(rivet_irq_handler); LONG(rivet_irq_handler); LONG(rivet_irq_handler); LONG(rivet_irq_handler);
+    LONG(rivet_irq_handler); LONG(rivet_irq_handler); LONG(rivet_irq_handler); LONG(rivet_irq_handler);
+    LONG(rivet_irq_handler); LONG(rivet_irq_handler); LONG(rivet_irq_handler); LONG(rivet_irq_handler);
+    LONG(rivet_irq_handler); LONG(rivet_irq_handler); LONG(rivet_irq_handler); LONG(rivet_irq_handler);
+    LONG(rivet_irq_handler); LONG(rivet_irq_handler); LONG(rivet_irq_handler); LONG(rivet_irq_handler);
+    LONG(rivet_irq_handler); LONG(rivet_irq_handler); LONG(rivet_irq_handler); LONG(rivet_irq_handler);
+    LONG(rivet_irq_handler); LONG(rivet_irq_handler); LONG(rivet_irq_handler); LONG(rivet_irq_handler);
+    LONG(rivet_irq_handler); LONG(rivet_irq_handler); LONG(rivet_irq_handler); LONG(rivet_irq_handler);
     FILL(0);
     . = ORIGIN(FLASH) + 0x100;
   } > FLASH
@@ -94,3 +105,4 @@ PROVIDE(SVC = DefaultHandler);
 PROVIDE(DebugMon = DefaultHandler);
 PROVIDE(PendSV = DefaultHandler);
 PROVIDE(SysTick = DefaultHandler);
+PROVIDE(rivet_irq_handler = DefaultHandler);

@@ -68,6 +68,7 @@ pub mod critical;
 pub mod deadlines;
 pub mod exec_time;
 pub mod executor;
+pub mod irq;
 pub mod latency;
 pub mod fault;
 pub mod log;

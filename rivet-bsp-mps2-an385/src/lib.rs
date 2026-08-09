@@ -17,6 +17,19 @@
 
 use core::sync::atomic::{AtomicU32, Ordering};
 
+/// Board IRQ number map (plan.md Phase 13). `UART0_TX = 1` verified
+/// empirically (enabled a probe range of IRQs, confirmed which one fires
+/// on a genuine UART0 TX-empty condition). `UART0_RX = 0` follows the
+/// same CMSDK convention (RX/TX on adjacent, RX-first IRQ lines) but is
+/// *not* independently verified the same way — this board's QEMU model
+/// has no easy way to inject RX bytes from the host without a real
+/// terminal, so Phase 14's RX-interrupt work should re-confirm this
+/// before relying on it.
+pub mod irq {
+    pub const UART0_RX: u32 = 0;
+    pub const UART0_TX: u32 = 1;
+}
+
 /// MPS2 default system clock on QEMU (SYSCLK from the board's SCC,
 /// unconfigured/reset-state — matches what real AN385 firmware boots at).
 const SYSCLK_HZ: u32 = 25_000_000;
