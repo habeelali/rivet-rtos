@@ -23,13 +23,12 @@
 //! the hot path, same as everything else here).
 //!
 //! The ring buffer is Rivet's own SPSC [`crate::sync::Channel`] — but
-//! logging is inherently **multi**-producer (any task or ISR might log),
-//! so every producer path goes through [`crate::critical::enter`] to
-//! serialize pushes into a single logical producer. That's sound because
-//! critical sections are Rivet's only synchronization primitive across
-//! interrupt context, and Rivet's supported multi-core story is AMP (one
-//! independent kernel instance per hart, no shared state) — see plan.md
-//! §9.1/§9.2.
+//! logging is inherently **multi**-producer (any task or ISR might log,
+//! on any hart), so every producer path goes through
+//! [`crate::critical::enter`] to serialize pushes into a single logical
+//! producer. Since plan.md Phase 19, `critical::enter` is a genuine
+//! cross-hart lock (not just a local interrupt mask), so this holds under
+//! real SMP too, not only the single-hart case.
 
 use crate::sync::{Channel, Once, Receiver, Sender};
 use core::sync::atomic::{AtomicU32, Ordering};
@@ -110,9 +109,26 @@ pub struct LogFrame {
 /// there's a real workload to size it against.
 const CAPACITY: usize = 16;
 
+#[cfg(not(loom))]
 static CHANNEL: Channel<LogFrame, CAPACITY> = Channel::new();
+#[cfg(loom)]
+loom::lazy_static! {
+    static ref CHANNEL: Channel<LogFrame, CAPACITY> = Channel::new();
+}
+
+#[cfg(not(loom))]
 static SENDER: Once<Sender<'static, LogFrame, CAPACITY>> = Once::new();
+#[cfg(loom)]
+loom::lazy_static! {
+    static ref SENDER: Once<Sender<'static, LogFrame, CAPACITY>> = Once::new();
+}
+
+#[cfg(not(loom))]
 static RECEIVER: Once<Receiver<'static, LogFrame, CAPACITY>> = Once::new();
+#[cfg(loom)]
+loom::lazy_static! {
+    static ref RECEIVER: Once<Receiver<'static, LogFrame, CAPACITY>> = Once::new();
+}
 static DROPPED: AtomicU32 = AtomicU32::new(0);
 
 /// Called once from [`crate::init`]. Splitting the channel here (rather

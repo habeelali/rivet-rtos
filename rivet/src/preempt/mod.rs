@@ -386,22 +386,36 @@ pub fn stack_usage(stack: &[u8]) -> usize {
 /// permanently to whichever task the scheduler selects first (and from
 /// there, forever between tasks via interrupt-driven context switches).
 ///
+/// Call this from hart 0 only; secondary harts (plan.md Phase 19) use
+/// [`start_secondary_hart`] instead.
+///
 /// # Panics
 /// Panics if no preemptive tasks have been spawned.
 pub fn start() -> ! {
-    let first = sched::schedule().expect(
-        "rivet::preempt::start(): no preemptive tasks spawned (call rivet::init() first, \
-         which spawns the async idle task, or spawn at least one via spawn_ptask!)",
-    );
-    sched::set_current(first);
-    if let Some(t) = tcb::get(first) {
-        t.set_state(first, TaskState::Running);
-    }
-    // First dispatch: advance the RR start past this task (plan.md [B14]),
-    // and let the arch layer enable memory protection for its stack.
-    sched::on_dispatch(first);
+    // plan.md Phase 19: the read-decide-commit sequence (pick a task, mark
+    // it Running, publish it as this hart's `CURRENT`) must be atomic
+    // across harts, not just locally-interrupt-safe — a secondary hart
+    // could be inside the identical sequence in `start_secondary_hart`
+    // concurrently. Single-hart boards get the same control flow with an
+    // always-uncontended CAS (see `critical.rs`'s module docs).
+    let first = crate::critical::enter(|| {
+        let first = sched::schedule().expect(
+            "rivet::preempt::start(): no preemptive tasks spawned (call rivet::init() first, \
+             which spawns the async idle task, or spawn at least one via spawn_ptask!)",
+        );
+        sched::set_current(first);
+        if let Some(t) = tcb::get(first) {
+            t.set_state(first, TaskState::Running);
+        }
+        // First dispatch: advance the RR start past this task (plan.md
+        // [B14]).
+        sched::on_dispatch(first);
+        first
+    });
     crate::exec_time::on_first_dispatch();
     let first_tcb = tcb::get(first).unwrap();
+    // Enable memory protection for this task's stack — hart-local, done
+    // outside the critical section like the rest of the arch dispatch.
     crate::port::arch::on_switch_to(
         first_tcb.stack_base.load(Ordering::Acquire),
         first_tcb.stack_size.load(Ordering::Acquire),
@@ -410,6 +424,47 @@ pub fn start() -> ! {
     // SAFETY: `sp` is the freshly-initialized first stack frame of the
     // selected task (produced by `init_task_stack`); `start_first_task`
     // consumes it exactly once and never returns.
+    unsafe { crate::port::arch::start_first_task(sp) }
+}
+
+/// Start the preemptive scheduler on a **secondary** hart (plan.md
+/// Phase 19). Identical to [`start`] except a hart that finds nothing
+/// ready yet idles and retries instead of panicking: unlike hart 0 (which
+/// only starts after at least one task has been spawned), a secondary
+/// hart legitimately has nothing to do until some hart makes a task ready
+/// and IPIs it via `port::arch::request_reschedule_on`.
+///
+/// Never returns. No-op-forever (idles) on a single-hart board, since
+/// nothing ever calls it there — `rivet-rt`'s hart bring-up only invokes
+/// this for harts `1..RIVET_MAX_HARTS`.
+pub fn start_secondary_hart() -> ! {
+    let first = loop {
+        let picked = crate::critical::enter(|| {
+            let first = sched::schedule()?;
+            sched::set_current(first);
+            if let Some(t) = tcb::get(first) {
+                t.set_state(first, TaskState::Running);
+            }
+            sched::on_dispatch(first);
+            Some(first)
+        });
+        match picked {
+            Some(id) => break id,
+            None => crate::port::arch::idle(),
+        }
+    };
+    // No `exec_time::on_first_dispatch()` call here: hart 0's `start()`
+    // already stamped `BOOT_CYCLE`/`WALLCLOCK_BOOT_US` once for the whole
+    // system (plan.md Phase 19 §6 — exec-time accounting stays a single
+    // shared boot epoch, not per-hart; calling it again here would rewind
+    // `LAST_DISPATCH` and skew every other task's busy-cycle accounting).
+    let first_tcb = tcb::get(first).unwrap();
+    crate::port::arch::on_switch_to(
+        first_tcb.stack_base.load(Ordering::Acquire),
+        first_tcb.stack_size.load(Ordering::Acquire),
+    );
+    let sp = first_tcb.sp.load(Ordering::Acquire);
+    // SAFETY: same contract as `start`'s identical call.
     unsafe { crate::port::arch::start_first_task(sp) }
 }
 
@@ -474,7 +529,18 @@ pub fn on_tick(interrupted_sp: usize) -> usize {
     result
 }
 
+/// plan.md Phase 19: the entire read-decide-commit sequence below (read
+/// `sched::current()`, decide via `schedule()`/`should_preempt`, commit via
+/// `set_state`/`set_current`/`on_dispatch`) must be atomic across harts —
+/// two harts ticking concurrently could otherwise both claim the same
+/// ready task. Wrapping it in `critical::enter` closes that gap; on a
+/// single-hart board the wrap is a no-op (see `critical.rs`'s module
+/// docs), so this is behavior-preserving there.
 fn on_tick_impl(interrupted_sp: usize) -> usize {
+    crate::critical::enter(|| on_tick_locked(interrupted_sp))
+}
+
+fn on_tick_locked(interrupted_sp: usize) -> usize {
     let Some(running) = sched::current() else {
         return interrupted_sp;
     };

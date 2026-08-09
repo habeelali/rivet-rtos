@@ -195,8 +195,39 @@ pub fn init() {
 
 /// Start the preemptive scheduler. Never returns.
 /// Must be called after [`init`] (and any [`spawn_ptask!`] calls).
+/// Set by [`run`], just before entering the scheduler (plan.md Phase 19):
+/// the signal secondary harts spin on before bringing up their own arch
+/// state and calling [`run_secondary_hart`]. `init()` plus every
+/// boot-time [`spawn_ptask!`] call is guaranteed complete by the time this
+/// is set, since both happen (by construction, in every binary this
+/// workspace builds) before the app calls `run()`.
+static KERNEL_READY: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// Whether hart 0 has finished boot and is running the scheduler (plan.md
+/// Phase 19). `rivet-rt`'s secondary-hart bring-up spins on this before
+/// calling [`run_secondary_hart`]. Always `false` (and irrelevant) on a
+/// single-hart board — nothing there ever calls the secondary-hart path.
+pub fn kernel_ready() -> bool {
+    KERNEL_READY.load(core::sync::atomic::Ordering::Acquire)
+}
+
 pub fn run() -> ! {
+    KERNEL_READY.store(true, core::sync::atomic::Ordering::Release);
     preempt::start();
+}
+
+/// Bring up the preemptive scheduler on a **secondary** hart (plan.md
+/// Phase 19, RISC-V `virt` under `-smp > 1` only): per-hart arch bring-up
+/// (trap vector, ISR stack slice, PMP catch-all — everything
+/// [`port::arch::init`] does, all genuinely per-hart CSR/register state)
+/// followed by [`preempt::start_secondary_hart`]. Deliberately does
+/// **not** repeat [`init`]'s other steps (console/board/log setup, the
+/// async-idle-task spawn) — those are global, one-time facts owned by
+/// hart 0. Call only after [`kernel_ready`] is true, from a hart other
+/// than the one that called [`run`]. Never returns.
+pub fn run_secondary_hart() -> ! {
+    port::arch::init();
+    preempt::start_secondary_hart();
 }
 
 /// Voluntarily give up the CPU: request an immediate reschedule

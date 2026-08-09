@@ -1191,6 +1191,84 @@ fn run_smp_check(b: &BoardSpec, profile: &str) {
         tc.name
     );
     eprintln!("[xtask] PASS {}/smp", b.name);
+
+    run_smp_concurrency_check(b, profile);
+}
+
+/// Proves *genuine concurrent* multi-hart execution (plan.md Phase 19),
+/// as opposed to [`run_smp_check`]'s structural safety check above (which
+/// only proves other harts aren't corrupting shared state — they could
+/// all just be parking). Builds `examples/qemu-riscv/src/bin/smp_test.rs`
+/// once per hart count with `RIVET_MAX_HARTS` set to match, runs it under
+/// `-smp <same count>`, and checks for the binary's own `SMP_TEST_OK`
+/// marker plus a clean exit — the binary itself asserts (a) more than one
+/// distinct hart id was observed (skipped at hart count 1, the
+/// single-hart-degenerate case) and (b) no dispatch was lost or
+/// duplicated (summed per-task counters match the expected total
+/// exactly). `-smp 1` is included deliberately: Phase 19's design must
+/// degenerate cleanly back to the pre-Phase-19 single-hart path, not just
+/// work at higher counts.
+fn run_smp_concurrency_check(b: &BoardSpec, profile: &str) {
+    if !b.supports_smp {
+        return;
+    }
+    let logs_dir = workspace_root().join("target").join("qemu-logs");
+    std::fs::create_dir_all(&logs_dir).expect("create qemu-logs dir");
+
+    for &harts in &[1u32, 2, 4] {
+        eprintln!(
+            "[xtask] running {}/smp_test: -smp {harts} (RIVET_MAX_HARTS={harts})",
+            b.name
+        );
+        let el = build_example_with_env(
+            "qemu-riscv",
+            "smp_test",
+            b,
+            profile,
+            &[("RIVET_MAX_HARTS", harts.to_string())],
+        );
+        let log_file = logs_dir.join(format!("{}-smp_test-{harts}.log", b.name));
+        let _ = std::fs::remove_file(&log_file);
+        let mut args = base_qemu_args(b, &el, None, false, &log_file);
+        args.push("-smp".into());
+        args.push(harts.to_string());
+        let result = run_qemu(b.qemu_binary, &args, Duration::from_secs(30), &log_file);
+        assert!(
+            !result.timed_out,
+            "smp_test at -smp {harts} timed out; last output:\n---\n{}\n---",
+            result.stdout
+        );
+        let actual = result.exit_code.expect("qemu exited without a status code");
+        assert_eq!(
+            actual, 0,
+            "smp_test at -smp {harts}: exit code {actual}, expected 0; output:\n---\n{}\n---",
+            result.stdout
+        );
+        assert!(
+            result.stdout.contains("SMP_TEST_OK"),
+            "smp_test at -smp {harts}: missing SMP_TEST_OK marker; output:\n---\n{}\n---",
+            result.stdout
+        );
+        let log = std::fs::read_to_string(&log_file).unwrap_or_default();
+        let unexpected: Vec<&str> = log
+            .lines()
+            .filter(|line| {
+                let trimmed = line.trim();
+                !trimmed.is_empty()
+                    && !b
+                        .ignore_log_lines
+                        .iter()
+                        .any(|pat| trimmed.starts_with(pat))
+            })
+            .collect();
+        assert!(
+            unexpected.is_empty(),
+            "smp_test at -smp {harts}: qemu.log contains {} undeclared line(s):\n---\n{}\n---",
+            unexpected.len(),
+            unexpected.join("\n")
+        );
+        eprintln!("[xtask] PASS {}/smp_test: -smp {harts}", b.name);
+    }
 }
 
 /// Collapse any run of `A`/`B` characters to a single `#` placeholder, so

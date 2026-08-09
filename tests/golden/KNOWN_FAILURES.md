@@ -225,3 +225,110 @@ is atomic under `critical::enter` (the same `[B1]` pattern `PriorityMutex::lock_
 already uses); `spawn()` publishes registration and result metadata together in one
 critical section. Verified against the exact failing N values (250, 1000), plus every
 value up to 20,000 tested during the fix — all pass.
+
+## Phase 19 — `clint::msip()` targeted hart 0's register regardless of caller
+
+**Symptom:** `examples/qemu-riscv/src/bin/smp_test.rs` (built with `RIVET_MAX_HARTS=2`)
+hung 100% reproducibly under `-smp 2` (3/3 runs, deterministic — QEMU's TCG round-robin
+vCPU stepping is itself deterministic per config), while the identical binary passed
+reliably at `-smp 1` and, misleadingly, at `-smp 4` (3/3 runs there too).
+
+**Root cause:** `clint::msip()` — the backing function for both
+`__rivet_arch_request_reschedule`'s self-IPI and `ack_soft_irq`'s pending-bit clear —
+was `(base() + MSIP_OFFSET) as *mut u32`: always hart 0's `MSIP` register, regardless of
+which hart called it. Before Phase 19 this was correct by accident (hart 0 was the only
+hart that ever ran kernel code, so "self" and "hart 0" were the same fact). Once
+secondary harts run real tasks that call `request_reschedule()` on themselves (blocking
+in `sleep_until`, `park_forever`, `yield_now`), a secondary hart's self-request pends
+*hart 0's* software interrupt instead of its own — the calling hart never traps on its
+own request and silently falls through past what was meant to be a synchronous
+context-switch point, while its task state is left `Blocked` with nothing to ever
+actually preempt it into blocking. `-smp 4` happened to pass anyway: `sched::ready_add`'s
+`wake_other_harts()` broadcast (which correctly targets each hart's own `MSIP` via
+`request_reschedule_on`/`msip_for`) fires far more often with more harts contending for
+the same ready pool, and apparently ended up masking the self-target bug's effect often
+enough in this specific binary's timing to pass 3/3 — a reminder that "passes at the
+higher hart count" is not evidence of correctness by itself; `-smp 2`'s lower IPI
+traffic just made the bug reliably visible instead of accidentally papered over.
+
+**Fix:** `msip()` now resolves via `msip_for(riscv::register::mhartid::read())` — a live
+CSR read on every call, not a cached value — so it always targets the calling hart's own
+register. Verified: `-smp 2` now passes 3/3 (previously 0/3); `-smp 1` and `-smp 4` still
+pass; the full riscv smoke suite (single-hart, `RIVET_MAX_HARTS=1` default) is
+unaffected, confirming the fix is behavior-preserving there.
+
+## Phase 19 — pre-existing Miri UB in `irq::dispatch`'s function-pointer round-trip
+
+Found while re-running the full verification block (`cargo +nightly miri test -p rivet
+--lib`) as part of Phase 19's acceptance criteria — a real, pre-existing bug from Phase
+13, not introduced by Phase 19's own changes (confirmed via `git stash`: reproduces
+identically on the pre-Phase-19 commit).
+
+**Symptom:** `error: Undefined Behavior: pointer not dereferenceable ... dangling
+pointer (it has no provenance)` at `irq.rs:91`, inside `irq::dispatch`.
+
+**Root cause:** `register` stores a handler via `slot.store(handler as usize, ...)` (a
+blessed "exposing" pointer-to-integer cast); `dispatch` retrieved it via
+`core::mem::transmute::<usize, fn()>(ptr)` — a direct bit-level reinterpret, not an `as`
+int-to-pointer cast. Miri's provenance tracking recognizes `as usize` → `as *const T` as
+the pair that exposes-then-looks-up an allocation's provenance; `transmute` between
+`usize` and a pointer-shaped type bypasses that machinery entirely, so Miri (correctly,
+per the strict-provenance model) treats the resulting "pointer" as having no provenance
+at all — dangling, even though the bit pattern is the original function's real address.
+
+**Fix:** insert an explicit `ptr as *const ()` cast (the operation Miri's model actually
+recognizes) before transmuting the *pointer* (not the raw integer) to `fn()`. Same bits,
+same runtime behavior on real hardware (which has no notion of "provenance" at all —
+this only matters for Miri's abstract machine), but now something Miri accepts. Loud
+warning remains (`integer-to-pointer cast ... Miri might miss pointer bugs`), which is
+expected and not itself a failure — it flags that this specific operation opts out of
+Miri's strongest (zero-int-to-ptr-casts) provenance mode, which is unavoidable for a
+function-pointer table stored as `AtomicUsize` slots.
+
+## Phase 19 — pre-existing loom compile failures in four unrelated statics
+
+Found the same way as the Miri bug above: re-running the full verification block
+(`RUSTFLAGS='--cfg loom' cargo test -p rivet --features loom --test loom --release`)
+surfaced 12 compile errors across `console.rs` (RX/TX `Channel`/`Sender`/`Receiver`),
+`log.rs` (`CHANNEL`/`SENDER`/`RECEIVER`), `deadlines.rs` (`PERIOD_US`/`BUDGET_US`), and
+`latency.rs` (`HISTOGRAMS`) — all pre-existing (Phases 11/12/14/16), reproduces
+identically via `git stash` on the pre-Phase-19 commit. None of these statics had ever
+actually been loom-compiled before; the crate's own precedent for this exact situation
+(`tests/loom.rs`'s comment: "loom's atomics are not const-constructible, so `Channel::
+new` can't initialize a plain `static`") had simply never been applied to the newer
+files that needed it.
+
+**Fix:** wrapped each in the established `#[cfg(not(loom))] static X = ...` /
+`#[cfg(loom)] loom::lazy_static! { static ref X = ...; }` pattern already used
+throughout the older files (`critical.rs`, `waker.rs`, `irq.rs`, `executor.rs`). Verified
+the full loom suite now compiles and passes (4/4 tests) under `--cfg loom`.
+
+## Phase 19 — `global_asm!` + `lto = true` can't rely on the target triple's own ISA extensions
+
+Found while writing the per-hart ISR-stack/boot-stack index math in
+`rivet-arch-riscv`/`rivet-rt`'s `global_asm!` blocks: a plain `mul` instruction (RV32
+`M` extension — `riscv32imac-unknown-none-elf`'s own target name literally spells out
+`m`) compiled fine under `cargo build --target riscv32imac-unknown-none-elf` (default
+`dev` profile) but failed as `error: instruction requires the following: 'Zmmul'` when
+the *same crate* was pulled into the full `qemu-riscv` binary under `--release`
+(`lto = true, codegen-units = 1` in the workspace's `[profile.release]`) — reproducible,
+not flaky. Root cause not fully chased down (plausibly an LLVM/rustc interaction where
+fat-LTO's single merged codegen unit assembles `global_asm!` blocks against a narrower
+subtarget-feature string than the crate's own compile flags would otherwise select), but
+not worth chasing further: both use sites were multiplying by a compile-time
+power-of-two constant (2048, then 512), so `slli` (base RV32I, needs no extension at
+all) is both a strictly better instruction choice and sidesteps the whole question.
+**Lesson for future `global_asm!` work in this crate: avoid `M`-extension instructions
+in `global_asm!` blocks entirely if a base-ISA equivalent exists — plain `cargo build
+--target ... ` without `--release` is not sufficient to catch this, since the failure
+only manifests under the LTO'd release profile the QEMU harness actually uses.**
+
+Separately, but found via the same build attempts: the `qemu-riscv` binaries' `.bss`/
+`.rivet_tasks`/stack-section RAM budget (QEMU `virt`'s 128K) is *already* tight enough at
+`opt-level = "z"` that a naive `cargo build` (`dev` profile, no size optimization) always
+overflows it — not a regression, just confirms these binaries were never meant to be
+built outside the release profile the harness always uses. Also: initially reserved
+`.isr_stack`/`.secondary_stacks` for an 8-hart ceiling (matching `RIVET_MAX_HARTS`'s
+crate-wide absolute max), which overflowed the 128K budget; right-sized to a 4-hart
+ceiling instead (matching this board's own documented SMP scope — plan.md Phase 19:
+"qemu-virt SMP build sets `RIVET_MAX_HARTS` to the `-smp` count, max 4").

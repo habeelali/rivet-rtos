@@ -44,11 +44,41 @@ SECTIONS
    * The RISC-V trap entry keeps the 128-byte frame on the interrupted
    * task's own stack but runs the Rust handler (schedule, poll_timers,
    * panic formatting, fault handling) on this stack via mscratch.
-   * Sized conservatively; re-measured in Phase 2.7 via watermarking. */
+   * Sized conservatively; re-measured in Phase 2.7 via watermarking.
+   *
+   * plan.md Phase 19: on real SMP, two harts trapping concurrently must
+   * not share this stack (each would corrupt the other's saved frame).
+   * Reserved here as 4 * 2K = 8K, one 2K slice per hart, statically sized
+   * to this board's documented SMP ceiling (plan.md Phase 19: "qemu-virt
+   * SMP build sets [`RIVET_MAX_HARTS`] to the -smp count, max 4") rather
+   * than dynamically from the env var, since the linker script isn't
+   * templated from it — `rivet-arch-riscv::__rivet_arch_init` picks its
+   * own hart's slice via `hart_id()` at runtime, so any configured
+   * `RIVET_MAX_HARTS <= 4` just leaves the unused tail slices untouched.
+   * QEMU virt's RAM (128K, see MEMORY above) is the hard limit on going
+   * any higher without also shrinking something else. */
   .isr_stack (NOLOAD) : ALIGN(16) {
     __isr_stack_bottom = .;
-    . += 2K;
+    . += 2K * 4;
     __isr_stack_top = .;
+  } > RAM
+
+  /* Secondary-hart boot stacks (plan.md Phase 19): hart 0 uses `.stack`
+   * above; harts 1.. need their own boot stack before they can safely run
+   * any Rust at all (Rust always needs a valid `sp`, even before the
+   * kernel proper starts). One 512B slice per hart (shallow, fixed-depth
+   * call chain — `_start` -> `rivet_secondary_main` -> `rivet::
+   * run_secondary_hart` -> `port::arch::init`/`preempt::
+   * start_secondary_hart`'s dispatch loop — before switching onto the
+   * dispatched task's own pool stack and never touching this one again),
+   * same 4-hart-ceiling reasoning as `.isr_stack`. `_start`'s asm indexes
+   * this by `mhartid` (see `rivet-rt`). Each secondary hart's own task/
+   * ISR stacks (once it's running the scheduler) come from the normal
+   * `.task_stacks`/`.isr_stack` pools like hart 0's. */
+  .secondary_stacks (NOLOAD) : ALIGN(16) {
+    __secondary_stacks_bottom = .;
+    . += 512 * 4;
+    __secondary_stacks_top = .;
   } > RAM
 
   /* Preemptive task stacks: one contiguous, 16 KiB-aligned pool (plan.md

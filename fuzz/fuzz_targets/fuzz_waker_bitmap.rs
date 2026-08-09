@@ -8,6 +8,7 @@
 
 use libfuzzer_sys::fuzz_target;
 
+use rivet::task::TaskId;
 use rivet::waker;
 
 fuzz_target!(|data: &[u8]| {
@@ -24,7 +25,7 @@ fuzz_target!(|data: &[u8]| {
             // Mark ready.
             let prio = next % 32;
             let idx = data.get(i.wrapping_add(2)).copied().unwrap_or(0) % 32;
-            waker::mark_ready(prio, idx);
+            waker::mark_ready(TaskId::new(prio, idx));
             pending.insert((prio, idx));
         } else {
             // Dequeue one.
@@ -33,7 +34,8 @@ fuzz_target!(|data: &[u8]| {
                 assert_eq!(got, None, "dequeued something with nothing pending");
                 continue;
             }
-            let (prio, idx) = got.expect("pending work but next_ready returned None (lost wakeup)");
+            let id = got.expect("pending work but next_ready returned None (lost wakeup)");
+            let (prio, idx) = (id.priority(), id.index());
             // Must be the highest priority with pending marks — compare
             // against the max BEFORE removal (the dequeued task is the
             // one being removed).
@@ -53,7 +55,8 @@ fuzz_target!(|data: &[u8]| {
     }
 
     // Final drain: everything still pending must dequeue exactly once.
-    while let Some((p, i)) = waker::next_ready() {
+    while let Some(id) = waker::next_ready() {
+        let (p, i) = (id.priority(), id.index());
         assert!(
             pending.remove(&(p, i)),
             "final drain dequeued ({p}, {i}) which was never marked (or double-dequeued)"

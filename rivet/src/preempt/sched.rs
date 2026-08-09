@@ -16,6 +16,8 @@ use crate::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
 use super::tcb::{TaskState, MAX_PTASKS, NO_TASK, TASKS};
 
+const MAX_HARTS: usize = crate::config::MAX_HARTS;
+
 // plan.md Phase 12: cycle stamp of when each task most recently became
 // Ready, consumed by `on_dispatch` to record `SchedulingWake` latency
 // (ready → actually running). A plain array, not `UnsafeCell`-guarded
@@ -44,13 +46,21 @@ loom::lazy_static! {
     static ref QUEUES: [AtomicU32; 32] = core::array::from_fn(|_| AtomicU32::new(0));
 }
 
-/// Currently running task id, or `NO_TASK` if the preemptive tier hasn't
-/// started yet (still in cooperative-only / boot context).
+/// Currently running task id **per hart**, or `NO_TASK` if that hart's
+/// preemptive tier hasn't started yet (plan.md Phase 19). Indexed by
+/// [`crate::port::arch::hart_id`] — always index 0 on every board except
+/// RISC-V `virt` under `-smp`, so this is a single-element array with
+/// identical behavior to the pre-Phase-19 single global everywhere else.
+/// The ready queue itself (`READY_BITMAP`/`QUEUES` above) stays a single
+/// shared structure, not per-hart: this is a global-run-queue SMP design
+/// (every hart picks its next task from one shared pool, serialized by
+/// `critical::enter`'s cross-hart lock at the call sites in
+/// `preempt::on_tick`/`start`), not per-hart independent run queues.
 #[cfg(not(loom))]
-static CURRENT: AtomicUsize = AtomicUsize::new(NO_TASK);
+static CURRENT: [AtomicUsize; MAX_HARTS] = [const { AtomicUsize::new(NO_TASK) }; MAX_HARTS];
 #[cfg(loom)]
 loom::lazy_static! {
-    static ref CURRENT: AtomicUsize = AtomicUsize::new(NO_TASK);
+    static ref CURRENT: [AtomicUsize; MAX_HARTS] = core::array::from_fn(|_| AtomicUsize::new(NO_TASK));
 }
 
 /// Round-robin rotation offset (the last-dispatched id + 1, plan.md
@@ -62,8 +72,10 @@ loom::lazy_static! {
     static ref RR_OFFSET: AtomicUsize = AtomicUsize::new(0);
 }
 
+/// The calling hart's currently-running task, or `None` if that hart's
+/// preemptive tier hasn't started yet.
 pub fn current() -> Option<usize> {
-    let c = CURRENT.load(Ordering::Acquire);
+    let c = CURRENT[crate::port::arch::hart_id()].load(Ordering::Acquire);
     if c == NO_TASK {
         None
     } else {
@@ -71,8 +83,9 @@ pub fn current() -> Option<usize> {
     }
 }
 
+/// Set the *calling hart's* currently-running task.
 pub fn set_current(id: usize) {
-    CURRENT.store(id, Ordering::Release);
+    CURRENT[crate::port::arch::hart_id()].store(id, Ordering::Release);
 }
 
 /// Add task `id` to its effective-priority ready queue (called by
@@ -90,6 +103,31 @@ pub fn ready_add(id: usize) {
     let prio = TASKS[id].effective_priority.load(Ordering::Acquire) as usize;
     QUEUES[prio].fetch_or(1u32 << id, Ordering::Release);
     READY_BITMAP.fetch_or(1u32 << prio, Ordering::Release);
+    wake_other_harts();
+}
+
+/// plan.md Phase 19: a task becoming ready doesn't necessarily do so on
+/// the hart that should run it — with this crate's global run queue, any
+/// hart could be the right one, including one that's currently idling
+/// with no ready work and (per `rivet-arch-riscv::clint`'s single-tick-
+/// owner design) no timer of its own to eventually notice. Broadcasting a
+/// reschedule IPI to every *other* hart on every `ready_add` is the
+/// simple, always-correct choice over tracking which hart is actually
+/// idle — some of these traps will find nothing to do and just resume
+/// what they were already running, which is a bounded, cheap cost.
+/// `MAX_HARTS > 1` is a compile-time-constant `false` on every
+/// single-hart board, so the loop is dead code there (zero runtime cost,
+/// confirmed identical golden output).
+#[inline]
+fn wake_other_harts() {
+    if MAX_HARTS > 1 {
+        let me = crate::port::arch::hart_id();
+        for hart in 0..MAX_HARTS {
+            if hart != me {
+                crate::port::arch::request_reschedule_on(hart);
+            }
+        }
+    }
 }
 
 /// Remove task `id` from its ready queue (called by
@@ -234,7 +272,9 @@ pub fn block_current() {
 /// [`crate::kernel_test!`].
 #[cfg(feature = "test-support")]
 pub(crate) fn reset_for_test() {
-    CURRENT.store(NO_TASK, Ordering::Release);
+    for c in CURRENT.iter() {
+        c.store(NO_TASK, Ordering::Release);
+    }
     RR_OFFSET.store(0, Ordering::Release);
     READY_BITMAP.store(0, Ordering::Release);
     for q in QUEUES.iter() {

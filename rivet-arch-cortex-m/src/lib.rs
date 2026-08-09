@@ -104,6 +104,26 @@ extern "Rust" fn __rivet_arch_irq_set_priority(_irq_num: u32, _priority: u8) {
     nvic::set_priority(_irq_num, _priority);
 }
 
+/// plan.md Phase 19: every Cortex-M board this workspace targets is
+/// QEMU-modeled strictly single-core (confirmed empirically — `-smp 4`
+/// is rejected outright by both `lm3s6965evb` and `mps2-an385`), so this
+/// is always hart 0.
+#[no_mangle]
+extern "Rust" fn __rivet_arch_hart_id() -> usize {
+    0
+}
+
+/// plan.md Phase 19: never called with `hart != 0` on a single-core
+/// board (see `__rivet_arch_hart_id`'s docs above) — aliasing straight to
+/// the self-reschedule path keeps the contract satisfiable without a
+/// separate no-op that would silently swallow a real bug if it ever were
+/// called with a nonzero hart.
+#[no_mangle]
+extern "Rust" fn __rivet_arch_request_reschedule_on(hart: usize) {
+    debug_assert_eq!(hart, 0, "rivet-arch-cortex-m: single-core, hart must be 0");
+    __rivet_arch_request_reschedule();
+}
+
 /// plan.md Phase 12: cycle stamp at the moment a reschedule was
 /// requested, consumed by `rivet_pendsv_rust` to record `IrqEntry`
 /// latency — the single trigger point below covers both the tick-driven

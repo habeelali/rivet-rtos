@@ -10,6 +10,27 @@
 //! unaffected (only the 64-byte guard is denied).
 //!
 //! Pure ISA — no board/MMIO knowledge.
+//!
+//! # Known SMP limitation (plan.md Phase 19)
+//!
+//! PMP CSRs are genuinely per-hart hardware (like `MSIP`, unlike shared
+//! `mtime`) — [`init_catch_all`] runs on every hart via
+//! `__rivet_arch_init` (hart 0 through `rivet::init()`, secondary harts
+//! through `rivet::run_secondary_hart()`), so the catch-all is correctly
+//! present everywhere. [`register_guard`] is different: it's called once,
+//! lazily, from `stack_pool::alloc_stack` on whichever hart happens to be
+//! running when a given pool slot is *first* used — under Phase 19's
+//! global run queue (any hart can dispatch any ready task), a task's
+//! stack could later run on a *different* hart, whose PMP never got that
+//! guard entry. That hart would not fault on overflow into that specific
+//! 64-byte band, silently losing the guard for that task on that hart
+//! (the software watermark check in `preempt::on_tick_locked` still
+//! catches it — one tick later, not synchronously at the write). Closing
+//! this fully means replicating every guard to every hart (a PMP
+//! shootdown protocol, IPI-driven, analogous to a TLB shootdown) — judged
+//! out of scope for this phase relative to its cost; documented here
+//! rather than silently shipped. Not a regression for the common case of
+//! `MAX_HARTS == 1`, where "whichever hart" is always hart 0.
 
 const NAPOT_GUARD_CFG: u8 = 0x98; // L | NAPOT | no RWX
 const TOR_ALLOW_CFG: u8 = 0x8F; // L | TOR | RWX

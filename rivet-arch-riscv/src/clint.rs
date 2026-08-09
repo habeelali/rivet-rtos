@@ -21,6 +21,22 @@ static BASE: AtomicUsize = AtomicUsize::new(0);
 // written only from timer-ISR context (interrupts disabled throughout).
 // All three follow the same single-writer-before-any-reader-or-ISR-only
 // discipline, matching the original arch/riscv.rs precedent.
+//
+// plan.md Phase 19 memory-ordering audit: under real SMP this needs one
+// more link, not just re-stating "single writer" — the writer (hart 0,
+// via `rivet::init()`'s `board::init()`/`tick_start()` calls) and any
+// reader on a *different* hart (a secondary hart's `now_micros()`/
+// `on_timer_irq()` — though per the module docs above, only hart 0 ever
+// actually owns the tick, so in practice only hart 0 reads
+// `TICK_PERIOD`/`MTIMECMP_PREV` too) are different threads of execution,
+// so "happens before" needs a real synchronizes-with edge, not just
+// program order. That edge exists: `rivet::run()` does a `Release` store
+// to `KERNEL_READY` strictly after `init()` (and everything `init()`
+// wrote, including these statics) completes, and `rivet-rt`'s secondary-
+// hart bring-up spins on an `Acquire` load of the same flag before
+// touching any kernel state — a standard Release/Acquire pair, so every
+// write these functions make is guaranteed visible to a secondary hart by
+// the time it starts running, not merely "boot-time-early" by convention.
 static mut MTIME_HZ: u64 = 0;
 static mut TICK_PERIOD: u64 = 0;
 
@@ -56,20 +72,48 @@ fn base() -> usize {
     b
 }
 
+// `mtime` (unlike `mtimecmp`/`msip`) is a single, hart-shared CLINT
+// register, not one-per-hart — every hart reads the same counter, so
+// `mtime_lo`/`mtime_hi` need no hart-awareness at all.
 fn mtime_lo() -> *const u32 {
     (base() + MTIME_OFFSET) as *const u32
 }
 fn mtime_hi() -> *const u32 {
     (base() + MTIME_OFFSET + 4) as *const u32
 }
+// `mtimecmp` IS one-per-hart hardware (like `msip`), but unlike `msip`
+// this crate deliberately keeps hart 0 as the sole tick owner (module
+// docs above / plan.md Phase 19) — `tick_start`/`on_timer_irq` are only
+// ever called from hart 0, so hardcoding offset 0 here is correct *by
+// that design choice*, not the same bug `msip()` had (which was supposed
+// to be hart-generic — every hart calls `request_reschedule()` on
+// itself — but wasn't).
 fn mtimecmp_lo() -> *mut u32 {
     (base() + MTIMECMP_OFFSET) as *mut u32
 }
 fn mtimecmp_hi() -> *mut u32 {
     (base() + MTIMECMP_OFFSET + 4) as *mut u32
 }
+/// The **calling hart's own** MSIP register. Before plan.md Phase 19 this
+/// was hardwired to offset 0 (hart 0's register) — harmless when hart 0
+/// was the only hart that ever ran kernel code, but wrong the moment a
+/// secondary hart calls a self-targeting function like
+/// [`request_reschedule`]: it would pend hart 0's software interrupt
+/// instead of its own, so the calling hart's own trap would never fire
+/// (found via a real, 100%-reproducible hang at `-smp 2` — the two-hart
+/// case has less redundant cross-hart IPI traffic from
+/// [`request_reschedule_on`] to accidentally mask the bug than `-smp 4`
+/// did). Always resolves via the live `mhartid` CSR, not a cached value,
+/// so it's correct regardless of which hart calls it.
 fn msip() -> *mut u32 {
-    (base() + MSIP_OFFSET) as *mut u32
+    msip_for(riscv::register::mhartid::read())
+}
+
+/// `msip[hart]`: the SiFive CLINT lays out one 4-byte `MSIP` register per
+/// hart, contiguous from `MSIP_OFFSET` (plan.md Phase 19) — real,
+/// per-hart hardware, not a software construct.
+fn msip_for(hart: usize) -> *mut u32 {
+    (base() + MSIP_OFFSET + hart * 4) as *mut u32
 }
 
 // The CLINT's `mtime`/`mtimecmp` registers are 64-bit, but this is an RV32
@@ -161,6 +205,22 @@ pub fn request_reschedule() {
     // SAFETY: `msip()` is the configured CLINT MSIP register for this hart
     // (memory-mapped, volatile); writing 1 sets the pending bit.
     unsafe { core::ptr::write_volatile(msip(), 1) };
+}
+
+/// Set `msip[hart]`: pends a machine software interrupt against
+/// **another** hart (plan.md Phase 19) — the RV32 backend for
+/// `__rivet_arch_request_reschedule_on`. Required, not just an
+/// optimization: this crate's SMP design keeps hart 0 as the sole CLINT
+/// tick owner (see module docs), so a secondary hart that has run out of
+/// ready work and is parked in `wfi` has no timer of its own to
+/// eventually notice new work — without an explicit IPI, it would never
+/// wake even after another hart makes a task ready for it.
+pub fn request_reschedule_on(hart: usize) {
+    // SAFETY: `msip_for(hart)` is `hart`'s CLINT MSIP register — real,
+    // per-hart hardware (memory-mapped, volatile); writing 1 sets the
+    // pending bit on that hart specifically, leaving every other hart's
+    // pending bit untouched.
+    unsafe { core::ptr::write_volatile(msip_for(hart), 1) };
 }
 
 /// Clear the pending software interrupt. Called from the trap dispatcher

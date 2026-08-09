@@ -12,16 +12,26 @@ use std::sync::OnceLock;
 
 use libfuzzer_sys::fuzz_target;
 
-use rivet::sync::Channel;
+use rivet::sync::{Channel, Receiver, Sender};
 
 fn channel() -> &'static Channel<u16, 8> {
     static CHAN: OnceLock<Channel<u16, 8>> = OnceLock::new();
     CHAN.get_or_init(Channel::new)
 }
 
+// `Channel::split` succeeds exactly once (it's a one-shot `Once`-guarded
+// handoff, like the SPSC rings `rivet::console`/`rivet::log` use) — split
+// once here and reuse the same `Sender`/`Receiver` (both `&self`-based,
+// no exclusive access needed) across every fuzz iteration, matching this
+// target's own doc comment ("single static reused across iterations").
+fn endpoints() -> &'static (Sender<'static, u16, 8>, Receiver<'static, u16, 8>) {
+    static ENDPOINTS: OnceLock<(Sender<'static, u16, 8>, Receiver<'static, u16, 8>)> =
+        OnceLock::new();
+    ENDPOINTS.get_or_init(|| channel().split().expect("split channel once"))
+}
+
 fuzz_target!(|data: &[u8]| {
-    let chan = channel();
-    let (mut tx, mut rx) = chan.split();
+    let (tx, rx) = endpoints();
 
     // Expected FIFO of sent-but-not-received values (empty at iteration
     // start: the previous iteration drained fully).

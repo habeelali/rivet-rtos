@@ -51,18 +51,40 @@ extern "C" {
     static __isr_stack_top: u8;
 }
 
+/// Per-hart slice of `.isr_stack` (plan.md Phase 19): the section is
+/// reserved as `RIVET_MAX_HARTS_CEILING (8) * ISR_STACK_PER_HART` bytes
+/// (see `link-qemu-virt.ld`'s comment), laid out as one 2K slice per hart
+/// counting down from `__isr_stack_top` — hart 0 gets `[top - 2K, top)`,
+/// hart 1 gets `[top - 4K, top - 2K)`, etc. Single-hart boards (the
+/// default) only ever touch hart 0's slice, so this is behavior-preserving
+/// there. Must match the trap entry's re-arm sequence below and the
+/// linker script's per-hart stride exactly.
+const ISR_STACK_PER_HART: usize = 2048;
+
+/// This hart's `.isr_stack` slice top, for programming `mscratch`.
+fn isr_stack_top_for_this_hart() -> usize {
+    let base = core::ptr::addr_of!(__isr_stack_top) as usize;
+    let hart = riscv::register::mhartid::read();
+    base - hart * ISR_STACK_PER_HART
+}
+
 /// Group A entry point: install the trap vector, arm the boot-time-locked
-/// PMP catch-all, and point `mscratch` at the ISR stack. Does **not** touch
-/// any timer/IPI hardware — that's wired by whichever crate implements
-/// [`clint`] or an equivalent for this board, from `__rivet_board_init`.
+/// PMP catch-all, and point `mscratch` at this hart's own ISR stack slice.
+/// Does **not** touch any timer/IPI hardware — that's wired by whichever
+/// crate implements [`clint`] or an equivalent for this board, from
+/// `__rivet_board_init`. Called once per hart (plan.md Phase 19: hart 0
+/// from `rivet::init()`, secondary harts from `rivet-rt`'s bring-up path)
+/// — every hart must run this before its first trap can be handled safely,
+/// since PMP state and `mscratch` are both per-hart CSRs/registers.
 #[no_mangle]
 extern "Rust" fn __rivet_arch_init() {
     use riscv::register::mtvec;
 
-    // SAFETY: `__isr_stack_top` is the linker-provided top of the
-    // `.isr_stack` section (rivet-rt's common linker fragment); mscratch
-    // must hold it before any trap can fire.
-    riscv::register::mscratch::write(core::ptr::addr_of!(__isr_stack_top) as usize);
+    // SAFETY: `isr_stack_top_for_this_hart()` returns a slice strictly
+    // inside the linker-provided `.isr_stack` section (rivet-rt's common
+    // linker fragment) for any `hart_id() < 8`; mscratch must hold it
+    // before any trap can fire on this hart.
+    riscv::register::mscratch::write(isr_stack_top_for_this_hart());
 
     // SAFETY: `rivet_trap_entry` is the hand-written trap entry defined
     // below; installing it as the direct-mode mtvec handler is required
@@ -91,6 +113,17 @@ extern "Rust" fn __rivet_arch_idle() {
 #[no_mangle]
 extern "Rust" fn __rivet_arch_request_reschedule() {
     clint::request_reschedule();
+}
+
+/// Cross-hart reschedule IPI (plan.md Phase 19): CLINT's `MSIP` region has
+/// one register per hart, so targeting a specific hart is just indexing
+/// it — see `clint::request_reschedule_on`'s docs for why this is
+/// required for liveness, not just an optimization, under this crate's
+/// single-tick-owner SMP design.
+#[cfg(feature = "clint")]
+#[no_mangle]
+extern "Rust" fn __rivet_arch_request_reschedule_on(hart: usize) {
+    clint::request_reschedule_on(hart);
 }
 
 #[no_mangle]
@@ -126,6 +159,12 @@ extern "Rust" fn __rivet_arch_irq_disable(_irq_num: u32) {
 extern "Rust" fn __rivet_arch_irq_set_priority(_irq_num: u32, _priority: u8) {
     #[cfg(feature = "plic")]
     plic::set_priority(_irq_num, _priority);
+}
+
+/// plan.md Phase 19: `mhartid` is always legal to read in M-mode.
+#[no_mangle]
+extern "Rust" fn __rivet_arch_hart_id() -> usize {
+    riscv::register::mhartid::read()
 }
 
 /// Save/restore only `mstatus.MIE` (not the whole `mstatus`): restoring all
@@ -409,11 +448,22 @@ core::arch::global_asm!(
     "  mv   a0, sp",                  // arg: interrupted frame ptr
     "  csrrw sp, mscratch, sp",       // sp <- ISR stack; mscratch <- frame ptr
     "  call rivet_trap_handler_rust", // returns: resume_sp (in a0)
-    // Re-arm mscratch for the next trap: after `csrrw sp, mscratch, sp`
-    // above, mscratch holds the interrupted frame pointer, NOT the ISR
-    // stack top — leaving it would make the next trap swap sp to a task
-    // frame (or zero) and fault.
-    "  la   t1, __isr_stack_top",
+    // Re-arm mscratch for the next trap on THIS hart (plan.md Phase 19):
+    // after `csrrw sp, mscratch, sp` above, mscratch holds the interrupted
+    // frame pointer, NOT the ISR stack top — leaving it would make the
+    // next trap swap sp to a task frame (or zero) and fault. Before
+    // Phase 19 this reloaded the single global `__isr_stack_top`, which
+    // is only correct for hart 0 — on real SMP every hart must re-arm
+    // with *its own* 2K slice (`mhartid * 2048` below `__isr_stack_top`,
+    // matching `isr_stack_top_for_this_hart()` in Rust and
+    // `link-qemu-virt.ld`'s per-hart layout), or two harts trapping
+    // concurrently would both end up pointed at hart 0's slice and
+    // corrupt each other's saved frame.
+    "  csrr t1, mhartid",
+    "  slli t1, t1, 11", // t1 <- mhartid * 2048 (avoids needing the M
+                         // extension for a plain power-of-two multiply)
+    "  la   t0, __isr_stack_top",
+    "  sub  t1, t0, t1",
     "  csrw mscratch, t1",
     "  mv   sp, a0",            // switch to the resume stack
     "  j    rivet_trap_resume", // shared restore epilogue

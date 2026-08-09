@@ -84,10 +84,17 @@ pub fn dispatch(irq_num: u32) {
     if ptr == 0 {
         return;
     }
+    // `ptr as *const ()` (not a direct `usize`-to-`fn()` transmute, which
+    // Miri correctly flags as producing a provenance-less/dangling
+    // pointer even though the bit pattern is identical) is the `as`
+    // int-to-pointer cast that looks back up the provenance the `as
+    // usize` cast in `register` exposed.
+    let raw_ptr = ptr as *const ();
     // SAFETY: `ptr` was stored by `register` from a `fn()` value — the
-    // only thing ever stored here — so the transmute-via-cast round-trips
-    // exactly the function pointer type it started as.
-    let handler: fn() = unsafe { core::mem::transmute::<usize, fn()>(ptr) };
+    // only thing ever stored here — so `raw_ptr` points at exactly that
+    // function; transmuting a pointer-to-pointer-width `fn()` changes
+    // only the type, not the bits.
+    let handler: fn() = unsafe { core::mem::transmute::<*const (), fn()>(raw_ptr) };
     handler();
 }
 

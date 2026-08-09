@@ -36,13 +36,47 @@ use crate::sync::{Channel, Once, Receiver, Sender};
 const RX_CAPACITY: usize = 64;
 const TX_CAPACITY: usize = 256;
 
+#[cfg(not(loom))]
 static RX_CHANNEL: Channel<u8, RX_CAPACITY> = Channel::new();
-static RX_SENDER: Once<Sender<'static, u8, RX_CAPACITY>> = Once::new();
-static RX_RECEIVER: Once<Receiver<'static, u8, RX_CAPACITY>> = Once::new();
+#[cfg(loom)]
+loom::lazy_static! {
+    static ref RX_CHANNEL: Channel<u8, RX_CAPACITY> = Channel::new();
+}
 
+#[cfg(not(loom))]
+static RX_SENDER: Once<Sender<'static, u8, RX_CAPACITY>> = Once::new();
+#[cfg(loom)]
+loom::lazy_static! {
+    static ref RX_SENDER: Once<Sender<'static, u8, RX_CAPACITY>> = Once::new();
+}
+
+#[cfg(not(loom))]
+static RX_RECEIVER: Once<Receiver<'static, u8, RX_CAPACITY>> = Once::new();
+#[cfg(loom)]
+loom::lazy_static! {
+    static ref RX_RECEIVER: Once<Receiver<'static, u8, RX_CAPACITY>> = Once::new();
+}
+
+#[cfg(not(loom))]
 static TX_CHANNEL: Channel<u8, TX_CAPACITY> = Channel::new();
+#[cfg(loom)]
+loom::lazy_static! {
+    static ref TX_CHANNEL: Channel<u8, TX_CAPACITY> = Channel::new();
+}
+
+#[cfg(not(loom))]
 static TX_SENDER: Once<Sender<'static, u8, TX_CAPACITY>> = Once::new();
+#[cfg(loom)]
+loom::lazy_static! {
+    static ref TX_SENDER: Once<Sender<'static, u8, TX_CAPACITY>> = Once::new();
+}
+
+#[cfg(not(loom))]
 static TX_RECEIVER: Once<Receiver<'static, u8, TX_CAPACITY>> = Once::new();
+#[cfg(loom)]
+loom::lazy_static! {
+    static ref TX_RECEIVER: Once<Receiver<'static, u8, TX_CAPACITY>> = Once::new();
+}
 
 static IRQ_TX_ACTIVE: AtomicBool = AtomicBool::new(false);
 

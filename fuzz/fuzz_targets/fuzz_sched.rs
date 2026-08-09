@@ -75,7 +75,7 @@ fuzz_target!(|data: &[u8]| {
                 if let Some(slot) = ref_slots.get_mut(id as usize).and_then(|s| s.as_mut()) {
                     slot.1 = false;
                     if let Some(t) = tcb::get(id as usize) {
-                        t.set_state(tcb::TaskState::Blocked);
+                        t.set_state(id as usize, tcb::TaskState::Blocked);
                     }
                 }
             }
@@ -83,10 +83,22 @@ fuzz_target!(|data: &[u8]| {
                 if let Some(slot) = ref_slots.get_mut(id as usize).and_then(|s| s.as_mut()) {
                     slot.0 = p;
                     if let Some(t) = tcb::get(id as usize) {
+                        let old_prio = t
+                            .effective_priority
+                            .load(rivet::sync::atomic::Ordering::Acquire);
                         t.effective_priority.store(
                             p,
                             rivet::sync::atomic::Ordering::Release,
                         );
+                        // A raw store alone leaves `sched`'s ready queues
+                        // pointing at the *old* priority bucket — every
+                        // real effective-priority change (priority
+                        // inheritance in `mutex.rs`) goes through this,
+                        // which is what actually keeps `QUEUES`/
+                        // `READY_BITMAP` consistent with the field
+                        // (documented invariant in `sched.rs`: "every
+                        // state transition keeps the queues consistent").
+                        sched::on_effective_priority_change(id as usize, old_prio, p);
                     }
                 }
             }

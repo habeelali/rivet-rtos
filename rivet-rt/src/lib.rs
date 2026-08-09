@@ -42,10 +42,28 @@ extern "C" {
 
 #[cfg(target_arch = "riscv32")]
 mod riscv {
-    // `mhartid` guard: `-smp N > 1` would otherwise run N kernel copies
-    // over one set of kernel statics. Rivet's supported multi-core story
-    // is AMP (one independent instance per hart) or single-core; harts
-    // other than 0 park in a `wfi` loop, never touching kernel state.
+    /// The compile-time-configured hart ceiling, exposed as a real linked
+    /// symbol so `_start`'s `global_asm!` (which can only reference
+    /// linker symbols, not Rust consts) can compare `mhartid` against it
+    /// (plan.md Phase 19). `1` on every board that hasn't opted into
+    /// `RIVET_MAX_HARTS > 1` — harts `1..` then immediately park, exactly
+    /// the pre-Phase-19 behavior.
+    #[no_mangle]
+    static __rivet_max_harts: u32 = rivet::config::MAX_HARTS as u32;
+
+    // `mhartid` guard: harts other than 0 must never touch shared kernel
+    // statics (bss zeroing, `rivet_main`'s `rivet::init()`) — those are
+    // hart-0-only, one-time facts. Before plan.md Phase 19 the guard
+    // simply parked every other hart forever (`-smp N > 1` ran N kernel
+    // copies otherwise, over one set of kernel statics — Rivet's
+    // multi-core story was AMP-or-nothing). Phase 19 gives harts
+    // `1..RIVET_MAX_HARTS` a real bring-up path instead: each gets its
+    // own boot stack (`__hart_n_stack_top`, sized per hart in the linker
+    // script) and spins on `rivet::kernel_ready()` before calling
+    // `rivet_secondary_main`, which does per-hart arch init and enters
+    // the scheduler. Harts `>= RIVET_MAX_HARTS` (a build might run under
+    // `-smp` higher than it was configured for) still park forever —
+    // there is no kernel state sized for them.
     //
     // No `.data` copy needed: this is a single-RAM-region target (no
     // separate flash load address), so `.data`'s initial contents are
@@ -55,7 +73,7 @@ mod riscv {
         ".global _start",
         "_start:",
         "  csrr t0, mhartid",
-        "  bnez t0, park_hart",
+        "  bnez t0, secondary_entry",
         "  la   sp, __stack_top",
         "  la   t0, __bss_start",
         "  la   t1, __bss_end",
@@ -69,10 +87,49 @@ mod riscv {
         // rivet_main is `-> !`; this is unreachable in practice, kept only
         // so a hypothetical return doesn't fall off the end of .text.
         "  j    park_hart",
+        // A secondary hart (mhartid != 0): if it's within the configured
+        // hart ceiling, give it its own boot stack (one 1K slice per hart,
+        // `.secondary_stacks`, indexed by mhartid — never shared with hart
+        // 0's `__stack_top` or with each other) and hand off to Rust,
+        // which spins on `rivet::kernel_ready()` before touching any
+        // kernel state. Out-of-range harts park immediately, same as
+        // before Phase 19.
+        "secondary_entry:",
+        "  la   t1, __rivet_max_harts",
+        "  lw   t1, 0(t1)",
+        "  bgeu t0, t1, park_hart",
+        "  la   t2, __secondary_stacks_top",
+        "  slli t3, t0, 9", // t3 <- mhartid * 512 (power-of-two shift,
+                            // matches link-qemu-virt.ld's per-hart
+                            // .secondary_stacks slice size; avoids
+                            // needing the M extension)
+        "  sub  sp, t2, t3",
+        "  call rivet_secondary_main",
+        "  j    park_hart",
         "park_hart:",
         "  wfi",
         "  j    park_hart",
     );
+
+    /// Hart bring-up on a secondary hart, called from `_start`'s asm once
+    /// it has its own boot stack: spin for `rivet::kernel_ready()`
+    /// (hart 0's signal that `rivet::init()` and every boot-time
+    /// `spawn_ptask!` have completed), then hand off to
+    /// `rivet::run_secondary_hart()` (per-hart arch bring-up — trap
+    /// vector, ISR stack slice, PMP — followed by the scheduler). Never
+    /// returns.
+    ///
+    /// # Safety
+    /// Must only be reached from `_start`'s asm, on a hart whose id is
+    /// `< RIVET_MAX_HARTS` (the asm already checked this), with that
+    /// hart's own boot stack already installed as `sp`.
+    #[no_mangle]
+    unsafe extern "C" fn rivet_secondary_main() -> ! {
+        while !rivet::kernel_ready() {
+            core::hint::spin_loop();
+        }
+        rivet::run_secondary_hart();
+    }
 }
 
 #[cfg(target_arch = "arm")]

@@ -98,6 +98,16 @@ extern "Rust" fn __rivet_arch_irq_disable(_irq_num: u32) {}
 #[no_mangle]
 extern "Rust" fn __rivet_arch_irq_set_priority(_irq_num: u32, _priority: u8) {}
 
+#[no_mangle]
+extern "Rust" fn __rivet_arch_hart_id() -> usize {
+    0
+}
+
+#[no_mangle]
+extern "Rust" fn __rivet_arch_request_reschedule_on(_hart: usize) {
+    // No-op on host: same reasoning as `__rivet_arch_request_reschedule`.
+}
+
 // ── Group B (board) ──────────────────────────────────────────────────
 
 #[no_mangle]

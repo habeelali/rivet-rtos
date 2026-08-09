@@ -105,6 +105,29 @@ extern "Rust" {
     fn __rivet_arch_irq_enable(irq_num: u32);
     fn __rivet_arch_irq_disable(irq_num: u32);
     fn __rivet_arch_irq_set_priority(irq_num: u32, priority: u8);
+
+    /// This hart's index (plan.md Phase 19): `0` on every single-hart
+    /// arch/board (host, Cortex-M — QEMU's `lm3s6965evb`/`mps2-an385`
+    /// machine models are strictly single-core, confirmed empirically,
+    /// not a kernel limitation), the real `mhartid` on RISC-V. Used to
+    /// index per-hart scheduler/critical-section state; every subsystem
+    /// that was single-hart-only before this phase still behaves
+    /// identically when this always returns `0`.
+    fn __rivet_arch_hart_id() -> usize;
+
+    /// Request an immediate reschedule opportunity on a **specific**
+    /// (possibly different) hart (plan.md Phase 19). Needed because a task
+    /// becoming ready doesn't necessarily do so on the hart that should
+    /// run it next: with a global run queue, the hart that should
+    /// reconsider its schedule might be idling on a completely different
+    /// call stack (e.g. parked in `__rivet_arch_idle` with no timer tick
+    /// of its own — RISC-V `virt`'s SMP design keeps a single tick owner,
+    /// see `rivet-arch-riscv::clint`'s docs). RISC-V implements this via
+    /// CLINT's per-hart `MSIP` register. Single-hart arches (host,
+    /// Cortex-M) implement it as either a no-op or an alias for
+    /// [`__rivet_arch_request_reschedule`] when `hart == 0`, since it is
+    /// never called with any other value there.
+    fn __rivet_arch_request_reschedule_on(hart: usize);
 }
 
 pub fn init() {
@@ -198,4 +221,16 @@ pub fn irq_disable(irq_num: u32) {
 pub fn irq_set_priority(irq_num: u32, priority: u8) {
     // SAFETY: see `init`.
     unsafe { __rivet_arch_irq_set_priority(irq_num, priority) }
+}
+
+pub fn hart_id() -> usize {
+    // SAFETY: see `init`.
+    unsafe { __rivet_arch_hart_id() }
+}
+
+/// Ask `hart` to take a reschedule trap. See
+/// [`__rivet_arch_request_reschedule_on`].
+pub fn request_reschedule_on(hart: usize) {
+    // SAFETY: see `init`.
+    unsafe { __rivet_arch_request_reschedule_on(hart) }
 }

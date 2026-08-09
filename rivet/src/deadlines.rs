@@ -37,8 +37,19 @@ struct PeriodSlot {
 // disabled, single-core), so there is no concurrent access.
 unsafe impl Sync for PeriodSlot {}
 
+#[cfg(not(loom))]
 static PERIOD_US: [AtomicU32; MAX_PTASKS] = [const { AtomicU32::new(0) }; MAX_PTASKS];
+#[cfg(loom)]
+loom::lazy_static! {
+    static ref PERIOD_US: [AtomicU32; MAX_PTASKS] = core::array::from_fn(|_| AtomicU32::new(0));
+}
+
+#[cfg(not(loom))]
 static BUDGET_US: [AtomicU32; MAX_PTASKS] = [const { AtomicU32::new(0) }; MAX_PTASKS];
+#[cfg(loom)]
+loom::lazy_static! {
+    static ref BUDGET_US: [AtomicU32; MAX_PTASKS] = core::array::from_fn(|_| AtomicU32::new(0));
+}
 static SLOTS: [PeriodSlot; MAX_PTASKS] = [const {
     PeriodSlot {
         next_us: UnsafeCell::new(0),

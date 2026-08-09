@@ -46,8 +46,14 @@ fn index(kind: Kind) -> usize {
     }
 }
 
+#[cfg(not(loom))]
 static HISTOGRAMS: [[AtomicU32; BUCKETS]; KINDS] =
     [const { [const { AtomicU32::new(0) }; BUCKETS] }; KINDS];
+#[cfg(loom)]
+loom::lazy_static! {
+    static ref HISTOGRAMS: [[AtomicU32; BUCKETS]; KINDS] =
+        core::array::from_fn(|_| core::array::from_fn(|_| AtomicU32::new(0)));
+}
 
 #[cfg(any(feature = "latency-histograms", test))]
 fn bucket_of(cycles: u64) -> usize {
