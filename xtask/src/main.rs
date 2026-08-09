@@ -380,6 +380,7 @@ fn smoke_tests(board_name: &str) -> Vec<TestCase> {
                 pkg: "qemu-riscv",
                 bin: "report_test",
                 golden: &[
+                    r"hello from A, i=4",
                     r"DRAINED 10",
                     r"=== rivet::report\(\) ===",
                     r"REPORT_TEST_OK",
@@ -591,6 +592,7 @@ fn smoke_tests(board_name: &str) -> Vec<TestCase> {
                 pkg: "qemu-cm3",
                 bin: "report_test",
                 golden: &[
+                    r"hello from A, i=4",
                     r"DRAINED 10",
                     r"=== rivet::report\(\) ===",
                     r"REPORT_TEST_OK",
@@ -754,6 +756,7 @@ fn smoke_tests(board_name: &str) -> Vec<TestCase> {
                 pkg: "mps2-an385",
                 bin: "report_test",
                 golden: &[
+                    r"hello from A, i=4",
                     r"DRAINED 10",
                     r"=== rivet::report\(\) ===",
                     r"REPORT_TEST_OK",

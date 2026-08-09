@@ -4,7 +4,7 @@
 //! ring buffer), and a drain task formats and writes frames to the
 //! console at its own pace, off the hot path.
 //!
-//! # Scope note (plan.md Phase 8)
+//! # Scope note (plan.md Phase 8, extended by Phase 16)
 //!
 //! The old plan (§6.5) called for interning format strings into a
 //! `.rivet_log_fmt` linker section, storing only a small integer index per
@@ -13,13 +13,14 @@
 //! delivers the properties that actually matter (ISR-safe, O(1) in the
 //! hot path, deferred formatting, lock-free ring buffer, dropped-frame
 //! accounting): a frame stores the message as a plain `&'static str`
-//! pointer + length instead of an interned index. This means **no
-//! interpolated arguments** — `log!` takes a level and a string literal,
-//! not a `format_args!`-style template. Extending this to support
-//! arguments (and the on-target interning + host decoder) is a real next
-//! step, not attempted here; the frame format below is deliberately
-//! small enough that adding an argument payload later is a additive
-//! change, not a rewrite.
+//! pointer + length, plus (Phase 16) up to two [`LogArg`] values —
+//! **not** a full `format_args!`-style template (that needs the
+//! interned-format-string + host-decoder machinery the old plan
+//! described, still not attempted here). `log!("x={}", x)` covers the
+//! large majority of real call sites, which log one or two values
+//! alongside a fixed message; `write_frame` substitutes each `{}` in
+//! `msg` with the corresponding argument, formatted at drain time (off
+//! the hot path, same as everything else here).
 //!
 //! The ring buffer is Rivet's own SPSC [`crate::sync::Channel`] — but
 //! logging is inherently **multi**-producer (any task or ISR might log),
@@ -54,6 +55,41 @@ impl Level {
     }
 }
 
+/// A single interpolated argument (plan.md Phase 16): a small closed set
+/// covering the large majority of real log call sites, not a general
+/// `Display`/`Debug` payload (which would need real formatting work done
+/// eagerly, defeating the point of deferring it to drain time).
+#[derive(Clone, Copy)]
+pub enum LogArg {
+    /// No argument in this slot (fewer than 2 given to `log!`).
+    None,
+    U32(u32),
+    I32(i32),
+    F32(f32),
+    Str(&'static str),
+}
+
+impl From<u32> for LogArg {
+    fn from(v: u32) -> Self {
+        LogArg::U32(v)
+    }
+}
+impl From<i32> for LogArg {
+    fn from(v: i32) -> Self {
+        LogArg::I32(v)
+    }
+}
+impl From<f32> for LogArg {
+    fn from(v: f32) -> Self {
+        LogArg::F32(v)
+    }
+}
+impl From<&'static str> for LogArg {
+    fn from(v: &'static str) -> Self {
+        LogArg::Str(v)
+    }
+}
+
 #[derive(Clone, Copy)]
 pub struct LogFrame {
     pub level: Level,
@@ -62,6 +98,10 @@ pub struct LogFrame {
     pub task_id: Option<u16>,
     pub timestamp_us: u32,
     pub msg: &'static str,
+    /// Up to two interpolated arguments, substituted in order for each
+    /// `{}` in `msg` at drain time. `LogArg::None` in a slot the message
+    /// doesn't reference is simply unused.
+    pub args: [LogArg; 2],
 }
 
 /// Ring capacity. Deliberately not wired into `RIVET_*` build-time config
@@ -90,7 +130,7 @@ pub(crate) fn init() {
 /// blocks — a full ring drops the frame and counts it (see
 /// [`dropped_frames`]) rather than backing up whatever called this.
 #[doc(hidden)]
-pub fn push(level: Level, msg: &'static str) {
+pub fn push(level: Level, msg: &'static str, arg0: LogArg, arg1: LogArg) {
     let task_id = crate::preempt::sched::current().map(|id| id as u16);
     let timestamp_us = crate::port::board::now_us() as u32;
     let frame = LogFrame {
@@ -98,6 +138,7 @@ pub fn push(level: Level, msg: &'static str) {
         task_id,
         timestamp_us,
         msg,
+        args: [arg0, arg1],
     };
     let sent = match SENDER.get() {
         // SAFETY-relevant, not memory-safety: `try_send` requires a
@@ -128,8 +169,37 @@ fn write_frame(frame: &LogFrame) {
         write_dec(id as usize);
     }
     crate::console::write_str(" ");
-    crate::console::write_str(frame.msg);
+    write_interpolated(frame.msg, &frame.args);
     crate::console::write_str("\n");
+}
+
+/// Write `msg`, substituting each `{}` (in order) with the corresponding
+/// entry of `args`. Extra `{}` beyond the two argument slots are written
+/// through literally, since there's nothing to fill them with — no
+/// silent truncation of the message.
+fn write_interpolated(msg: &str, args: &[LogArg; 2]) {
+    let mut rest = msg;
+    let mut arg_idx = 0usize;
+    while let Some(pos) = rest.find("{}") {
+        crate::console::write_str(&rest[..pos]);
+        match args.get(arg_idx) {
+            Some(LogArg::None) | None => crate::console::write_str("{}"),
+            Some(arg) => write_arg(arg),
+        }
+        arg_idx += 1;
+        rest = &rest[pos + 2..];
+    }
+    crate::console::write_str(rest);
+}
+
+fn write_arg(arg: &LogArg) {
+    match *arg {
+        LogArg::None => {}
+        LogArg::U32(v) => crate::console::_print(core::format_args!("{v}")),
+        LogArg::I32(v) => crate::console::_print(core::format_args!("{v}")),
+        LogArg::F32(v) => crate::console::_print(core::format_args!("{v}")),
+        LogArg::Str(s) => crate::console::write_str(s),
+    }
 }
 
 fn write_dec(mut n: usize) {
@@ -192,12 +262,73 @@ pub async fn drain_forever() -> ! {
     }
 }
 
-/// Log a message at the given level. ISR-safe. Takes a plain string
-/// literal or `&'static str` — see the module docs for why there's no
-/// `format_args!`-style interpolation (yet).
+/// Log a message at the given level. ISR-safe: pushing a frame does no
+/// formatting and never blocks (see the module docs for why arguments are
+/// a small closed set — `u32`/`i32`/`f32`/`&'static str` — rather than a
+/// full `format_args!`-style template). Up to two `{}` placeholders in
+/// `$msg` are substituted, in order, at drain time:
+///
+/// ```ignore
+/// rivet::log!(Level::Info, "task {} spawned", id);
+/// rivet::log!(Level::Warn, "retry {}/{}", attempt, max);
+/// ```
 #[macro_export]
 macro_rules! log {
     ($level:expr, $msg:expr) => {
-        $crate::log::push($level, $msg)
+        $crate::log::push(
+            $level,
+            $msg,
+            $crate::log::LogArg::None,
+            $crate::log::LogArg::None,
+        )
     };
+    ($level:expr, $msg:expr, $a:expr) => {
+        $crate::log::push(
+            $level,
+            $msg,
+            $crate::log::LogArg::from($a),
+            $crate::log::LogArg::None,
+        )
+    };
+    ($level:expr, $msg:expr, $a:expr, $b:expr) => {
+        $crate::log::push(
+            $level,
+            $msg,
+            $crate::log::LogArg::from($a),
+            $crate::log::LogArg::from($b),
+        )
+    };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn log_arg_from_conversions() {
+        assert!(matches!(LogArg::from(5u32), LogArg::U32(5)));
+        assert!(matches!(LogArg::from(-3i32), LogArg::I32(-3)));
+        assert!(matches!(LogArg::from("hi"), LogArg::Str("hi")));
+        match LogArg::from(1.5f32) {
+            LogArg::F32(v) => assert!((v - 1.5).abs() < f32::EPSILON),
+            _ => panic!("expected F32"),
+        }
+    }
+
+    /// Pure substitution logic — doesn't touch the ring or console (the
+    /// host `port::host` console write is a no-op, so a real end-to-end
+    /// check of what actually got written needs the QEMU suite;
+    /// `examples/*/src/bin/report_test.rs`'s `hello from A, i={0..4}`
+    /// golden lines are that check). This test isolates `write_interpolated`'s
+    /// placeholder-counting/fallback behavior instead, by checking it
+    /// against a fake sink is impossible without one — so it only
+    /// checks it doesn't panic across the boundary cases (0, 1, 2, and
+    /// more `{}` than args).
+    #[test]
+    fn write_interpolated_boundary_cases_do_not_panic() {
+        write_interpolated("no placeholders", &[LogArg::None, LogArg::None]);
+        write_interpolated("one {}", &[LogArg::U32(1), LogArg::None]);
+        write_interpolated("two {} and {}", &[LogArg::U32(1), LogArg::Str("x")]);
+        write_interpolated("three {} {} {}", &[LogArg::U32(1), LogArg::U32(2)]);
+    }
 }

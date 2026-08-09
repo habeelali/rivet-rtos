@@ -17,8 +17,10 @@ use rivet_rt as _;
 use rivet::log::Level;
 
 fn logger_a(_: &'static ()) -> ! {
-    for _ in 0..5 {
-        rivet::log!(Level::Info, "hello from A");
+    for i in 0..5u32 {
+        // plan.md Phase 16: exercises `log!`'s interpolated-argument path
+        // (not just the plain-message form logger_b still uses below).
+        rivet::log!(Level::Info, "hello from A, i={}", i);
         for _ in 0..50_000u32 {
             core::hint::spin_loop();
         }
