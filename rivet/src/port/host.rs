@@ -118,6 +118,9 @@ unsafe extern "Rust" fn __rivet_board_console_write(_ptr: *const u8, _len: usize
 }
 
 #[no_mangle]
+extern "Rust" fn __rivet_board_console_kick_tx() {}
+
+#[no_mangle]
 extern "Rust" fn __rivet_board_reset() -> ! {
     loop {
         core::hint::spin_loop();

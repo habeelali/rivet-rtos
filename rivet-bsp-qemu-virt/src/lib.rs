@@ -34,10 +34,78 @@ pub mod irq {
     pub const UART0: u32 = 10;
 }
 
+// ── NS16550 interrupt-driven console (plan.md Phase 14) ────────────
+//
+// Standard NS16550 register layout beyond the data register already used
+// for polling writes: IER (offset 1, interrupt enable — bit0 = RX data
+// available, bit1 = THR empty), IIR (offset 2, read-only interrupt
+// identification), LSR (offset 5, line status).
+const UART_IER: *mut u8 = (UART0_DATA + 1) as *mut u8;
+const UART_IIR: *const u8 = (UART0_DATA + 2) as *const u8;
+const IER_RX_AVAILABLE: u8 = 1 << 0;
+const IER_THR_EMPTY: u8 = 1 << 1;
+
+fn uart_irq_handler() {
+    loop {
+        // SAFETY: fixed NS16550 registers on the QEMU virt machine.
+        let iir = unsafe { core::ptr::read_volatile(UART_IIR) };
+        if iir & 1 != 0 {
+            break; // no interrupt pending
+        }
+        // Standard 16550 IIR interrupt-ID field (bits 3:1, no FIFO):
+        // 001 = THR empty, 010 = received data available, 011 = receiver
+        // line status, 000 = modem status.
+        match (iir >> 1) & 0b111 {
+            0b001 => {
+                // THR empty: drain one more byte from the ring, or
+                // disable the interrupt if there's nothing left to send.
+                match rivet::console::tx_irq_next_byte() {
+                    Some(b) => unsafe {
+                        core::ptr::write_volatile(UART0_DATA as *mut u8, b)
+                    },
+                    None => unsafe {
+                        let ier = core::ptr::read_volatile(UART_IER);
+                        core::ptr::write_volatile(UART_IER, ier & !IER_THR_EMPTY);
+                    },
+                }
+            }
+            0b010 => {
+                // RX data available.
+                // SAFETY: fixed NS16550 data register.
+                let b = unsafe { core::ptr::read_volatile(UART0_DATA as *const u8) };
+                rivet::console::on_rx_byte(b);
+            }
+            _ => {
+                // Some other cause (line status, modem status): nothing
+                // this driver acts on, but IIR must still be re-read on
+                // the next loop iteration to avoid spinning on a cause we
+                // don't clear — reading LSR/MSR acks those specifically.
+                break;
+            }
+        }
+    }
+}
+
+#[no_mangle]
+extern "Rust" fn __rivet_board_console_kick_tx() {
+    // SAFETY: fixed NS16550 IER register.
+    unsafe {
+        let ier = core::ptr::read_volatile(UART_IER);
+        core::ptr::write_volatile(UART_IER, ier | IER_THR_EMPTY);
+    }
+}
+
 #[no_mangle]
 extern "Rust" fn __rivet_board_init() {
     rivet_arch_riscv::clint::configure(CLINT_BASE, MTIME_HZ);
     rivet_arch_riscv::plic::configure(PLIC_BASE);
+
+    rivet::irq::register(irq::UART0, uart_irq_handler).unwrap();
+    rivet::irq::enable(irq::UART0);
+    // SAFETY: fixed NS16550 IER register; RX enabled from boot, TX left
+    // off (kick_tx turns it on only when there's something queued).
+    unsafe { core::ptr::write_volatile(UART_IER, IER_RX_AVAILABLE) };
+    rivet::console::enable_irq_tx();
 }
 
 #[no_mangle]
@@ -100,6 +168,10 @@ extern "Rust" fn __rivet_board_wdt_check() {
     let now = rivet_arch_riscv::clint::now_micros();
     if rivet_bsp_support::sw_watchdog::expired(now) {
         rivet::console::write_str("RIVET WATCHDOG TIMEOUT\n");
-        __rivet_board_reset();
+        // Through the safe wrapper (not the raw `__rivet_board_reset`
+        // symbol directly): it flushes the interrupt-driven console's TX
+        // ring first (plan.md Phase 14) so this message actually reaches
+        // the console before the guest resets.
+        rivet::port::board::reset();
     }
 }

@@ -162,6 +162,12 @@ fn async_idle_entry(_arg: &'static ()) -> ! {
 /// tasks after this, then call [`run`].
 pub fn init() {
     port::arch::init();
+    // Before `port::board::init()`: a board's init may call
+    // `console::enable_irq_tx()` (plan.md Phase 14), which needs the TX/
+    // RX rings already split. Calling it earlier than that would be
+    // silently harmless today (`write_bytes_irq` falls back to polling
+    // if `TX_SENDER` isn't set yet) but fragile to rely on.
+    console::init();
     port::board::init();
     port::board::tick_start(config::TICK_HZ);
     log::init();

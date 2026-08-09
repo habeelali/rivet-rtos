@@ -151,3 +151,36 @@ advanced* rather than trusting the write, so on `mps2-an385` it correctly
 falls back to the SysTick-derived (coarser, still monotonic) cycle
 source. Added to `mps2`'s `ignore_log_lines` in `xtask/src/main.rs`
 alongside the other documented mps2-model quirks above.
+
+## Phase 14 — Cortex-M interrupt-driven TX: ack-after-write self-limited the drain
+
+Found and fixed during Phase 14's interrupt-driven console work, not a currently-open
+issue — recorded because the debugging path is instructive.
+
+Both Cortex-M UART ISRs (`rivet-bsp-lm3s6965`'s PL011, `rivet-bsp-mps2-an385`'s CMSDK
+UART) originally acknowledged the TX-empty interrupt *after* writing the next queued
+byte to the data register. On real silicon this ordering merely races (a fresh
+trigger-level crossing between the two stores could be missed); under QEMU's PL011/CMSDK
+UART models — no TX FIFO, no transmit timing, the data-register write is what
+*synchronously* raises the TX-empty condition — it fails deterministically: acking
+immediately after the write erases the very interrupt the write just generated, which
+self-limits the ISR to draining exactly one byte per invocation regardless of how much
+is queued. Combined with the "prime the pump" mechanism (needed because both UARTs'
+TX-empty condition is edge-triggered, not level-sensed, so merely re-enabling the
+interrupt mask doesn't recreate a missed edge), the ring backed up under any real message
+length and the original drop-on-full policy silently truncated output mid-message —
+producing symptoms (a message cut off partway, followed by fragments of *other*
+messages) that looked exactly like byte-level corruption from concurrent producers, not
+a one-line ack-ordering bug. Root-caused by consulting an advisor after independently
+ruling out NVIC priority ordering, PRIMASK/critical-section correctness, and PL011
+bit-position mistakes. Fixed by acking first, then writing; also replaced drop-on-full
+with order-preserving backpressure (pull-oldest-and-write-directly-then-retry) in
+`rivet::console::write_bytes_irq`, removing the ring-capacity-dependent truncation risk
+entirely. A related, real (if latent) bug caught in the same review: the original
+one-line `push {lr}` in `rivet-arch-cortex-m`'s PendSV handler left MSP 4-mod-8 aligned
+across the `bl` into Rust — an AAPCS violation that's harmless on Cortex-M3 (no
+alignment-sensitive load/store instructions used there) but would bite an M4F/M7 port;
+fixed with an explicit `sub sp, #4`/`add sp, #4` pair rather than padding the push/pop
+register list (r4 specifically is *not* a safe padding choice — it's overwritten with
+the new task's real value by the `ldmia` a few instructions later, and popping over it
+afterward would have silently restored the *old* task's stale r4).

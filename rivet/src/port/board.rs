@@ -25,6 +25,15 @@ extern "Rust" {
     /// Write raw bytes to the board's debug console.
     fn __rivet_board_console_write(ptr: *const u8, len: usize);
 
+    /// Re-arm the console's TX-empty interrupt if it isn't already
+    /// armed (plan.md Phase 14): called whenever [`crate::console`]
+    /// pushes bytes into its TX ring, in case the board's TX ISR had
+    /// already disabled itself after previously draining the ring empty.
+    /// A no-op on a board that never called
+    /// [`crate::console::enable_irq_tx`] (the console is still using the
+    /// blocking polling path, so nothing needs kicking).
+    fn __rivet_board_console_kick_tx();
+
     /// Trigger a system reset. Never returns.
     fn __rivet_board_reset() -> !;
 
@@ -70,12 +79,23 @@ pub fn console_write(bytes: &[u8]) {
     unsafe { __rivet_board_console_write(bytes.as_ptr(), bytes.len()) }
 }
 
+pub fn console_kick_tx() {
+    // SAFETY: see `init`.
+    unsafe { __rivet_board_console_kick_tx() }
+}
+
 pub fn reset() -> ! {
+    // Drain anything still queued in the interrupt-driven console's TX
+    // ring (plan.md Phase 14) before halting — see
+    // `crate::console::flush_sync`'s docs for why this can't wait for the
+    // interrupt that would normally do it.
+    crate::console::flush_sync();
     // SAFETY: see `init`.
     unsafe { __rivet_board_reset() }
 }
 
 pub fn exit(code: u32) -> ! {
+    crate::console::flush_sync();
     // SAFETY: see `init`.
     unsafe { __rivet_board_exit(code) }
 }

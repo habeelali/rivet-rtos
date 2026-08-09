@@ -44,6 +44,16 @@ const UART_CTRL: *mut u32 = (UART0_BASE + 0x08) as *mut u32;
 const UART_BAUDDIV: *mut u32 = (UART0_BASE + 0x10) as *mut u32;
 const UART_STATE_TX_FULL: u32 = 1 << 0;
 const UART_CTRL_TX_EN: u32 = 1 << 0;
+#[cfg(target_arch = "arm")]
+const UART_CTRL_RX_EN: u32 = 1 << 1;
+#[cfg(target_arch = "arm")]
+const UART_CTRL_RX_INT_EN: u32 = 1 << 3;
+#[cfg(target_arch = "arm")]
+const UART_INTSTATUS: *mut u32 = (UART0_BASE + 0x0C) as *mut u32;
+#[cfg(target_arch = "arm")]
+const INTSTATUS_TX: u32 = 1 << 0;
+#[cfg(target_arch = "arm")]
+const INTSTATUS_RX: u32 = 1 << 1;
 
 // ── CMSDK APB watchdog (SP805-compatible register layout) ─────────────
 const WDT_BASE: usize = 0x4000_8000;
@@ -55,12 +65,70 @@ const WDT_UNLOCK: u32 = 0x1ACC_E551;
 
 static WDT_PERIOD_US: AtomicU32 = AtomicU32::new(0);
 
+#[cfg(target_arch = "arm")]
+fn uart_irq_handler() {
+    loop {
+        // SAFETY: fixed CMSDK UART registers on the mps2-an385 machine.
+        let status = unsafe { core::ptr::read_volatile(UART_INTSTATUS) };
+        if status & INTSTATUS_TX != 0 {
+            // Ack FIRST, not after — same root cause as lm3s6965's PL011
+            // handler (see its comment): QEMU's CMSDK UART model raises
+            // the TX condition synchronously on the DATA write, so
+            // acking after the write erases the interrupt it just
+            // generated, self-limiting the drain to one byte per ISR
+            // entry.
+            unsafe { core::ptr::write_volatile(UART_INTSTATUS, INTSTATUS_TX) };
+            match rivet::console::tx_irq_next_byte() {
+                Some(b) => unsafe { core::ptr::write_volatile(UART_DATA, b as u32) },
+                None => unsafe {
+                    let ctrl = core::ptr::read_volatile(UART_CTRL);
+                    core::ptr::write_volatile(UART_CTRL, ctrl & !(1 << 2)); // TX_INT_EN
+                },
+            }
+        } else if status & INTSTATUS_RX != 0 {
+            let b = unsafe { core::ptr::read_volatile(UART_DATA) } as u8;
+            rivet::console::on_rx_byte(b);
+            unsafe { core::ptr::write_volatile(UART_INTSTATUS, INTSTATUS_RX) };
+        } else {
+            break;
+        }
+    }
+}
+
+#[no_mangle]
+extern "Rust" fn __rivet_board_console_kick_tx() {
+    // SAFETY: fixed CMSDK UART CTRL register.
+    unsafe {
+        let ctrl = core::ptr::read_volatile(UART_CTRL);
+        core::ptr::write_volatile(UART_CTRL, ctrl | (1 << 2)); // TX_INT_EN
+    }
+}
+
 #[no_mangle]
 extern "Rust" fn __rivet_board_init() {
     // SAFETY: fixed CMSDK UART registers (volatile); board-exclusive.
     unsafe {
         core::ptr::write_volatile(UART_BAUDDIV, 16); // minimum divider
         core::ptr::write_volatile(UART_CTRL, UART_CTRL_TX_EN);
+    }
+    #[cfg(target_arch = "arm")]
+    {
+        rivet::irq::register(irq::UART0_TX, uart_irq_handler).unwrap();
+        rivet::irq::set_priority(irq::UART0_TX, 0xFF);
+        rivet::irq::enable(irq::UART0_TX);
+        // RX=0 is CMSDK-convention-inferred for this board, not
+        // independently verified the way TX was (see `irq` module docs).
+        rivet::irq::register(irq::UART0_RX, uart_irq_handler).unwrap();
+        rivet::irq::set_priority(irq::UART0_RX, 0xFF);
+        rivet::irq::enable(irq::UART0_RX);
+        // SAFETY: fixed CMSDK UART CTRL register.
+        unsafe {
+            core::ptr::write_volatile(
+                UART_CTRL,
+                UART_CTRL_TX_EN | UART_CTRL_RX_EN | UART_CTRL_RX_INT_EN,
+            );
+        }
+        rivet::console::enable_irq_tx();
     }
 }
 
@@ -122,6 +190,11 @@ extern "Rust" fn __rivet_board_exit(code: u32) -> ! {
     rivet::console::write_str("\nRIVET_FAILURE code=");
     print_dec(code);
     rivet::console::write_str("\n");
+    // See rivet-bsp-lm3s6965's identical call for why: this print is
+    // immediately followed by a permanent halt, which may happen from a
+    // context that never lets the interrupt-driven TX ring's ISR run
+    // again.
+    rivet::console::flush_sync();
     loop {
         core::hint::spin_loop();
     }

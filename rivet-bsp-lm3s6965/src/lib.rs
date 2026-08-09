@@ -39,7 +39,19 @@ mod board {
     const UART0_BASE: u32 = 0x4000_C000;
     const UART0_DR: *mut u32 = UART0_BASE as *mut u32;
     const UART0_FR: *const u32 = (UART0_BASE + 0x18) as *const u32;
-    const UART_FR_BUSY: u32 = 1 << 5;
+    // PL011 FR bit 5 is actually TXFF (transmit FIFO full), not BUSY
+    // (BUSY is bit 3) — this constant is misnamed but the polling
+    // behavior (spin while the TX FIFO is full) is correct either way.
+    const UART_FR_TXFF: u32 = 1 << 5;
+    // PL011 interrupt registers (plan.md Phase 14): IMSC (mask set/clear),
+    // MIS (masked interrupt status — already ANDed with IMSC, so this
+    // driver only ever sees interrupts it actually asked for), ICR
+    // (interrupt clear, write-1-to-clear).
+    const UART0_IMSC: *mut u32 = (UART0_BASE + 0x38) as *mut u32;
+    const UART0_MIS: *const u32 = (UART0_BASE + 0x40) as *const u32;
+    const UART0_ICR: *mut u32 = (UART0_BASE + 0x44) as *mut u32;
+    const RXIM: u32 = 1 << 4;
+    const TXIM: u32 = 1 << 5;
 
     /// `luminary-watchdog` register block.
     const WDT_BASE: usize = 0x4000_0000;
@@ -54,8 +66,61 @@ mod board {
     /// "disabled" convention from the port contract).
     static WDT_PERIOD_US: AtomicU32 = AtomicU32::new(0);
 
+    fn uart_irq_handler() {
+        loop {
+            // SAFETY: fixed PL011 registers on the LM3S6965.
+            let mis = unsafe { core::ptr::read_volatile(UART0_MIS) };
+            if mis & TXIM != 0 {
+                // Ack FIRST, not after. On QEMU's PL011 model the `DR`
+                // write below is what (re)raises `INT_TX` synchronously
+                // (no TX FIFO/timing model — the write *is* the event);
+                // acking afterwards erases the very interrupt the write
+                // just generated, which self-limits this loop to one
+                // byte per ISR entry and backs up the ring under any
+                // real message length. Root-caused by consulting an
+                // advisor after independently narrowing the bug down to
+                // "only happens with priming, only under concurrent
+                // multi-task printing" but not finding this ordering.
+                // SAFETY: PL011 ICR, write-1-to-clear.
+                unsafe { core::ptr::write_volatile(UART0_ICR, TXIM) };
+                match rivet::console::tx_irq_next_byte() {
+                    Some(b) => unsafe { core::ptr::write_volatile(UART0_DR, b as u32) },
+                    None => unsafe {
+                        let imsc = core::ptr::read_volatile(UART0_IMSC);
+                        core::ptr::write_volatile(UART0_IMSC, imsc & !TXIM);
+                    },
+                }
+            } else if mis & RXIM != 0 {
+                // SAFETY: PL011 data register read.
+                let b = unsafe { core::ptr::read_volatile(UART0_DR) } as u8;
+                rivet::console::on_rx_byte(b);
+                // SAFETY: PL011 ICR, write-1-to-clear.
+                unsafe { core::ptr::write_volatile(UART0_ICR, RXIM) };
+            } else {
+                break;
+            }
+        }
+    }
+
     #[no_mangle]
-    extern "Rust" fn __rivet_board_init() {}
+    extern "Rust" fn __rivet_board_console_kick_tx() {
+        // SAFETY: fixed PL011 IMSC register.
+        unsafe {
+            let imsc = core::ptr::read_volatile(UART0_IMSC);
+            core::ptr::write_volatile(UART0_IMSC, imsc | TXIM);
+        }
+    }
+
+    #[no_mangle]
+    extern "Rust" fn __rivet_board_init() {
+        rivet::irq::register(super::irq::UART0, uart_irq_handler).unwrap();
+        rivet::irq::set_priority(super::irq::UART0, 0xFF);
+        rivet::irq::enable(super::irq::UART0);
+        // SAFETY: fixed PL011 IMSC register; RX enabled from boot, TX
+        // left off (kick_tx turns it on only when there's data queued).
+        unsafe { core::ptr::write_volatile(UART0_IMSC, RXIM) };
+        rivet::console::enable_irq_tx();
+    }
 
     #[no_mangle]
     extern "Rust" fn __rivet_board_now_us() -> u64 {
@@ -76,7 +141,7 @@ mod board {
         for &b in bytes {
             // SAFETY: `UART0_FR`/`UART0_DR` point at the LM3S6965 PL011 UART
             // registers (fixed, memory-mapped, volatile).
-            while unsafe { core::ptr::read_volatile(UART0_FR) } & UART_FR_BUSY != 0 {
+            while unsafe { core::ptr::read_volatile(UART0_FR) } & UART_FR_TXFF != 0 {
                 core::hint::spin_loop();
             }
             // SAFETY: as above — UART data-register write.
@@ -101,6 +166,14 @@ mod board {
         rivet::console::write_str("\nRIVET_FAILURE code=");
         print_dec(code);
         rivet::console::write_str("\n");
+        // This print is immediately followed by a permanent halt (ARM
+        // semihosting has no simple exit-with-code, so this marker +
+        // spin is the whole "exit" mechanism here) — same reasoning as
+        // `crate::console::flush_sync`'s docs: it cannot rely on the
+        // interrupt-driven ring's ISR ever getting to run again if this
+        // halt happens from a context (e.g. a fault handler) that
+        // permanently blocks it.
+        rivet::console::flush_sync();
         loop {
             core::hint::spin_loop();
         }

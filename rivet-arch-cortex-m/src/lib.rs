@@ -204,7 +204,16 @@ core::arch::global_asm!(
     ".global PendSV",
     ".thumb_func",
     "PendSV:",
+    // A lone `push {{lr}}` (one word) leaves MSP 4-mod-8 across the `bl`
+    // below, an AAPCS 8-byte-alignment violation — harmless on M3 (no
+    // LDRD/VLDR here), latent on M4F/M7. Fixed with an explicit `sub sp,
+    // #4` instead of padding the push list with a second register: r4-r11
+    // are semantically live across this function (r4 in particular gets
+    // overwritten by `ldmia` below with the *new* task's value, so
+    // pushing/popping it here would restore the *old* task's stale r4
+    // right before returning — a real bug caught in review, not shipped).
     "  push {{lr}}",
+    "  sub  sp, sp, #4",
     "  mrs  r0, psp",
     "  subs r0, r0, #32",
     "  stmia r0, {{r4-r11}}",
@@ -212,6 +221,7 @@ core::arch::global_asm!(
     "  ldmia r0, {{r4-r11}}",
     "  adds r0, r0, #32",
     "  msr  psp, r0",
+    "  add  sp, sp, #4",
     "  pop  {{lr}}",
     // Symbol for the GDB context-switch verification script (tests/gdb):
     // r4-r11 have been restored from the frame; frame base = psp - 32.

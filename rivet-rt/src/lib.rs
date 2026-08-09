@@ -127,6 +127,13 @@ mod cortex_m {
     #[no_mangle]
     pub extern "C" fn DefaultHandler() {
         rivet::console::write_str("HARD_FAULT\n");
+        // This handler runs at HardFault's fixed, always-highest
+        // exception priority and then spins forever without returning —
+        // no lower-priority interrupt (including a board's
+        // interrupt-driven console TX ISR, plan.md Phase 14) can ever
+        // preempt it, so a message queued into that ring here would
+        // never drain on its own.
+        rivet::console::flush_sync();
         loop {
             core::hint::spin_loop();
         }
