@@ -240,6 +240,11 @@ unsafe extern "Rust" fn __rivet_arch_start_first_task(sp: usize) -> ! {
 unsafe extern "C" fn rivet_trap_handler_rust(interrupted_sp: usize) -> usize {
     use riscv::register::mcause;
 
+    // plan.md Phase 12: as early in the Rust handler as feasible, so the
+    // recorded latency covers the asm-prologue-to-Rust handoff too.
+    #[cfg(feature = "latency-histograms")]
+    let entry_cycles = rivet::port::arch::cycle_count();
+
     let cause = mcause::read();
     #[cfg_attr(not(feature = "clint"), allow(unused_mut))]
     let mut resume_sp = interrupted_sp;
@@ -252,12 +257,22 @@ unsafe extern "C" fn rivet_trap_handler_rust(interrupted_sp: usize) -> usize {
             // futures, then give the preemptive scheduler a chance to
             // switch to a higher-priority ready task.
             clint::on_timer_irq();
+            #[cfg(feature = "latency-histograms")]
+            rivet::latency::record(
+                rivet::latency::Kind::IrqEntry,
+                rivet::port::arch::cycle_count().wrapping_sub(entry_cycles),
+            );
             resume_sp = rivet::preempt::on_tick(interrupted_sp);
         } else if code == 3 {
             // Machine software interrupt: triggered by a voluntary yield or
             // a mutex unlock waking a waiter. Clear the pending bit, then
             // run the same reschedule decision.
             clint::ack_soft_irq();
+            #[cfg(feature = "latency-histograms")]
+            rivet::latency::record(
+                rivet::latency::Kind::IrqEntry,
+                rivet::port::arch::cycle_count().wrapping_sub(entry_cycles),
+            );
             resume_sp = rivet::preempt::on_tick(interrupted_sp);
         }
         #[cfg(not(feature = "clint"))]

@@ -21,6 +21,12 @@ test-support = ["host-port"]
 # Permutation testing of the lock-free core (plan.md §1.3). Only ever
 # enabled together with RUSTFLAGS='--cfg loom' for the loom test target.
 loom = ["dep:loom"]
+# Latency histograms (plan.md Phase 12): four small [AtomicU32; 16]
+# tables tracking interrupt/dispatch/critical-section/scheduling latency.
+# Off by default (a real cost-sensitive board shouldn't pay for it
+# unasked); the QEMU example binaries enable it explicitly so the test
+# suite actually exercises the instrumentation.
+latency-histograms = []
 
 [dependencies]
 rivet-macros = { path = "../rivet-macros" }

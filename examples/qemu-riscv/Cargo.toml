@@ -8,7 +8,15 @@ license = "MIT"
 name = "qemu-riscv"
 test = false
 
+[features]
+# plan.md Phase 12: forwards to both crates' own `latency-histograms`
+# feature (they're independent flags per crate even though same-named —
+# the arch crate's trap-entry instrumentation is gated on *its own*
+# feature, not rivet's).
+latency-histograms = ["rivet/latency-histograms", "rivet-arch-riscv/latency-histograms"]
+
 [dependencies]
 rivet = { path = "../../rivet" }
 rivet-rt = { path = "../../rivet-rt" }
 rivet-bsp-qemu-virt = { path = "../../rivet-bsp-qemu-virt" }
+rivet-arch-riscv = { path = "../../rivet-arch-riscv" }

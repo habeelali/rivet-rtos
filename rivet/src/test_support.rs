@@ -39,5 +39,6 @@ pub fn reset_all() {
     crate::watchdog::reset_for_test();
     crate::exec_time::reset_for_test();
     crate::deadlines::reset_for_test();
+    crate::latency::reset_for_test();
     crate::port::host::reset_test_clock();
 }

@@ -79,10 +79,21 @@ extern "Rust" fn __rivet_arch_cycle_count() -> u64 {
     dwt::cycle_count()
 }
 
+/// plan.md Phase 12: cycle stamp at the moment a reschedule was
+/// requested, consumed by `rivet_pendsv_rust` to record `IrqEntry`
+/// latency — the single trigger point below covers both the tick-driven
+/// and voluntary-yield paths uniformly (unlike RISC-V, Cortex-M has no
+/// separate "just entered the handler" asm hook that's safe to touch
+/// without risking the hand-tuned PendSV register-save sequence).
+#[cfg(feature = "latency-histograms")]
+static RESCHEDULE_REQUESTED_AT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
 /// Set PendSV pending. Single trigger for every context switch, whether
 /// tick-driven or a voluntary yield.
 #[no_mangle]
 extern "Rust" fn __rivet_arch_request_reschedule() {
+    #[cfg(feature = "latency-histograms")]
+    RESCHEDULE_REQUESTED_AT.store(dwt::cycle_count() as u32, core::sync::atomic::Ordering::Relaxed);
     // SAFETY: `SCB::PTR` is the statically-known System Control Block
     // base, valid on every Cortex-M; `ICSR` write is a volatile MMIO
     // access.
@@ -141,6 +152,15 @@ extern "Rust" fn __rivet_arch_scratch_close() {
 /// scheduler what to run next, and returns the stack pointer to resume.
 #[no_mangle]
 unsafe extern "C" fn rivet_pendsv_rust(interrupted_sp: usize) -> usize {
+    #[cfg(feature = "latency-histograms")]
+    {
+        let requested_at = RESCHEDULE_REQUESTED_AT.load(core::sync::atomic::Ordering::Relaxed);
+        let now = dwt::cycle_count() as u32;
+        rivet::latency::record(
+            rivet::latency::Kind::IrqEntry,
+            now.wrapping_sub(requested_at) as u64,
+        );
+    }
     rivet::preempt::on_tick(interrupted_sp)
 }
 

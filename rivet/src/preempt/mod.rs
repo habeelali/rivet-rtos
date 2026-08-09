@@ -456,6 +456,18 @@ pub fn park_forever() -> ! {
 /// If the preemptive tier hasn't started yet ([`start`] not called),
 /// returns `interrupted_sp` unchanged.
 pub fn on_tick(interrupted_sp: usize) -> usize {
+    #[cfg(feature = "latency-histograms")]
+    let __latency_start = crate::port::arch::cycle_count();
+    let result = on_tick_impl(interrupted_sp);
+    #[cfg(feature = "latency-histograms")]
+    crate::latency::record(
+        crate::latency::Kind::DispatchDecision,
+        crate::port::arch::cycle_count().wrapping_sub(__latency_start),
+    );
+    result
+}
+
+fn on_tick_impl(interrupted_sp: usize) -> usize {
     let Some(running) = sched::current() else {
         return interrupted_sp;
     };

@@ -10,5 +10,18 @@ pub fn enter<F, R>(f: F) -> R
 where
     F: FnOnce() -> R,
 {
-    crate::port::arch::critical_section(f)
+    #[cfg(feature = "latency-histograms")]
+    {
+        let start = crate::port::arch::cycle_count();
+        let r = crate::port::arch::critical_section(f);
+        crate::latency::record(
+            crate::latency::Kind::CriticalSection,
+            crate::port::arch::cycle_count().wrapping_sub(start),
+        );
+        r
+    }
+    #[cfg(not(feature = "latency-histograms"))]
+    {
+        crate::port::arch::critical_section(f)
+    }
 }

@@ -124,6 +124,19 @@ jobs:
                 --target thumbv7m-none-eabi --release -- -D warnings
               ;;
           esac
+      - name: build with latency-histograms (plan.md Phase 12, off by default)
+        run: |
+          case "${{ matrix.target }}" in
+            riscv)
+              cargo build -p qemu-riscv --target riscv32imac-unknown-none-elf --release --features latency-histograms
+              ;;
+            cm3)
+              cargo build -p qemu-cm3 --target thumbv7m-none-eabi --release --features latency-histograms
+              ;;
+            mps2)
+              cargo build -p mps2-an385 --target thumbv7m-none-eabi --release --features latency-histograms
+              ;;
+          esac
       - name: smoke (release)
         run: cargo run -p xtask -- test --target ${{ matrix.target }} --suite smoke
       - name: smoke (release-checked)

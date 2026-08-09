@@ -16,6 +16,18 @@ use crate::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
 use super::tcb::{TaskState, MAX_PTASKS, NO_TASK, TASKS};
 
+// plan.md Phase 12: cycle stamp of when each task most recently became
+// Ready, consumed by `on_dispatch` to record `SchedulingWake` latency
+// (ready → actually running). A plain array, not `UnsafeCell`-guarded
+// like `timer.rs`'s deadline slots, because every write/read here is
+// already inside a `critical::enter`-protected caller (`ready_add`,
+// `on_dispatch`) and each slot is only ever touched by that single path —
+// but stored as `u32` cycles (not `u64`) specifically to sidestep RV32/
+// ARMv7-M's missing `AtomicU64`, matching every other cross-tick
+// timestamp in this codebase.
+#[cfg(feature = "latency-histograms")]
+static READY_AT_CYCLE: [AtomicU32; MAX_PTASKS] = [const { AtomicU32::new(0) }; MAX_PTASKS];
+
 /// Bit p set => priority p has at least one ready ptask.
 #[cfg(not(loom))]
 static READY_BITMAP: AtomicU32 = AtomicU32::new(0);
@@ -70,6 +82,11 @@ pub fn ready_add(id: usize) {
     if id >= MAX_PTASKS {
         return;
     }
+    #[cfg(feature = "latency-histograms")]
+    READY_AT_CYCLE[id].store(
+        crate::port::arch::cycle_count() as u32,
+        Ordering::Relaxed,
+    );
     let prio = TASKS[id].effective_priority.load(Ordering::Acquire) as usize;
     QUEUES[prio].fetch_or(1u32 << id, Ordering::Release);
     READY_BITMAP.fetch_or(1u32 << prio, Ordering::Release);
@@ -161,6 +178,26 @@ fn schedule_retry(_bitmap: u32, prio: usize, _word: u32) -> Option<usize> {
 /// rotation past it (plan.md [B14] — only at real context switches).
 pub fn on_dispatch(id: usize) {
     RR_OFFSET.store(id + 1, Ordering::Relaxed);
+    #[cfg(feature = "latency-histograms")]
+    if id < MAX_PTASKS {
+        let ready_at = READY_AT_CYCLE[id].load(Ordering::Relaxed);
+        // `ready_at == 0` means never recorded (shouldn't happen once a
+        // task has gone through at least one Ready transition, but a
+        // task's very first dispatch straight from `register()` could
+        // race the histogram feature's own bookkeeping order — skip
+        // rather than record a bogus latency).
+        if ready_at != 0 {
+            // 32-bit truncated subtraction (matches `ready_at`'s stored
+            // width): correct under wraparound as long as the actual
+            // ready-to-running latency never exceeds 2^32 cycles, which a
+            // scheduling-latency measurement always satisfies in practice.
+            let now = crate::port::arch::cycle_count() as u32;
+            crate::latency::record(
+                crate::latency::Kind::SchedulingWake,
+                now.wrapping_sub(ready_at) as u64,
+            );
+        }
+    }
 }
 
 /// Should a tick-time reschedule actually switch away from the running
@@ -202,6 +239,10 @@ pub(crate) fn reset_for_test() {
     READY_BITMAP.store(0, Ordering::Release);
     for q in QUEUES.iter() {
         q.store(0, Ordering::Release);
+    }
+    #[cfg(feature = "latency-histograms")]
+    for s in READY_AT_CYCLE.iter() {
+        s.store(0, Ordering::Release);
     }
 }
 

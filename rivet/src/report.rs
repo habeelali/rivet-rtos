@@ -138,5 +138,37 @@ pub fn report() {
     print_dec(crate::log::dropped_frames());
     crate::console::write_str(" dropped frame(s)\n");
 
+    #[cfg(feature = "latency-histograms")]
+    print_latency_histograms();
+
     crate::console::write_str("=== end report ===\n");
+}
+
+/// Print each latency histogram's non-empty buckets as `2^b:count` pairs
+/// (plan.md Phase 12). Only compiled with `latency-histograms`.
+#[cfg(feature = "latency-histograms")]
+fn print_latency_histograms() {
+    crate::console::write_str("latency (cycles, log2 buckets):\n");
+    for kind in crate::latency::ALL_KINDS {
+        crate::console::write_str("  ");
+        crate::console::write_str(crate::latency::name(kind));
+        crate::console::write_str(": ");
+        let snap = crate::latency::snapshot(kind);
+        let mut any = false;
+        for (b, count) in snap.iter().enumerate() {
+            if *count == 0 {
+                continue;
+            }
+            any = true;
+            crate::console::write_str("2^");
+            print_dec(b);
+            crate::console::write_str(":");
+            print_dec(*count as usize);
+            crate::console::write_str(" ");
+        }
+        if !any {
+            crate::console::write_str("(no samples)");
+        }
+        crate::console::write_str("\n");
+    }
 }
