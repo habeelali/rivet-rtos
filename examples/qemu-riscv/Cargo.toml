@@ -20,3 +20,7 @@ rivet = { path = "../../rivet" }
 rivet-rt = { path = "../../rivet-rt" }
 rivet-bsp-qemu-virt = { path = "../../rivet-bsp-qemu-virt" }
 rivet-arch-riscv = { path = "../../rivet-arch-riscv" }
+rivet-bsp-support = { path = "../../rivet-bsp-support" }
+embedded-hal-async = "1.0"
+embedded-hal-nb = "1.0"
+nb = "1.1"

@@ -11,6 +11,7 @@ links = "rivet_bsp_lm3s6965"
 
 [dependencies]
 rivet = { path = "../rivet" }
+embedded-hal = "1.0"
 
 # Cortex-M specific (build errors on host: real asm!/naked_asm! blocks) —
 # only pulled in for the actual target, so `cargo test -p rivet-bsp-lm3s6965`

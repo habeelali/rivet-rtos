@@ -424,6 +424,24 @@ fn smoke_tests(board_name: &str) -> Vec<TestCase> {
                 allow_traps: false,
                 assert_golden_on_timeout: false,
             },
+            // plan.md Phase 15: embedded-hal/-async/-nb usable through
+            // *generic* trait-bounded code, not just standalone —
+            // RivetDelay (embedded-hal-async::delay::DelayNs) genuinely
+            // blocks for the requested duration, Serial
+            // (embedded-hal-nb::serial::Write) genuinely reaches the
+            // console.
+            TestCase {
+                name: "embedded_hal_test",
+                pkg: "qemu-riscv",
+                bin: "embedded_hal_test",
+                golden: &[r"DELAY_OK", r"HELLO_NB", r"SERIAL_OK", r"EMBEDDED_HAL_TEST_OK"],
+                exit_code: 0,
+                timeout: Duration::from_secs(20),
+                icount: None,
+                log_int: false,
+                allow_traps: false,
+                assert_golden_on_timeout: false,
+            },
         ],
         "cm3" => vec![
             TestCase {
@@ -612,6 +630,20 @@ fn smoke_tests(board_name: &str) -> Vec<TestCase> {
                 allow_traps: false,
                 assert_golden_on_timeout: false,
             },
+            // plan.md Phase 15: embedded-hal/-async/-nb (see riscv's
+            // embedded_hal_test for the full rationale).
+            TestCase {
+                name: "embedded_hal_test",
+                pkg: "qemu-cm3",
+                bin: "embedded_hal_test",
+                golden: &[r"DELAY_OK", r"HELLO_NB", r"SERIAL_OK", r"EMBEDDED_HAL_TEST_OK"],
+                exit_code: 0,
+                timeout: Duration::from_secs(20),
+                icount: None,
+                log_int: false,
+                allow_traps: false,
+                assert_golden_on_timeout: false,
+            },
         ],
         // Third board (plan.md Phase 7): the same Cortex-M3 test bodies as
         // `cm3` (bin sources are shared verbatim, just re-linked against
@@ -754,6 +786,20 @@ fn smoke_tests(board_name: &str) -> Vec<TestCase> {
                 pkg: "mps2-an385",
                 bin: "irq_test",
                 golden: &[r"IRQ_FIRED", r"IRQ_TEST_OK"],
+                exit_code: 0,
+                timeout: Duration::from_secs(20),
+                icount: None,
+                log_int: false,
+                allow_traps: false,
+                assert_golden_on_timeout: false,
+            },
+            // plan.md Phase 15: embedded-hal/-async/-nb (see riscv's
+            // embedded_hal_test for the full rationale).
+            TestCase {
+                name: "embedded_hal_test",
+                pkg: "mps2-an385",
+                bin: "embedded_hal_test",
+                golden: &[r"DELAY_OK", r"HELLO_NB", r"SERIAL_OK", r"EMBEDDED_HAL_TEST_OK"],
                 exit_code: 0,
                 timeout: Duration::from_secs(20),
                 icount: None,

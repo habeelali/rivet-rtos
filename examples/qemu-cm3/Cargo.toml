@@ -21,3 +21,7 @@ rivet-bsp-lm3s6965 = { path = "../../rivet-bsp-lm3s6965" }
 # (soak_time_wrap); everything else in these examples only touches
 # `rivet`/`rivet-bsp-lm3s6965`.
 rivet-arch-cortex-m = { path = "../../rivet-arch-cortex-m", features = ["systick", "nvic"] }
+rivet-bsp-support = { path = "../../rivet-bsp-support" }
+embedded-hal-async = "1.0"
+embedded-hal-nb = "1.0"
+nb = "1.1"

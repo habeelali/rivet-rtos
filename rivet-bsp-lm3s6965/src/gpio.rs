@@ -43,6 +43,16 @@ pub struct Pin<const BASE: usize, const N: u8, MODE> {
     _mode: PhantomData<MODE>,
 }
 
+/// LM3S6965's GPIODATA register uses address-bus bits [9:2] as a pin
+/// mask: only bits whose corresponding address line is set are affected
+/// by the access, letting single-pin read/write skip a read-modify-write.
+/// Shared by both `Input` and `Output` pins (reading is meaningful in
+/// either mode — an output pin's own `GPIODATA` reflects what it's
+/// currently driving).
+const fn data_reg(base: usize, n: u8) -> *mut u32 {
+    (base + (((1usize << n) & 0xFF) << 2)) as *mut u32
+}
+
 impl<const BASE: usize, const N: u8> Pin<BASE, N, Input> {
     /// Take ownership of this pin, defaulting to input mode (GPIODIR reset
     /// state). No hardware writes happen here — direction is whatever the
@@ -54,6 +64,17 @@ impl<const BASE: usize, const N: u8> Pin<BASE, N, Input> {
     /// handles for the same physical pin from being created.
     pub const unsafe fn new() -> Self {
         Self { _mode: PhantomData }
+    }
+
+    pub fn is_high(&self) -> bool {
+        // SAFETY: `BASE`/`N` select a real, memory-mapped GPIO port/pin
+        // (see `PORT_*`); exclusive access is guaranteed by `Pin::new`'s
+        // safety contract.
+        unsafe { core::ptr::read_volatile(data_reg(BASE, N)) != 0 }
+    }
+
+    pub fn is_low(&self) -> bool {
+        !self.is_high()
     }
 
     /// Reconfigure as a digital output. Sets GPIODEN (digital enable —
@@ -89,31 +110,26 @@ impl<const BASE: usize, const N: u8> Pin<BASE, N, Output> {
         Pin { _mode: PhantomData }
     }
 
-    /// LM3S6965's GPIODATA register uses address-bus bits [9:2] as a pin
-    /// mask: only bits whose corresponding address line is set are
-    /// affected by the access, letting single-pin read/write skip a
-    /// read-modify-write. This computes that per-pin address once.
-    #[inline]
-    fn data_reg(&self) -> *mut u32 {
-        (BASE + (((1usize << N) & 0xFF) << 2)) as *mut u32
-    }
-
     pub fn set_high(&mut self) {
         // SAFETY: as in `into_output` — memory-mapped port at a
         // compile-time address, exclusive pin handle, single-bit
         // address-masked data access.
-        unsafe { core::ptr::write_volatile(self.data_reg(), 0xFFFF_FFFF) };
+        unsafe { core::ptr::write_volatile(data_reg(BASE, N), 0xFFFF_FFFF) };
     }
 
     pub fn set_low(&mut self) {
         // SAFETY: as in `set_high`.
-        unsafe { core::ptr::write_volatile(self.data_reg(), 0) };
+        unsafe { core::ptr::write_volatile(data_reg(BASE, N), 0) };
     }
 
     pub fn is_set_high(&self) -> bool {
         // SAFETY: as in `set_high` — volatile read of a memory-mapped
         // register is sound for an exclusive pin handle.
-        unsafe { core::ptr::read_volatile(self.data_reg()) != 0 }
+        unsafe { core::ptr::read_volatile(data_reg(BASE, N)) != 0 }
+    }
+
+    pub fn is_set_low(&self) -> bool {
+        !self.is_set_high()
     }
 
     pub fn toggle(&mut self) {
@@ -122,6 +138,49 @@ impl<const BASE: usize, const N: u8> Pin<BASE, N, Output> {
         } else {
             self.set_high();
         }
+    }
+}
+
+// ── embedded-hal 1.0 (plan.md Phase 15) ─────────────────────────────
+//
+// Thin wrappers over the infallible inherent methods above: this GPIO
+// block has no error conditions to report (no bus, no ack, just a
+// memory-mapped register), so every method returns `Ok`.
+impl<const BASE: usize, const N: u8, MODE> embedded_hal::digital::ErrorType for Pin<BASE, N, MODE> {
+    type Error = core::convert::Infallible;
+}
+
+impl<const BASE: usize, const N: u8> embedded_hal::digital::OutputPin for Pin<BASE, N, Output> {
+    fn set_low(&mut self) -> Result<(), Self::Error> {
+        Pin::set_low(self);
+        Ok(())
+    }
+
+    fn set_high(&mut self) -> Result<(), Self::Error> {
+        Pin::set_high(self);
+        Ok(())
+    }
+}
+
+impl<const BASE: usize, const N: u8> embedded_hal::digital::StatefulOutputPin
+    for Pin<BASE, N, Output>
+{
+    fn is_set_high(&mut self) -> Result<bool, Self::Error> {
+        Ok(Pin::is_set_high(self))
+    }
+
+    fn is_set_low(&mut self) -> Result<bool, Self::Error> {
+        Ok(Pin::is_set_low(self))
+    }
+}
+
+impl<const BASE: usize, const N: u8> embedded_hal::digital::InputPin for Pin<BASE, N, Input> {
+    fn is_high(&mut self) -> Result<bool, Self::Error> {
+        Ok(Pin::is_high(self))
+    }
+
+    fn is_low(&mut self) -> Result<bool, Self::Error> {
+        Ok(Pin::is_low(self))
     }
 }
 
@@ -153,5 +212,36 @@ mod tests {
         }
         // Silence the unused-const lint for the compile-only path.
         let _ = core::mem::size_of::<Pin<FAKE_PORT, 3, Output>>();
+    }
+
+    /// Compile-only: proves `Pin` is usable through generic
+    /// `embedded-hal` code (plan.md Phase 15), not just via its own
+    /// inherent methods — a driver written against
+    /// `embedded_hal::digital::{OutputPin, InputPin}` must accept this
+    /// type directly.
+    #[allow(dead_code)]
+    fn blink(pin: &mut impl embedded_hal::digital::OutputPin) {
+        let _ = pin.set_high();
+        let _ = pin.set_low();
+    }
+
+    #[allow(dead_code)]
+    fn read(pin: &mut impl embedded_hal::digital::InputPin) -> bool {
+        pin.is_high().unwrap_or(false)
+    }
+
+    #[test]
+    fn generic_embedded_hal_functions_accept_pin() {
+        fn never_called() {
+            // SAFETY: fake base address, never dereferenced.
+            let out: Pin<FAKE_PORT, 3, Output> = unsafe { Pin::new() }.into_output();
+            let mut out = out;
+            blink(&mut out);
+            // SAFETY: as above.
+            let inp: Pin<FAKE_PORT, 4, Input> = unsafe { Pin::new() };
+            let mut inp = inp;
+            let _ = read(&mut inp);
+        }
+        let _ = never_called as fn();
     }
 }

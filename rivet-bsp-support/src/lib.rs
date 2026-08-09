@@ -9,5 +9,7 @@
 
 #![no_std]
 
+pub mod delay;
 pub mod ns16550;
+pub mod serial;
 pub mod sw_watchdog;
