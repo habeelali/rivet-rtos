@@ -111,6 +111,16 @@ const BOARDS: &[BoardSpec] = &[
             // rather than silently hidden by `allow_traps`.
             "M profile return from interrupt with misaligned PC is UNPREDICTABLE on v7M",
             "DRBAR[7]:",
+            // plan.md Phase 10: mps2-an385's QEMU NVIC/SCS model doesn't
+            // implement DEMCR (offset 0xdfc, architectural on every real
+            // ARMv7-M core) — `rivet-arch-cortex-m::dwt::init`'s TRCENA
+            // write to it is a genuine, harmless read-modify-write to an
+            // unimplemented register in this specific machine model (not
+            // a kernel bug; lm3s6965evb's model implements it fine). The
+            // DWT probe itself correctly detects the resulting no-op and
+            // falls back to the SysTick-derived cycle source.
+            "NVIC: Bad read offset 0xdfc",
+            "NVIC: Bad write offset 0xdfc",
         ],
         supports_smp: false,
     },

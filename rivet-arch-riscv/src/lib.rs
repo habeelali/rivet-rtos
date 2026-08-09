@@ -95,6 +95,14 @@ extern "Rust" fn __rivet_arch_min_task_stack() -> usize {
     MIN_TASK_STACK
 }
 
+/// `mcycle`/`mcycleh` (plan.md Phase 10): RV32 has no single 64-bit cycle
+/// register, so the pair must be read with the standard rollover-safe
+/// double-read-of-`mcycleh` sequence — `read64()` already implements that.
+#[no_mangle]
+extern "Rust" fn __rivet_arch_cycle_count() -> u64 {
+    riscv::register::mcycle::read64()
+}
+
 /// Save/restore only `mstatus.MIE` (not the whole `mstatus`): restoring all
 /// of it would also restore MPP/MPIE as captured at entry, undoing any
 /// privilege-mode changes made inside the guarded closure. Nested

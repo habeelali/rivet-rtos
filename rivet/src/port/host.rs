@@ -14,6 +14,7 @@ static TICKS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "test-support")]
 pub fn reset_test_clock() {
     TICKS.store(0, Ordering::Relaxed);
+    CYCLES.store(0, Ordering::Relaxed);
 }
 
 // ── Group A (arch) ───────────────────────────────────────────────────
@@ -77,6 +78,15 @@ extern "Rust" fn __rivet_arch_min_task_stack() -> usize {
     // Host backend: no real frame; keep the same contract shape as the
     // embedded ports for consistent spawn checks.
     256
+}
+
+static CYCLES: AtomicU64 = AtomicU64::new(0);
+
+#[no_mangle]
+extern "Rust" fn __rivet_arch_cycle_count() -> u64 {
+    // Fake but monotonic: advances once per call, which is all the
+    // exec-time/latency accounting above this symbol ever assumes.
+    CYCLES.fetch_add(1, Ordering::Relaxed)
 }
 
 // ── Group B (board) ──────────────────────────────────────────────────

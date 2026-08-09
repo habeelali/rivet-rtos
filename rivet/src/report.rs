@@ -1,16 +1,12 @@
 //! `rivet::report()` — a single call that dumps kernel-wide state to the
-//! console: every live task's priority (base/effective), state, and stack
-//! watermark, plus registry-wide timer/task slot usage.
+//! console: every live task's priority (base/effective), state, stack
+//! watermark, and `%busy` execution-time share, plus registry-wide
+//! timer/task slot usage.
 //!
-//! Scope note (plan.md Phase 8): this is the introspection surface that's
-//! actually backed by data the kernel already tracks. Per-task execution
-//! time, deadline-miss counts, and budget overruns (old-plan §6.2–§6.4)
-//! are **not** included — that needs a cycle-counter Group A symbol and
-//! period/deadline bookkeeping that don't exist yet, and adding a stub
-//! that always prints zero would be actively misleading rather than
-//! honestly scoped. Extending `report()` to cover that is exactly the
-//! shape of a good next slice: land the accounting, then this function
-//! grows two more columns.
+//! Scope note (plan.md Phase 8, extended by Phase 10): `%busy` is backed
+//! by [`crate::exec_time`], itself built on the Group A cycle counter.
+//! Deadline-miss counts and budget overruns (plan.md Phase 11) are the
+//! next columns to land here once that bookkeeping exists.
 
 use core::sync::atomic::Ordering;
 
@@ -118,6 +114,10 @@ pub fn report() {
             crate::console::write_str(" held_mutexes=");
             print_dec(held as usize);
         }
+
+        crate::console::write_str(" busy=");
+        print_dec(crate::exec_time::busy_percent(id) as usize);
+        crate::console::write_str("%");
 
         crate::console::write_str("\n");
     }

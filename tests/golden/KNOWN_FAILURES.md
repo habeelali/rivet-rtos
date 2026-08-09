@@ -136,3 +136,18 @@ notes elsewhere in this session). Tracked as a real, open question for
 whoever next touches `rivet-bsp-mps2-an385` or `rivet-arch-cortex-m`'s
 SVC handling. `mps2-an385`'s xtask test cases mark this specific line
 as an accepted (not silently hidden) known-benign log line.
+
+## Phase 10 — mps2-an385's QEMU NVIC model doesn't implement DEMCR
+
+`rivet-arch-cortex-m::dwt::init` (execution-time accounting, plan.md
+Phase 10) sets `DEMCR.TRCENA` before enabling the DWT cycle counter —
+architectural on every real ARMv7-M core. On `mps2-an385`, QEMU logs
+`NVIC: Bad read offset 0xdfc` / `NVIC: Bad write offset 0xdfc` for this
+access: its NVIC/SCS device model doesn't implement the DEMCR register at
+all. `lm3s6965evb`'s model does (no such warning there) — a genuine
+per-machine-model gap in QEMU, not a kernel bug. Functionally harmless:
+the DWT probe in `dwt::init` checks whether the cycle counter *actually
+advanced* rather than trusting the write, so on `mps2-an385` it correctly
+falls back to the SysTick-derived (coarser, still monotonic) cycle
+source. Added to `mps2`'s `ignore_log_lines` in `xtask/src/main.rs`
+alongside the other documented mps2-model quirks above.

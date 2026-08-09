@@ -369,6 +369,7 @@ pub fn start() -> ! {
     // First dispatch: advance the RR start past this task (plan.md [B14]),
     // and let the arch layer enable memory protection for its stack.
     sched::on_dispatch(first);
+    crate::exec_time::on_first_dispatch();
     let first_tcb = tcb::get(first).unwrap();
     crate::port::arch::on_switch_to(
         first_tcb.stack_base.load(Ordering::Acquire),
@@ -483,6 +484,7 @@ pub fn on_tick(interrupted_sp: usize) -> usize {
             t.set_state(running, TaskState::Ready);
         }
     }
+    crate::exec_time::on_switch(running);
     let to_tcb = tcb::get(candidate).unwrap();
     to_tcb.set_state(candidate, TaskState::Running);
     sched::set_current(candidate);

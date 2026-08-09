@@ -86,6 +86,16 @@ extern "Rust" {
     /// Minimum byte size a preemptive task stack must have: the
     /// context-switch frame plus slack for the entry trampoline.
     fn __rivet_arch_min_task_stack() -> usize;
+
+    /// Free-running cycle counter (plan.md Phase 10), used for
+    /// execution-time accounting and latency histograms. Not required to
+    /// start at zero, only to be monotonic (mod 2^64) and to advance at a
+    /// fixed, arch-documented rate. Implementations without a hardware
+    /// cycle counter may derive one from another monotonic source (e.g. a
+    /// SysTick-driven tick count) rather than failing — callers only ever
+    /// take deltas, so a coarser-than-ideal but still monotonic source is
+    /// still correct, just less precise.
+    fn __rivet_arch_cycle_count() -> u64;
 }
 
 pub fn init() {
@@ -157,4 +167,11 @@ pub fn scratch_close() {
 pub fn min_task_stack() -> usize {
     // SAFETY: see `init`.
     unsafe { __rivet_arch_min_task_stack() }
+}
+
+/// Read the free-running cycle counter. See
+/// [`__rivet_arch_cycle_count`] for the monotonicity contract.
+pub fn cycle_count() -> u64 {
+    // SAFETY: see `init`.
+    unsafe { __rivet_arch_cycle_count() }
 }

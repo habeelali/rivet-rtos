@@ -25,6 +25,7 @@
 
 #![no_std]
 
+pub mod dwt;
 pub mod mpu;
 pub mod semihosting;
 #[cfg(feature = "systick")]
@@ -38,6 +39,7 @@ pub const MIN_TASK_STACK: usize = 64 + 64;
 #[no_mangle]
 extern "Rust" fn __rivet_arch_init() {
     mpu::init();
+    dwt::init();
 
     // PendSV must run at the lowest possible priority so it never preempts
     // a higher-priority ISR mid-flight — it only runs once everything else
@@ -70,6 +72,11 @@ extern "Rust" fn __rivet_arch_idle() {
 #[no_mangle]
 extern "Rust" fn __rivet_arch_min_task_stack() -> usize {
     MIN_TASK_STACK
+}
+
+#[no_mangle]
+extern "Rust" fn __rivet_arch_cycle_count() -> u64 {
+    dwt::cycle_count()
 }
 
 /// Set PendSV pending. Single trigger for every context switch, whether
