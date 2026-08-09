@@ -1,5 +1,10 @@
 # Rivet RTOS
 
+> **[Read the full documentation →](docs/DOCUMENTATION.md)** — architecture,
+> every feature, the port contract, configuration, and how to write an
+> application. This README is the quick tour; that document is the
+> complete reference.
+
 **The kernel contains no allocator, and never will.** Every resource is a
 fixed pool sized at compile time (see `rivet/build.rs` / the `RIVET_*`
 environment variables): task stacks live in one `.task_stacks` pool, the
