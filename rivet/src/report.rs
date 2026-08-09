@@ -5,8 +5,10 @@
 //!
 //! Scope note (plan.md Phase 8, extended by Phase 10): `%busy` is backed
 //! by [`crate::exec_time`], itself built on the Group A cycle counter.
-//! Deadline-miss counts and budget overruns (plan.md Phase 11) are the
-//! next columns to land here once that bookkeeping exists.
+//! Periods/budgets (plan.md Phase 11) don't get their own report column —
+//! a budget overrun raises [`crate::fault::FaultKind::BudgetExceeded`]
+//! immediately through the normal fault policy rather than being tallied
+//! silently, so there's no "miss count" to display.
 
 use core::sync::atomic::Ordering;
 

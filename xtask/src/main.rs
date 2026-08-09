@@ -391,6 +391,24 @@ fn smoke_tests(board_name: &str) -> Vec<TestCase> {
                 allow_traps: false,
                 assert_golden_on_timeout: false,
             },
+            // plan.md Phase 11: drift-corrected periodic wake (measured
+            // end-to-end elapsed time against 4 periods) and CPU-budget
+            // enforcement (a never-yielding highest-priority task can only
+            // ever be preempted by `on_tick`'s budget fault firing —
+            // proves the check actually runs, not just that the
+            // accounting arithmetic is exercised in a unit test).
+            TestCase {
+                name: "deadline_test",
+                pkg: "qemu-riscv",
+                bin: "deadline_test",
+                golden: &[r"PERIOD_OK", r"BUDGET_OK", r"DEADLINE_TEST_OK"],
+                exit_code: 0,
+                timeout: Duration::from_secs(30),
+                icount: None,
+                log_int: false,
+                allow_traps: false,
+                assert_golden_on_timeout: false,
+            },
         ],
         "cm3" => vec![
             TestCase {
@@ -551,6 +569,20 @@ fn smoke_tests(board_name: &str) -> Vec<TestCase> {
                 allow_traps: false,
                 assert_golden_on_timeout: false,
             },
+            // plan.md Phase 11: periods + CPU-budget enforcement (see
+            // riscv's deadline_test for the full rationale).
+            TestCase {
+                name: "deadline_test",
+                pkg: "qemu-cm3",
+                bin: "deadline_test",
+                golden: &[r"PERIOD_OK", r"BUDGET_OK", r"DEADLINE_TEST_OK"],
+                exit_code: 0,
+                timeout: Duration::from_secs(30),
+                icount: None,
+                log_int: false,
+                allow_traps: false,
+                assert_golden_on_timeout: false,
+            },
         ],
         // Third board (plan.md Phase 7): the same Cortex-M3 test bodies as
         // `cm3` (bin sources are shared verbatim, just re-linked against
@@ -665,6 +697,20 @@ fn smoke_tests(board_name: &str) -> Vec<TestCase> {
                     r"=== rivet::report\(\) ===",
                     r"REPORT_TEST_OK",
                 ],
+                exit_code: 0,
+                timeout: Duration::from_secs(30),
+                icount: None,
+                log_int: false,
+                allow_traps: false,
+                assert_golden_on_timeout: false,
+            },
+            // plan.md Phase 11: periods + CPU-budget enforcement (see
+            // riscv's deadline_test for the full rationale).
+            TestCase {
+                name: "deadline_test",
+                pkg: "mps2-an385",
+                bin: "deadline_test",
+                golden: &[r"PERIOD_OK", r"BUDGET_OK", r"DEADLINE_TEST_OK"],
                 exit_code: 0,
                 timeout: Duration::from_secs(30),
                 icount: None,

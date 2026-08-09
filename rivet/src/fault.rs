@@ -28,6 +28,9 @@ pub enum FaultKind {
     MemManage(u32),
     /// Detected by stack watermarking at a context switch.
     StackOverflow,
+    /// A task with a configured `budget_us` (plan.md Phase 11) ran longer
+    /// than its budget within one period, detected at tick time.
+    BudgetExceeded,
 }
 
 /// Everything needed to attribute and report a fault.
@@ -95,6 +98,7 @@ fn dump(info: &FaultInfo) {
         FaultKind::StoreAccess => crate::console::write_str("store-access"),
         FaultKind::MemManage(_) => crate::console::write_str("memmanage"),
         FaultKind::StackOverflow => crate::console::write_str("stack-overflow"),
+        FaultKind::BudgetExceeded => crate::console::write_str("budget-exceeded"),
     }
     crate::console::write_str(" addr=0x");
     print_hex(info.address);

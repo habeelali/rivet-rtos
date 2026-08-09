@@ -117,6 +117,30 @@ impl TaskHandle {
         lifecycle::join_task::<T>(self)
     }
 
+    /// Configure this task's period (plan.md Phase 11): the task itself
+    /// calls [`crate::deadlines::wait_period`] once per iteration to block
+    /// until the next boundary. `0` disables periodic waiting. No-op on a
+    /// stale handle.
+    pub fn set_period_us(&self, period_us: u32) {
+        if self.is_valid() {
+            crate::deadlines::set_period_us(self.id as usize, period_us);
+        }
+    }
+
+    /// Configure this task's per-period CPU budget in microseconds
+    /// (plan.md Phase 11, estimated via
+    /// [`crate::exec_time::estimate_us_from_cycles`]). Exceeding it inside
+    /// one period raises [`crate::fault::FaultKind::BudgetExceeded`]
+    /// through the normal fault policy. `0` disables enforcement. No-op on
+    /// a stale handle. Meaningless without also calling
+    /// [`Self::set_period_us`] — the budget window resets at each period
+    /// boundary.
+    pub fn set_budget_us(&self, budget_us: u32) {
+        if self.is_valid() {
+            crate::deadlines::set_budget_us(self.id as usize, budget_us);
+        }
+    }
+
     /// Release the task's slot and stack for reuse (plan.md §5.4). The
     /// task must have exited (`join` returned) or be a task other than the
     /// current one that is blocked/suspended — despawning a *running*
@@ -393,12 +417,23 @@ pub fn start() -> ! {
 /// registers a deadline in the per-task queue, blocks, and lets the timer
 /// tick wake it. No-op outside a preemptive task.
 pub fn sleep_ms(ms: u64) {
+    let deadline = crate::port::board::now_us().wrapping_add(ms.saturating_mul(1000));
+    sleep_until(deadline);
+}
+
+/// Block the calling preemptive task until the absolute time `deadline_us`
+/// (plan.md §5.6 / Phase 11). `sleep_ms` is `sleep_until(now + ms*1000)`;
+/// [`crate::deadlines::wait_period`] uses this directly with a
+/// drift-corrected deadline so periodic jitter doesn't accumulate. No-op
+/// outside a preemptive task context. If `deadline_us` has already
+/// passed, still yields once (bounded, not a busy spin) rather than
+/// returning immediately.
+pub fn sleep_until(deadline_us: u64) {
     let Some(me) = sched::current() else {
         return;
     };
-    let deadline = crate::port::board::now_us().wrapping_add(ms.saturating_mul(1000));
     sched::block_current();
-    let _ = crate::timer::register_ptask_deadline(deadline, me);
+    let _ = crate::timer::register_ptask_deadline(deadline_us, me);
     crate::port::arch::request_reschedule();
     crate::timer::cancel_ptask_deadline(me);
 }
@@ -454,6 +489,22 @@ pub fn on_tick(interrupted_sp: usize) -> usize {
                 return crate::fault::on_fault(&info);
             }
         }
+    }
+
+    // CPU-budget check (plan.md Phase 11): only meaningful for a task
+    // that's still actually Running (a task that just blocked itself, via
+    // `wait_period`'s own `sleep_until`, resets its budget window on the
+    // *next* period start, not here).
+    if tcb::get(running).map(|t| t.state()) == Some(TaskState::Running)
+        && crate::deadlines::check_budget(running)
+    {
+        let info = crate::fault::FaultInfo {
+            task_id: Some(running),
+            kind: crate::fault::FaultKind::BudgetExceeded,
+            address: 0,
+            pc: 0,
+        };
+        return crate::fault::on_fault(&info);
     }
 
     // A task that just blocked itself (e.g. park_forever(), or a

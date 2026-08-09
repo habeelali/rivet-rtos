@@ -65,6 +65,7 @@ extern crate std;
 pub mod config;
 pub mod console;
 pub mod critical;
+pub mod deadlines;
 pub mod exec_time;
 pub mod executor;
 pub mod fault;
