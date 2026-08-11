@@ -1,0 +1,37 @@
+[package]
+name = "rivet-bsp-esp32c6"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/habeelali/rivet-rtos"
+description = "Rivet RTOS: ESP32-C6 board port (UART0 console, watchdog disable, SYSTIMER clock) — real hardware, no QEMU model"
+# Publishes this board's linker script path to direct dependents, same
+# mechanism as every other rivet-bsp-* crate (see rivet-bsp-qemu-virt's
+# build.rs / docs/porting.md).
+links = "rivet_bsp_esp32c6"
+
+[dependencies]
+rivet = { path = "../rivet" }
+# Deliberately NOT enabling "clint"/"plic": the C6 has neither a SiFive
+# CLINT nor a real SiFive PLIC — it has SYSTIMER (tick) and Espressif's
+# own PLIC_MX + INTERRUPT_CORE0 interrupt-matrix controller (a different
+# register layout despite esp-metadata also calling it "plic flavour" —
+# confirmed by reading esp-hal's own driver, not assumed). Both need
+# board-owned/new-arch-module implementations (plan.md Phase 26).
+# `default-features = false` turns off `pmp-guard`: this core's PMP
+# doesn't behave like the privileged spec's reference shape closely
+# enough to trust (plan.md Phase 26 — probing its grain returned an
+# implausible ~256 MiB minimum region). Falls back to the kernel's own
+# software stack-watermark check alone, same as the ESP32-S3.
+# `no-mcycle`: `mcycle` itself hangs forever the instant it's read on
+# this core (see that feature's own docs) — root-caused as the actual
+# cause of Phase 26's first-dispatch hang, on real hardware, by bisecting
+# print statements down to this exact single-instruction CSR read. This
+# crate provides `__rivet_arch_cycle_count` itself instead (below), from
+# SYSTIMER.
+rivet-arch-riscv = { path = "../rivet-arch-riscv", default-features = false, features = ["no-mcycle", "board-irq-hook", "vectored-trap"] }
+rivet-bsp-support = { path = "../rivet-bsp-support" }
+esp32c6 = { version = "0.23", features = ["rt"] }
+esp-bootloader-esp-idf = { version = "0.5", features = ["esp32c6"] }
+
+[lib]

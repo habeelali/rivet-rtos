@@ -87,6 +87,19 @@ extern "Rust" {
     /// context-switch frame plus slack for the entry trampoline.
     fn __rivet_arch_min_task_stack() -> usize;
 
+    /// Minimum guard-band size (bytes) `rivet::preempt::stack_pool` must
+    /// reserve below each stack before calling [`__rivet_arch_guard_register`]
+    /// on it. `64` on every arch with no hardware-specific minimum larger
+    /// than that (RISC-V PMP's usual `G == 0` case, and both arches with
+    /// no hardware guard mechanism at all, where the value is otherwise
+    /// unused but must still be a real power of two for the pool's own
+    /// layout math). Real RISC-V hardware can require more (plan.md
+    /// Phase 26: the ESP32-C6's PMP grain forces a larger minimum NAPOT
+    /// region than the reference platforms' `G == 0`) — reserving less
+    /// than what the guard will actually deny would deny part of the
+    /// stack itself, not just the intended dead band below it.
+    fn __rivet_arch_min_guard_size() -> usize;
+
     /// Free-running cycle counter (plan.md Phase 10), used for
     /// execution-time accounting and latency histograms. Not required to
     /// start at zero, only to be monotonic (mod 2^64) and to advance at a
@@ -199,6 +212,11 @@ pub fn scratch_close() {
 pub fn min_task_stack() -> usize {
     // SAFETY: see `init`.
     unsafe { __rivet_arch_min_task_stack() }
+}
+
+pub fn min_guard_size() -> usize {
+    // SAFETY: see `init`.
+    unsafe { __rivet_arch_min_guard_size() }
 }
 
 /// Read the free-running cycle counter. See

@@ -38,12 +38,19 @@ static NEXT: AtomicUsize = AtomicUsize::new(0);
 #[cfg(not(feature = "host-port"))]
 static ALLOC_COUNT: AtomicUsize = AtomicUsize::new(0);
 
-/// Guard band size at the low end of every stack (plan.md §3.2): a 64-byte
-/// NAPOT-aligned region the RISC-V PMP denies, so a stack overflow faults
+/// Guard band size at the low end of every stack (plan.md §3.2): an
+/// aligned region the RISC-V PMP denies, so a stack overflow faults
 /// instead of corrupting silently. The CM3 MPU denies the whole pool so
-/// the guard is redundant there (but harmless).
+/// the guard is redundant there (but harmless). `64` bytes on every arch
+/// this has ever been measured on, except the ESP32-C6 (plan.md Phase
+/// 26): its PMP grain forces a larger minimum NAPOT region, so this is a
+/// runtime query — [`crate::port::arch::min_guard_size`] — not a
+/// hardcoded constant, to guarantee the reservation here and what
+/// [`crate::port::arch::guard_register`] actually denies always agree.
 #[cfg(not(feature = "host-port"))]
-const GUARD_SIZE: usize = 64;
+fn guard_size() -> usize {
+    crate::port::arch::min_guard_size()
+}
 
 /// Pool base address on embedded targets.
 #[cfg(not(feature = "host-port"))]
@@ -59,8 +66,9 @@ fn pool_len() -> usize {
 }
 
 /// Allocate a size-aligned stack of `size` bytes from the pool, with a
-/// 64-byte guard band at its low end (plan.md §3.2). `size` must be a
-/// power of two (the MPU/PMP region alignment requires it).
+/// guard band (usually 64 bytes — see [`guard_size`]) at its low end
+/// (plan.md §3.2). `size` must be a power of two (the MPU/PMP region
+/// alignment requires it) and at least as large as the guard band.
 ///
 /// Each stack's guard band is registered via
 /// [`crate::port::arch::guard_register`] (a no-op on arches whose memory
@@ -73,6 +81,13 @@ pub fn alloc_stack(size: usize) -> Option<&'static mut [u8]> {
     );
     #[cfg(not(feature = "host-port"))]
     {
+        let guard_size = guard_size();
+        debug_assert!(
+            size >= guard_size,
+            "rivet: task stack size {size} is smaller than this hardware's minimum PMP/MPU \
+             guard band ({guard_size} bytes) — the guard alignment math below assumes a stack \
+             is always at least as large as its own guard band"
+        );
         let base = pool_base();
         let len = pool_len();
         // Prefer a released stack (LIFO) — the guard band is still
@@ -96,14 +111,17 @@ pub fn alloc_stack(size: usize) -> Option<&'static mut [u8]> {
             FREE_LIST.push(off, sz);
         }
         let next = NEXT.load(Ordering::Relaxed);
-        // Stack base size-aligned; guard = the 64 bytes immediately below.
-        let stack_base = (base + next + GUARD_SIZE + size - 1) & !(size - 1);
-        let guard_base = stack_base - GUARD_SIZE;
+        // Stack base size-aligned; guard = `guard_size` bytes immediately
+        // below (`size >= guard_size`, asserted above, guarantees a
+        // `size`-aligned address is also `guard_size`-aligned, since both
+        // are powers of two — required for the NAPOT guard encoding).
+        let stack_base = (base + next + guard_size + size - 1) & !(size - 1);
+        let guard_base = stack_base - guard_size;
         let offset = guard_base - base;
-        if offset + GUARD_SIZE + size > len {
+        if offset + guard_size + size > len {
             return None;
         }
-        NEXT.store(offset + GUARD_SIZE + size, Ordering::Relaxed);
+        NEXT.store(offset + guard_size + size, Ordering::Relaxed);
         let entry = ALLOC_COUNT.fetch_add(1, Ordering::Relaxed);
         crate::port::arch::guard_register(guard_base, entry);
         // SAFETY: the slice is within the 'static pool, never handed out

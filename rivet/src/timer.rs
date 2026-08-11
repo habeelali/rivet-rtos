@@ -116,6 +116,7 @@ pub(crate) fn cancel_deadline(handle: TimerHandle) {
 /// Scan for expired timers and wake their tasks. Call from the platform
 /// timer ISR on every tick.
 pub fn poll_timers(now_us: u64) {
+    let mut woke_any = false;
     crate::critical::enter(|| {
         for slot in &TIMER_SLOTS {
             // SAFETY: all access to TIMER_SLOTS goes through
@@ -126,10 +127,38 @@ pub fn poll_timers(now_us: u64) {
                 if d != 0 && now_us >= d {
                     *slot.deadline.get() = 0;
                     crate::waker::mark_ready(*slot.task.get());
+                    woke_any = true;
                 }
             }
         }
     });
+    // plan.md Phase 24, found on real dual-core hardware: only one hart
+    // ever calls this function (whichever owns the periodic tick — see
+    // every board's own `tick_start` docs), but the task a cooperative
+    // waker just marked ready could be hosted by the async executor
+    // running on any hart, including one that's currently idling
+    // (`waiti`/`wfi`) waiting for exactly this kind of news. `mark_ready`
+    // itself only flips bitmap flags; nothing else here was telling that
+    // *other* hart to wake up and look — on real dual-core hardware, an
+    // executor task idling on the non-tick-owning core would never
+    // notice its `Sleep` had expired, waiting in `waiti` forever even
+    // though the work was genuinely ready (confirmed: `smp_test.rs`'s
+    // monitor task hung exactly this way; a single-core `Sleep` test,
+    // where the tick-owning hart and the only hart are trivially the
+    // same one, passed cleanly, isolating this as *specifically* the
+    // missing piece). No per-task hart affinity is tracked, so this
+    // broadcasts to every other hart rather than targeting one — a
+    // spurious wake on a hart with nothing to do is a cheap, harmless
+    // no-op (it just re-checks and goes back to idling); a real wake
+    // that's never delivered is not.
+    if woke_any {
+        let hart = crate::port::arch::hart_id();
+        for other in 0..crate::config::MAX_HARTS {
+            if other != hart {
+                crate::port::arch::request_reschedule_on(other);
+            }
+        }
+    }
     poll_ptask_deadlines(now_us);
 }
 
@@ -191,6 +220,7 @@ pub(crate) fn cancel_ptask_deadline(task: usize) {
 
 /// Wake preemptive tasks whose block deadline has passed.
 fn poll_ptask_deadlines(now_us: u64) {
+    let mut woke_any = false;
     crate::critical::enter(|| {
         for (task, slot) in PTASK_DEADLINES.iter().enumerate() {
             // SAFETY: guarded by critical::enter (see register).
@@ -199,10 +229,23 @@ fn poll_ptask_deadlines(now_us: u64) {
                 if d != 0 && now_us >= d {
                     *slot.deadline.get() = 0;
                     crate::preempt::sched::unblock(task);
+                    woke_any = true;
                 }
             }
         }
     });
+    // Same reasoning, same fix as `poll_timers`'s identical broadcast
+    // above (plan.md Phase 24) — a preemptive task's own blocking
+    // timeout (`PriorityMutex::lock_timeout` etc.) can unblock a task
+    // that's not "current" on this hart at all.
+    if woke_any {
+        let hart = crate::port::arch::hart_id();
+        for other in 0..crate::config::MAX_HARTS {
+            if other != hart {
+                crate::port::arch::request_reschedule_on(other);
+            }
+        }
+    }
 }
 
 /// Queue-full error returned by timer registration APIs (plan.md §4.3).

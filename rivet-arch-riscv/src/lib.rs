@@ -23,6 +23,7 @@
 
 #![no_std]
 
+#[cfg(feature = "pmp-guard")]
 pub mod pmp;
 
 #[cfg(feature = "clint")]
@@ -30,6 +31,31 @@ pub mod clint;
 
 #[cfg(feature = "plic")]
 pub mod plic;
+
+#[cfg(feature = "board-irq-hook")]
+extern "Rust" {
+    /// A board-owned interrupt controller's dispatch entry point — see
+    /// the `board-irq-hook` feature's own docs (Cargo.toml) for why this
+    /// exists and what it's for. Called with the raw `mcause` interrupt
+    /// code for any async trap `clint`/`plic` (if enabled) didn't already
+    /// claim; must fully acknowledge whatever it handles (the board's own
+    /// hardware, not this crate's job to know how) and return the sp to
+    /// resume from — `resume_sp` unchanged if nothing to reschedule,
+    /// or `rivet::preempt::on_tick(resume_sp)`'s result if it is.
+    fn __rivet_board_on_async_trap(code: usize, resume_sp: usize) -> usize;
+
+    /// Board-owned peripheral-IRQ enable/disable/priority, mirroring
+    /// `plic::{enable,disable,set_priority}`'s role for boards that
+    /// route through `rivet::irq` but don't have a real SiFive PLIC
+    /// (plan.md Phase 26 follow-up: the ESP32-C6's interrupt matrix +
+    /// PLIC_MX). `irq_num` here is the same *peripheral source* number
+    /// `rivet::irq::register`/`dispatch` use — mapping that to whatever
+    /// CPU line the board's own controller needs is entirely the
+    /// board's job, same division as `__rivet_board_on_async_trap`.
+    fn __rivet_board_irq_enable(irq_num: u32);
+    fn __rivet_board_irq_disable(irq_num: u32);
+    fn __rivet_board_irq_set_priority(irq_num: u32, priority: u8);
+}
 
 /// Minimum task stack: the 128-byte trap frame plus slack for the entry
 /// trampoline.
@@ -80,6 +106,24 @@ fn isr_stack_top_for_this_hart() -> usize {
 extern "Rust" fn __rivet_arch_init() {
     use riscv::register::mtvec;
 
+    // Never assume the reset/boot state of `mstatus.MIE` — QEMU virt and
+    // MPS2 both happen to start with it clear, but a real SoC's boot ROM/
+    // 2nd-stage bootloader (e.g. the ESP32-C6's) may leave it set from its
+    // own interrupt-driven bring-up. Left set, the very next line below
+    // that installs `mtvec` (or any later line that unmasks a specific
+    // interrupt source, e.g. a board's tick controller) can take a trap
+    // before the kernel is ready to handle one — confirmed on hardware:
+    // the C6 board rebooted at an inconsistent point during its own
+    // interrupt-matrix setup until this was added. `mtvec` itself isn't
+    // installed yet at this point, so this is just belt-and-suspenders
+    // against whatever `mtvec` currently points to (usually the boot
+    // ROM's own handler) rather than the mechanism that actually matters
+    // here — but ordering it first costs nothing and rules out every
+    // "trap fires between here and `mtvec::write` below" case too.
+    unsafe {
+        riscv::register::mstatus::clear_mie();
+    }
+
     // SAFETY: `isr_stack_top_for_this_hart()` returns a slice strictly
     // inside the linker-provided `.isr_stack` section (rivet-rt's common
     // linker fragment) for any `hart_id() < 8`; mscratch must hold it
@@ -87,8 +131,34 @@ extern "Rust" fn __rivet_arch_init() {
     riscv::register::mscratch::write(isr_stack_top_for_this_hart());
 
     // SAFETY: `rivet_trap_entry` is the hand-written trap entry defined
-    // below; installing it as the direct-mode mtvec handler is required
-    // for every interrupt/fault to reach the kernel's dispatcher.
+    // below; installing it as the mtvec handler is required for every
+    // interrupt/fault to reach the kernel's dispatcher.
+    //
+    // Direct mode by default: every board this crate originally targeted
+    // (QEMU virt's CLINT, a real SiFive PLIC) only ever raises the 3
+    // standard interrupt causes (3/7/11), which direct mode delivers
+    // exactly like any exception — a single entry point that reads
+    // `mcause` itself. `board-irq-hook` boards with only standard-range
+    // causes work the same way.
+    //
+    // Some SoCs' *custom* per-line "local" interrupts (cause >= 12) are
+    // different: confirmed on real ESP32-C6 hardware (`vectored-trap`'s
+    // own docs have the full story) that enabling one of these lines'
+    // `mie` bit while `mtvec` is in Direct mode hard-locks the core
+    // before software ever runs again — not a normal trap, no exception,
+    // nothing printable, requiring a watchdog reset. `esp-hal`'s own
+    // driver for this exact controller flavour always installs a
+    // *vectored* `mtvec` first. Since `rivet_trap_entry` already reads
+    // `mcause` itself and doesn't need to know which vector index got it
+    // there, the vectored table below is just 32 identical `j
+    // rivet_trap_entry` stubs — vectored mode's hardware-computed jump
+    // target becomes a no-op indirection to the exact same entry point
+    // direct mode would have used, so no dispatch logic changes at all.
+    #[cfg(feature = "vectored-trap")]
+    unsafe {
+        mtvec::write(rivet_vector_table as *const () as usize, mtvec::TrapMode::Vectored);
+    }
+    #[cfg(not(feature = "vectored-trap"))]
     unsafe {
         mtvec::write(
             rivet_trap_entry as *const () as usize,
@@ -96,6 +166,7 @@ extern "Rust" fn __rivet_arch_init() {
         );
     }
 
+    #[cfg(feature = "pmp-guard")]
     pmp::init_catch_all();
 }
 
@@ -131,9 +202,29 @@ extern "Rust" fn __rivet_arch_min_task_stack() -> usize {
     MIN_TASK_STACK
 }
 
+#[no_mangle]
+extern "Rust" fn __rivet_arch_min_guard_size() -> usize {
+    #[cfg(feature = "pmp-guard")]
+    {
+        pmp::probed_guard_size()
+    }
+    #[cfg(not(feature = "pmp-guard"))]
+    {
+        // No hardware guard on this build (see the `pmp-guard` feature's
+        // own docs) — unused for actual protection, still a real power
+        // of two matching the historical guard size, since
+        // `rivet::preempt::stack_pool`'s layout math needs *some* value.
+        64
+    }
+}
+
 /// `mcycle`/`mcycleh` (plan.md Phase 10): RV32 has no single 64-bit cycle
 /// register, so the pair must be read with the standard rollover-safe
 /// double-read-of-`mcycleh` sequence — `read64()` already implements that.
+/// Not defined at all when the `no-mcycle` feature is on — see that
+/// feature's own docs for why, and which crate provides the symbol
+/// instead in that case.
+#[cfg(not(feature = "no-mcycle"))]
 #[no_mangle]
 extern "Rust" fn __rivet_arch_cycle_count() -> u64 {
     riscv::register::mcycle::read64()
@@ -147,18 +238,30 @@ extern "Rust" fn __rivet_arch_cycle_count() -> u64 {
 extern "Rust" fn __rivet_arch_irq_enable(_irq_num: u32) {
     #[cfg(feature = "plic")]
     plic::enable(_irq_num);
+    #[cfg(feature = "board-irq-hook")]
+    unsafe {
+        __rivet_board_irq_enable(_irq_num);
+    }
 }
 
 #[no_mangle]
 extern "Rust" fn __rivet_arch_irq_disable(_irq_num: u32) {
     #[cfg(feature = "plic")]
     plic::disable(_irq_num);
+    #[cfg(feature = "board-irq-hook")]
+    unsafe {
+        __rivet_board_irq_disable(_irq_num);
+    }
 }
 
 #[no_mangle]
 extern "Rust" fn __rivet_arch_irq_set_priority(_irq_num: u32, _priority: u8) {
     #[cfg(feature = "plic")]
     plic::set_priority(_irq_num, _priority);
+    #[cfg(feature = "board-irq-hook")]
+    unsafe {
+        __rivet_board_irq_set_priority(_irq_num, _priority);
+    }
 }
 
 /// plan.md Phase 19: `mhartid` is always legal to read in M-mode.
@@ -202,7 +305,10 @@ extern "Rust" fn __rivet_arch_on_switch_to(_stack_base: usize, _stack_size: usiz
 
 #[no_mangle]
 extern "Rust" fn __rivet_arch_guard_register(guard_base: usize, slot: usize) {
+    #[cfg(feature = "pmp-guard")]
     pmp::register_guard(guard_base, slot);
+    #[cfg(not(feature = "pmp-guard"))]
+    let _ = (guard_base, slot);
 }
 
 #[no_mangle]
@@ -310,7 +416,7 @@ unsafe extern "C" fn rivet_trap_handler_rust(interrupted_sp: usize) -> usize {
     let entry_cycles = rivet::port::arch::cycle_count();
 
     let cause = mcause::read();
-    #[cfg_attr(not(feature = "clint"), allow(unused_mut))]
+    #[cfg_attr(not(any(feature = "clint", feature = "board-irq-hook")), allow(unused_mut))]
     let mut resume_sp = interrupted_sp;
 
     if cause.is_interrupt() {
@@ -349,9 +455,28 @@ unsafe extern "C" fn rivet_trap_handler_rust(interrupted_sp: usize) -> usize {
             // their own `request_reschedule()` as needed.
             plic::claim_dispatch_complete();
         }
-        // Silences "unused" when neither `clint` nor `plic` is enabled;
-        // harmless (and not a duplicate-use error) when one already read
-        // `code` above.
+        // Board-owned interrupt controller (plan.md Phase 26): a board
+        // without a CLINT or a real SiFive PLIC — e.g. the ESP32-C6's own
+        // interrupt-matrix + PLIC_MX, which is Espressif-family-specific
+        // MMIO this arch-generic crate deliberately has no knowledge of
+        // (see the crate's own top-level docs) — supplies its own tick/
+        // reschedule dispatch for whichever CPU interrupt line(s) it
+        // routes through the matrix. Only compiled in when a board
+        // actually needs it (`board-irq-hook`), so every other board
+        // (QEMU virt, MPS2-AN385) is entirely unaffected — no new symbol
+        // for their linkers to even see. Deliberately *not* a silent
+        // fallthrough for boards that skip this too: an unacknowledged,
+        // level-triggered board interrupt would otherwise refire the
+        // instant this handler returns, an infinite interrupt storm that
+        // looks exactly like a hang from the outside (the same hazard
+        // already documented for the tick handlers above).
+        #[cfg(feature = "board-irq-hook")]
+        {
+            resume_sp = __rivet_board_on_async_trap(code, resume_sp);
+        }
+        // Silences "unused" when none of clint/plic/board-irq-hook are
+        // enabled; harmless (and not a duplicate-use error) when one
+        // already read `code` above.
         let _ = code;
     } else {
         // Synchronous exception. Access faults (mcause 1/5/7) are routed
@@ -469,8 +594,84 @@ core::arch::global_asm!(
     "  j    rivet_trap_resume", // shared restore epilogue
 );
 
+// Vectored-mode dispatch table (`vectored-trap` feature — see its call
+// site in `__rivet_arch_init` for why it exists at all). 32 identical
+// stubs: RISC-V vectored mode computes the jump target as `mtvec.BASE +
+// 4 * mcause` for interrupts (exceptions always go to BASE, i.e. entry
+// 0, regardless of vectoring — matching `rivet_trap_entry` being entry
+// 0 here too), so every entry can just re-enter the same handler
+// `rivet_trap_entry` already reads `mcause` itself. `.balign 4` is the
+// RISC-V privileged spec's actual (and only) requirement on
+// `mtvec.BASE` in vectored mode — the 2 mode bits occupy the low bits,
+// nothing more. `esp-riscv-rt` uses a much larger `.balign 0x100` for
+// the same chip family, and that generous padding turned out to be
+// actively harmful here: `espflash`'s ELF-to-app-image conversion
+// reproducibly splits the RAM (`.data`) segment into two and reorders
+// them ahead of the flash-mapped `.text` segment once enough padding
+// bytes land before the entry point (empirically bisected: `.balign
+// 0x20` packs correctly, `.balign 0x40` doesn't) — producing an image
+// the ESP-IDF bootloader rejects outright ("Failed to fetch app
+// description header!"). Since the ISA itself only demands 4-byte
+// alignment and this table works correctly at that alignment on real
+// hardware (verified after this bisection), there's no reason to pay
+// for more. Gated on the feature (unlike `rivet_trap_entry` itself) so
+// boards that never enable it don't carry the extra bytes at all —
+// `--gc-sections` might drop an unreferenced global_asm block, but
+// relying on that instead of just not emitting it is an unnecessary
+// bet.
+#[cfg(feature = "vectored-trap")]
+core::arch::global_asm!(
+    ".section .text",
+    ".balign 4",
+    ".option push",
+    ".option norelax",
+    ".option norvc",
+    ".global rivet_vector_table",
+    "rivet_vector_table:",
+    "  j rivet_trap_entry", // entry 0: exceptions land here regardless
+    "  j rivet_trap_entry",
+    "  j rivet_trap_entry",
+    "  j rivet_trap_entry",
+    "  j rivet_trap_entry",
+    "  j rivet_trap_entry",
+    "  j rivet_trap_entry",
+    "  j rivet_trap_entry",
+    "  j rivet_trap_entry",
+    "  j rivet_trap_entry",
+    "  j rivet_trap_entry",
+    "  j rivet_trap_entry",
+    "  j rivet_trap_entry",
+    "  j rivet_trap_entry",
+    "  j rivet_trap_entry",
+    "  j rivet_trap_entry",
+    "  j rivet_trap_entry",
+    "  j rivet_trap_entry",
+    "  j rivet_trap_entry",
+    "  j rivet_trap_entry",
+    "  j rivet_trap_entry",
+    "  j rivet_trap_entry",
+    "  j rivet_trap_entry",
+    "  j rivet_trap_entry",
+    "  j rivet_trap_entry",
+    "  j rivet_trap_entry",
+    "  j rivet_trap_entry",
+    "  j rivet_trap_entry",
+    "  j rivet_trap_entry",
+    "  j rivet_trap_entry",
+    "  j rivet_trap_entry",
+    "  j rivet_trap_entry",
+    ".option pop",
+);
+
 extern "C" {
+    // Only referenced from Rust in the `not(vectored-trap)` branch of
+    // `__rivet_arch_init` — under `vectored-trap` it's still very much
+    // used, just from the vector table's own asm (`j rivet_trap_entry`),
+    // which the dead-code lint can't see.
+    #[cfg_attr(feature = "vectored-trap", allow(dead_code))]
     fn rivet_trap_entry();
+    #[cfg(feature = "vectored-trap")]
+    fn rivet_vector_table();
 }
 
 core::arch::global_asm!(

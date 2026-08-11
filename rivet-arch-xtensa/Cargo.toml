@@ -1,0 +1,28 @@
+[package]
+name = "rivet-arch-xtensa"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/habeelali/rivet-rtos"
+description = "Rivet RTOS: Xtensa LX7 ISA port (ESP32-S3) — context switch, exception/interrupt entry, no board/MMIO knowledge"
+
+[features]
+default = []
+# Forwards to `rivet/latency-histograms` (plan.md Phase 12 precedent),
+# matching the other two arch crates.
+latency-histograms = ["rivet/latency-histograms"]
+
+[dependencies]
+rivet = { path = "../rivet" }
+xtensa-lx = "0.13"
+xtensa-lx-rt = "0.22"
+# Cross-core IPI (plan.md Phase 24) needs the `SYSTEM.cpu_intr_from_cpu_*`
+# registers and the per-core `INTERRUPT_COREn` interrupt-matrix mapping —
+# real, fixed-address SoC peripherals, not board-configurable ones (unlike
+# `rivet-arch-riscv::clint`'s base address, which genuinely varies by
+# board). ESP32-S3 is the only Xtensa target in this workspace, so this
+# is a deliberate, scoped exception to "no board/MMIO knowledge" rather
+# than a precedent for arbitrary peripheral access from this crate.
+esp32s3 = "0.35"
+
+[lib]

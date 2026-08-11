@@ -7,7 +7,62 @@ repository.workspace = true
 description = "Rivet RTOS: RV32 ISA port (context switch, trap entry, PMP) — no board/MMIO knowledge"
 
 [features]
-default = []
+default = ["pmp-guard"]
+# Hardware PMP stack-overflow guards (NAPOT bands, see src/pmp.rs). On by
+# default — every board this crate was originally written against (QEMU
+# virt, MPS2-AN385) has a standard `G == 0` PMP implementation where this
+# just works. A board whose actual PMP behavior doesn't match the
+# privileged spec's reference shape closely enough to trust (plan.md
+# Phase 26: the ESP32-C6 — probing its grain returned an implausible
+# ~256 MiB minimum region, not a real hardware property, evidence of a
+# non-standard/unreliable PMP implementation on this specific core, not
+# just a large-but-real grain) can turn this off and rely solely on the
+# kernel's own software stack-watermark check (`preempt::on_tick_locked`)
+# instead — already proven sufficient by itself on the ESP32-S3, which
+# has no PMP/MPU-equivalent hardware guard mechanism at all.
+pmp-guard = []
+# Skip defining `__rivet_arch_cycle_count` in this crate at all — the
+# board must supply it instead (same "symbol contract doesn't care which
+# crate provides it" escape hatch `clint`/`plic` already use). On by
+# default in the sense that this crate's own `mcycle`-based
+# implementation is what every board gets unless it opts out. The
+# ESP32-C6 (plan.md Phase 26) needs to: `mcycle` itself hangs forever the
+# instant it's read on real hardware — confirmed by bisection down to
+# this *exact* single-instruction `csrr`, with no trap/panic message
+# ever printed (removing even the 32-bit-only, non-`mcycleh` read still
+# hung; this isn't the standard rollover-safe double-read loop failing
+# to converge, the bare CSR access itself never completes) — consistent
+# with a bus-routed CSR on this core with nothing actually connected to
+# answer it, not a software bug. `rivet-bsp-esp32c6` instead derives its
+# cycle counter from SYSTIMER (already used for `now_us()`), matching
+# the port contract's own documented fallback ("implementations without
+# a hardware cycle counter may derive one from another monotonic
+# source").
+no-mcycle = []
+# Lets a board supply its own async-interrupt dispatch for whatever CPU
+# interrupt line(s) it routes its own controller through — an escape
+# hatch for boards whose interrupt controller isn't a SiFive CLINT/PLIC
+# (`clint`/`plic` above) and isn't generic enough to belong in this
+# arch-only crate either (plan.md Phase 26: the ESP32-C6's interrupt
+# matrix + PLIC_MX is genuinely Espressif-family-specific MMIO, not a
+# reusable RV32 IP block the way CLINT/PLIC are). Off by default —
+# boards that don't need it never link the symbol at all.
+board-irq-hook = []
+# Install `mtvec` in vectored mode (a 32-entry table, all pointing back
+# at the same `rivet_trap_entry` used in direct mode — see the call site
+# in `__rivet_arch_init` for the full story) instead of direct mode.
+# Needed by boards whose custom/"local" interrupt causes (>= 12) only
+# work in vectored mode — confirmed the hard way on real ESP32-C6
+# hardware (plan.md Phase 26): enabling such a line's `mie` bit while
+# `mtvec` was in direct mode hard-locked the core with no trap, no
+# panic, nothing printable, every time — and esp-hal's own driver for
+# this exact controller flavour (`interrupt_controller = "plic"` in its
+# `soc.toml`) always installs a vectored `mtvec` before touching any of
+# these lines, which is what finally exposed the real cause. Off by
+# default: QEMU virt/MPS2 only ever raise the 3 standard interrupt
+# causes, which are identical in both modes, so there's no reason for
+# them to pay for (or even build) the extra vector table.
+vectored-trap = []
 # Stock CLINT-based tick + reschedule-IPI driver (SiFive CLINT: mtime,
 # mtimecmp, MSIP). Used by boards that actually have a CLINT (QEMU virt and
 # most RV32 "virt-like" platforms). Boards without one (e.g. ESP32-C3, which

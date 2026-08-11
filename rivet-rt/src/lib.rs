@@ -65,9 +65,15 @@ mod riscv {
     // `-smp` higher than it was configured for) still park forever —
     // there is no kernel state sized for them.
     //
-    // No `.data` copy needed: this is a single-RAM-region target (no
-    // separate flash load address), so `.data`'s initial contents are
-    // already at their run-time VMA in the loaded image.
+    // `.data` copy: `__data_load` is `__data_start` itself (a `PROVIDE`
+    // default every board's linker script gets from `rivet-rt`'s shared
+    // fragment) on a single-RAM-region target with no separate flash load
+    // address (QEMU virt) — this loop is then a harmless self-copy. A
+    // real XIP board (ESP32-C6: flash-backed `.data`, copied to RAM at
+    // boot, same shape Cortex-M/Xtensa already need) overrides
+    // `__data_load` to its real flash address in its own linker script,
+    // and this exact loop does the real work, no separate boot path
+    // needed.
     core::arch::global_asm!(
         ".section .text._start",
         ".global _start",
@@ -75,6 +81,17 @@ mod riscv {
         "  csrr t0, mhartid",
         "  bnez t0, secondary_entry",
         "  la   sp, __stack_top",
+        "  la   t0, __data_start",
+        "  la   t1, __data_end",
+        "  la   t2, __data_load",
+        "3:",
+        "  bgeu t0, t1, 4f",
+        "  lw   t3, 0(t2)",
+        "  sw   t3, 0(t0)",
+        "  addi t0, t0, 4",
+        "  addi t2, t2, 4",
+        "  j    3b",
+        "4:",
         "  la   t0, __bss_start",
         "  la   t1, __bss_end",
         "1:",
@@ -191,6 +208,35 @@ mod cortex_m {
         // preempt it, so a message queued into that ring here would
         // never drain on its own.
         rivet::console::flush_sync();
+        loop {
+            core::hint::spin_loop();
+        }
+    }
+}
+
+#[cfg(target_arch = "xtensa")]
+mod xtensa {
+    // `xtensa-lx-rt` (linked in by `rivet-arch-xtensa`) owns `Reset`,
+    // bss/data init, and the vector table entirely (plan.md Phase 21/22 —
+    // see `rivet-arch-xtensa`'s module docs for why that boot-glue layer
+    // is sourced from there rather than hand-written, same reasoning as
+    // `riscv-rt`/`cortex-m-rt` for the other two arches, just one layer
+    // further out here). All this crate needs to provide is the `main`
+    // symbol `xtensa-lx-rt`'s own `Reset` calls once bss/data are ready.
+    #[no_mangle]
+    pub extern "C" fn main() -> ! {
+        // SAFETY: called exactly once, by `xtensa-lx-rt`'s `Reset`, after
+        // bss/data init and before anything else runs.
+        unsafe { super::rivet_main() }
+    }
+
+    /// Fallback for every peripheral interrupt vector the `esp32s3` PAC's
+    /// `device.x` doesn't have a specific handler bound for (`PROVIDE(X =
+    /// DefaultHandler)` for every named vector) — same role as Cortex-M's
+    /// `DefaultHandler` in this same crate.
+    #[no_mangle]
+    pub extern "C" fn DefaultHandler() {
+        rivet::console::write_str("UNHANDLED_INTERRUPT\n");
         loop {
             core::hint::spin_loop();
         }

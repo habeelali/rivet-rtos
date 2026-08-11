@@ -1,0 +1,33 @@
+[package]
+name = "esp32s3-demo"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "demo"
+path = "src/bin/demo.rs"
+test = false
+
+[dependencies]
+rivet = { path = "../../rivet" }
+rivet-rt = { path = "../../rivet-rt" }
+rivet-arch-xtensa = { path = "../../rivet-arch-xtensa" }
+rivet-bsp-esp32s3 = { path = "../../rivet-bsp-esp32s3" }
+rivet-bsp-support = { path = "../../rivet-bsp-support" }
+# irq_test pokes UART0 registers directly to generate a genuine hardware
+# interrupt (matching qemu-riscv's own irq_test, which does the same
+# against its NS16550) — same version rivet-arch-xtensa/rivet-bsp-esp32s3
+# already depend on.
+esp32s3 = "0.35"
+embedded-hal-async = "1.0"
+embedded-hal-nb = "1.0"
+nb = "1.1"
+
+[profile.release]
+opt-level = "s"
+lto = true
+debug = true
+panic = "abort"
+
+[profile.dev]
+panic = "abort"

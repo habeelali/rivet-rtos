@@ -3,6 +3,13 @@
 **/*.rs.bk
 Cargo.lock
 
+# The Xtensa (ESP32-S3) crates build under their own `esp` toolchain fork
+# outside the main workspace (see root Cargo.toml's `exclude`), so each
+# has its own target dir the root `/target/` pattern above doesn't reach.
+rivet-arch-xtensa/target/
+rivet-bsp-esp32s3/target/
+examples/esp32s3/target/
+
 # IDE
 .idea/
 .vscode/

@@ -1,0 +1,40 @@
+[package]
+name = "esp32c6-demo"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "demo"
+path = "src/bin/demo.rs"
+test = false
+
+[dependencies]
+rivet = { path = "../../rivet" }
+rivet-rt = { path = "../../rivet-rt" }
+# Must match rivet-bsp-esp32c6's own feature selection exactly — Cargo
+# unifies features across a build graph, so leaving this at defaults
+# would silently re-enable `pmp-guard` (see rivet-bsp-esp32c6/Cargo.toml
+# for why it's off) even though only the BSP crate is the one that's
+# supposed to decide.
+rivet-arch-riscv = { path = "../../rivet-arch-riscv", default-features = false, features = ["no-mcycle", "board-irq-hook", "vectored-trap"] }
+rivet-bsp-esp32c6 = { path = "../../rivet-bsp-esp32c6" }
+# For test binaries (irq_test) that poke a peripheral's registers
+# directly to generate a genuine hardware interrupt condition — same
+# version rivet-bsp-esp32c6 itself uses.
+esp32c6 = { version = "0.23", features = ["rt"] }
+# For embedded_hal_test: rivet-bsp-support's RivetDelay/Serial wrappers
+# are entirely board-agnostic (built on rivet::preempt/rivet::console),
+# so no C6-specific implementation is needed, just this dependency.
+rivet-bsp-support = { path = "../../rivet-bsp-support" }
+embedded-hal-async = "1.0"
+embedded-hal-nb = "1.0"
+nb = "1.1"
+
+[profile.release]
+opt-level = "s"
+lto = true
+debug = true
+panic = "abort"
+
+[profile.dev]
+panic = "abort"

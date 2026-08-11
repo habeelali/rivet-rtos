@@ -80,6 +80,14 @@ extern "Rust" fn __rivet_arch_min_task_stack() -> usize {
     256
 }
 
+#[no_mangle]
+extern "Rust" fn __rivet_arch_min_guard_size() -> usize {
+    // Host backend: `stack_pool::alloc_stack` always returns `None` here
+    // (no linker-provided pool), so this is never actually consulted for
+    // layout math — 64 keeps the contract shape consistent regardless.
+    64
+}
+
 static CYCLES: AtomicU64 = AtomicU64::new(0);
 
 #[no_mangle]

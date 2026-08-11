@@ -1,0 +1,29 @@
+[package]
+name = "rivet-bsp-esp32s3"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/habeelali/rivet-rtos"
+description = "Rivet RTOS: ESP32-S3 board port (UART0 console, watchdog disable, Xtensa CCOUNT tick) — real hardware, no QEMU model"
+
+[dependencies]
+rivet = { path = "../rivet" }
+rivet-arch-xtensa = { path = "../rivet-arch-xtensa" }
+rivet-bsp-support = { path = "../rivet-bsp-support" }
+esp32s3 = { version = "0.35", features = ["rt"] }
+xtensa-lx = "0.13"
+esp-bootloader-esp-idf = { version = "0.5", features = ["esp32s3"] }
+# NOTE: deliberately NOT depending on `esp-hal` here (an earlier attempt
+# did, for its clock/watchdog bring-up — see git history/KNOWN_FAILURES):
+# `esp-hal::interrupt::xtensa` defines `__level_N_interrupt` for every
+# level 1-7 as part of its own generic peripheral-interrupt dispatch, an
+# unconditional, hard `multiple definition` link conflict against
+# whichever level `rivet-arch-xtensa` uses for its own tick/reschedule
+# handler, confirmed empirically at levels 1 and 3 both — esp-hal's
+# runtime and a from-scratch preemptive scheduler owning its own
+# interrupt levels cannot coexist in one binary. Watchdog disable is
+# hand-rolled directly against the `esp32s3` PAC instead (the exact
+# register sequence + magic unlock keys, cross-checked against esp-hal's
+# own source for correctness, without linking esp-hal itself).
+
+[lib]

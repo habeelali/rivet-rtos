@@ -17,7 +17,17 @@ SECTIONS
   } > RAM
 
   .rodata : { *(.rodata .rodata.*) } > RAM
-  .data   : { *(.data .data.*) } > RAM
+  .data   : {
+    __data_start = .;
+    *(.data .data.*)
+    __data_end = .;
+  } > RAM
+
+  /* No separate flash load address on this board (the whole image loads
+   * directly into RAM) — `rivet-rt`'s shared `_start` always copies
+   * `.data` from `__data_load`, so this just makes that copy a no-op
+   * self-copy rather than needing a QEMU-virt-specific boot path. */
+  __data_load = __data_start;
 
   .bss : {
     __bss_start = .;
