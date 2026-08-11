@@ -459,13 +459,22 @@ fn smoke_tests(board_name: &str) -> Vec<TestCase> {
             },
             // plan.md §2.3 acceptance: nested inheritance trace ([B11]),
             // lock_timeout/try_lock, and 1M-cycle contention stress ([B1]).
+            // plan.md Phase 30: bumped from 120s — Cortex-M3's QEMU model
+            // (`lm3s6965evb`) genuinely emulates this test's 1M-cycle
+            // contention stress ([B1]) slower than RISC-V `virt` does the
+            // identical workload (confirmed: `riscv/mutex_test` passes the
+            // same test within the original 120s every time). Not a
+            // regression from this workspace's own kernel code — reproduced
+            // on pristine, unmodified `main` too — just this machine
+            // model's real emulation throughput for a CPU-bound stress
+            // loop under contention.
             TestCase {
                 name: "mutex_test",
                 pkg: "qemu-cm3",
                 bin: "mutex_test",
                 golden: mutex_test_golden(),
                 exit_code: 0,
-                timeout: Duration::from_secs(120),
+                timeout: Duration::from_secs(240),
                 icount: None,
                 log_int: false,
                 allow_traps: false,
@@ -689,13 +698,17 @@ fn smoke_tests(board_name: &str) -> Vec<TestCase> {
                 allow_traps: false,
                 assert_golden_on_timeout: false,
             },
+            // plan.md Phase 30: same reasoning as `qemu-cm3`'s own
+            // identical bump above — MPS2-AN385's Cortex-M3 QEMU model
+            // needs more than 120s for this test's 1M-cycle contention
+            // stress too.
             TestCase {
                 name: "mutex_test",
                 pkg: "mps2-an385",
                 bin: "mutex_test",
                 golden: mutex_test_golden(),
                 exit_code: 0,
-                timeout: Duration::from_secs(120),
+                timeout: Duration::from_secs(240),
                 icount: None,
                 log_int: false,
                 allow_traps: false,

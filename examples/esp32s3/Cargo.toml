@@ -8,6 +8,11 @@ name = "demo"
 path = "src/bin/demo.rs"
 test = false
 
+[features]
+# plan.md Phase 12: forwards to both crates' own `latency-histograms`
+# feature (independent flags per crate, same name).
+latency-histograms = ["rivet/latency-histograms", "rivet-arch-xtensa/latency-histograms"]
+
 [dependencies]
 rivet = { path = "../../rivet" }
 rivet-rt = { path = "../../rivet-rt" }

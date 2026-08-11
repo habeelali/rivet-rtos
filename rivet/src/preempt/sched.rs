@@ -1,11 +1,12 @@
 //! Priority + round-robin scheduler for the preemptive tier.
 //!
-//! O(1) selection (plan.md §4.2 / [B13]): a `READY_BITMAP` (bit p =
-//! priority p has a ready task) plus per-priority `QUEUES` words (bit i =
-//! ptask i ready at that priority). `schedule()` is two bit operations —
-//! `31 - leading_zeros` then `trailing_zeros` with an RR rotation — with
-//! NO array walk, so worst-case scheduling latency is independent of
-//! `MAX_PTASKS`.
+//! Priority selection is O(1) (plan.md §4.2 / [B13]): a `READY_BITMAP`
+//! (bit p = priority p has a ready task) picks the winning priority level
+//! via `31 - leading_zeros`, no array walk. Round-robin fairness *within*
+//! a priority level (plan.md [B14]) costs a bounded scan of that level's
+//! `QUEUES` word — see [`DISPATCH_SEQ`]'s docs for why a rotating-cursor
+//! O(1) scheme was replaced with this after it proved unable to
+//! guarantee fairness under concurrent multi-hart dispatch.
 //!
 //! Queue membership is authoritative for "ready": a task is in the queue
 //! of its *effective* priority while `Ready`; Running/Blocked tasks are
@@ -63,13 +64,56 @@ loom::lazy_static! {
     static ref CURRENT: [AtomicUsize; MAX_HARTS] = core::array::from_fn(|_| AtomicUsize::new(NO_TASK));
 }
 
-/// Round-robin rotation offset (the last-dispatched id + 1, plan.md
-/// [B14]); see [`on_dispatch`].
+/// Global monotonic counter, incremented once per real dispatch (any
+/// priority). Source of [`DISPATCH_SEQ`]'s values.
 #[cfg(not(loom))]
-static RR_OFFSET: AtomicUsize = AtomicUsize::new(0);
+static DISPATCH_COUNTER: AtomicU32 = AtomicU32::new(0);
 #[cfg(loom)]
 loom::lazy_static! {
-    static ref RR_OFFSET: AtomicUsize = AtomicUsize::new(0);
+    static ref DISPATCH_COUNTER: AtomicU32 = AtomicU32::new(0);
+}
+
+/// Per-task "last actually dispatched at" sequence number (plan.md
+/// [B14]); see [`on_dispatch`] and [`schedule`].
+///
+/// plan.md Phase 30: replaces an earlier "rotating offset, nearest bit"
+/// round-robin (both a single global offset, and a later per-priority-
+/// level refinement of it). Both were vulnerable to the same class of
+/// bug: with 3+ tasks tied at one priority and irregular ready/blocked
+/// toggling (e.g. two `PriorityMutex` contenders plus a third task that
+/// never blocks), and — critically — with *multiple harts* concurrently
+/// pulling from the same shared ready queue, the "nearest bit from a
+/// shared cursor" heuristic could settle into a small cycle between
+/// just two of the ready ids (typically whichever two tasks keep
+/// re-queuing each other fastest) and never reach a third that's
+/// genuinely waiting, no matter how many ticks pass. Confirmed as a
+/// real, reproducible, deterministic starvation on both QEMU (kernel-
+/// wide, not board-specific) and real ESP32-S3 hardware — worse under
+/// real dual-core concurrent dispatch than under a single hart, and
+/// worse still the higher the ready-queue "pressure" from a never-
+/// blocking sibling (real 240MHz hardware showing near-total
+/// starvation where slower QEMU emulation only showed partial bias).
+///
+/// This replaces the whole rotating-cursor approach with true
+/// least-recently-dispatched selection: every real dispatch stamps the
+/// task with the next value from [`DISPATCH_COUNTER`], and `schedule()`
+/// picks, among the ready bits at the winning priority, whichever has
+/// the *smallest* stamp — i.e. whichever has waited longest since it
+/// last ran. This is provably starvation-free for any *bounded* number
+/// of ready siblings regardless of hart count or toggle pattern: a task
+/// that hasn't run in a while can only get "older" relative to its
+/// siblings, so it is eventually the unique minimum and must be picked.
+/// The cost is an O(popcount) scan of the winning priority's queue word
+/// instead of O(1) — `MAX_PTASKS` is a small, fixed, compile-time bound
+/// (already scanned linearly elsewhere in this crate, e.g.
+/// `PriorityMutex::highest_waiter_priority`), so this trades a few extra
+/// bounded cycles for a real fairness guarantee, which correctness comes
+/// first here.
+#[cfg(not(loom))]
+static DISPATCH_SEQ: [AtomicU32; MAX_PTASKS] = [const { AtomicU32::new(0) }; MAX_PTASKS];
+#[cfg(loom)]
+loom::lazy_static! {
+    static ref DISPATCH_SEQ: [AtomicU32; MAX_PTASKS] = core::array::from_fn(|_| AtomicU32::new(0));
 }
 
 /// The calling hart's currently-running task, or `None` if that hart's
@@ -168,11 +212,13 @@ pub fn on_effective_priority_change(id: usize, old_prio: u8, new_prio: u8) {
     READY_BITMAP.fetch_or(1u32 << new_prio, Ordering::Release);
 }
 
-/// Select the next task to run in O(1): highest effective-priority queue
-/// with a ready task, round-robin within it via a rotation.
+/// Select the next task to run: highest effective-priority queue with a
+/// ready task, least-recently-dispatched within it (plan.md [B14]/[B13]
+/// — see [`DISPATCH_SEQ`]'s docs for why this replaced a rotating-cursor
+/// scheme).
 ///
-/// Pure: has NO side effects (plan.md [B14]); the rotation offset only
-/// advances via [`on_dispatch`] at real context switches.
+/// Pure: has NO side effects; dispatch sequence numbers only advance via
+/// [`on_dispatch`] at real context switches.
 pub fn schedule() -> Option<usize> {
     let mut bitmap = READY_BITMAP.load(Ordering::Acquire);
     loop {
@@ -205,26 +251,44 @@ pub fn schedule() -> Option<usize> {
             bitmap = READY_BITMAP.fetch_and(!(1u32 << prio), Ordering::AcqRel) & !(1u32 << prio);
             continue;
         }
-        let rr = (RR_OFFSET.load(Ordering::Relaxed) & 31) as u32;
-        let rotated = word.rotate_right(rr);
-        let idx = rotated.trailing_zeros();
-        let id = ((idx + rr) & 31) as usize;
-        if id >= MAX_PTASKS {
-            // Bit outside the registry width (shouldn't happen); fall
-            // back to a scan of the word.
-            return word
-                .trailing_zeros()
-                .checked_rem(MAX_PTASKS as u32)
-                .map(|i| i as usize);
+        // Least-recently-dispatched among this priority's ready bits
+        // (plan.md Phase 30): a bounded scan of at most `MAX_PTASKS` set
+        // bits, not the O(1) rotating-cursor lookup this replaced — see
+        // `DISPATCH_SEQ`'s docs for why the trade is worth it.
+        let mut best_id = None;
+        let mut best_seq = u32::MAX;
+        let mut w = word;
+        while w != 0 {
+            let id = w.trailing_zeros() as usize;
+            w &= w - 1; // clear the lowest set bit
+            if id < MAX_PTASKS {
+                let seq = DISPATCH_SEQ[id].load(Ordering::Relaxed);
+                if seq < best_seq {
+                    best_seq = seq;
+                    best_id = Some(id);
+                }
+            }
         }
-        return Some(id);
+        if best_id.is_some() {
+            return best_id;
+        }
+        // Every set bit was `>= MAX_PTASKS` (shouldn't happen); fall back
+        // to a scan of the word, matching the old code's own fallback.
+        return word
+            .trailing_zeros()
+            .checked_rem(MAX_PTASKS as u32)
+            .map(|i| i as usize);
     }
 }
 
-/// Record that task `id` was actually dispatched: advance the round-robin
-/// rotation past it (plan.md [B14] — only at real context switches).
+/// Record that task `id` was actually dispatched: stamp it as most
+/// recently dispatched (plan.md [B14] — only at real context switches;
+/// see [`DISPATCH_SEQ`]'s docs).
 pub fn on_dispatch(id: usize) {
-    RR_OFFSET.store(id + 1, Ordering::Relaxed);
+    if id < MAX_PTASKS {
+        let seq = DISPATCH_COUNTER.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
+        DISPATCH_SEQ[id].store(seq, Ordering::Relaxed);
+    }
     #[cfg(feature = "latency-histograms")]
     if id < MAX_PTASKS {
         let ready_at = READY_AT_CYCLE[id].load(Ordering::Relaxed);
@@ -284,7 +348,10 @@ pub(crate) fn reset_for_test() {
     for c in CURRENT.iter() {
         c.store(NO_TASK, Ordering::Release);
     }
-    RR_OFFSET.store(0, Ordering::Release);
+    DISPATCH_COUNTER.store(0, Ordering::Release);
+    for s in DISPATCH_SEQ.iter() {
+        s.store(0, Ordering::Release);
+    }
     READY_BITMAP.store(0, Ordering::Release);
     for q in QUEUES.iter() {
         q.store(0, Ordering::Release);

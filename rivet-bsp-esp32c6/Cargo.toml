@@ -10,6 +10,11 @@ description = "Rivet RTOS: ESP32-C6 board port (UART0 console, watchdog disable,
 # build.rs / docs/porting.md).
 links = "rivet_bsp_esp32c6"
 
+[features]
+# plan.md Phase 12: forwards to both crates' own `latency-histograms`
+# feature (independent flags per crate, same name).
+latency-histograms = ["rivet/latency-histograms", "rivet-arch-riscv/latency-histograms"]
+
 [dependencies]
 rivet = { path = "../rivet" }
 # Deliberately NOT enabling "clint"/"plic": the C6 has neither a SiFive

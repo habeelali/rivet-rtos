@@ -186,8 +186,74 @@ pub fn write_bytes(bytes: &[u8]) {
     if IRQ_TX_ACTIVE.load(Ordering::Acquire) && write_bytes_irq(bytes) {
         return;
     }
+    // plan.md Phase 29/30, found on real ESP32-S3 dual-core hardware: the
+    // polling fallback below is a direct, unsynchronized hardware
+    // register write on every board that uses it (confirmed for S3:
+    // `rivet-bsp-esp32s3::__rivet_board_console_write` polls
+    // `UART0.status().txfifo_cnt()` and writes `UART0.fifo()` with no
+    // lock at all) — this module's own docs already say the *design*
+    // assumes "on a single-hart kernel" for the fault-path write, and
+    // that assumption silently stopped holding the moment a real second
+    // hart existed: two harts calling this concurrently interleave their
+    // byte writes on the shared UART FIFO, confirmed to produce genuinely
+    // corrupted binary garbage on the wire, not just interleaved-but-
+    // readable text — including fault diagnostics a human needs to
+    // actually read.
+    //
+    // A `critical::enter`-wrapped (unconditionally blocking) version was
+    // tried and reverted: it introduces exactly the failure mode this
+    // module's own docs warn about for the fault path — a lock that
+    // *blocks* until the other hart releases it turns "one hart crashed"
+    // into "both harts silently hang forever" the moment the other hart
+    // is genuinely wedged while holding it. Fault-path output must never
+    // be able to block on another hart's cooperation, full stop.
+    //
+    // The bounded-retry version below was *also* provisionally reverted
+    // once, on the belief it hung `mutex_test`'s QEMU stress phase on
+    // both Cortex-M targets — that belief was wrong. Phase 30 found the
+    // actual cause: `mutex_test`'s 2,000,000-iteration contended-mutex
+    // phase genuinely takes well over the 15-120s capture windows used
+    // to test it (150+ real seconds on STM32 hardware at 16MHz), on
+    // *pristine, unmodified* code too — confirmed by reverting every
+    // session change, including this file, back to the original
+    // unsynchronized write, and reproducing the identical "no output"
+    // symptom with a short capture window. This was never a regression
+    // from the lock below: a bounded-retry try-lock cannot hang
+    // indefinitely by construction — it gives up and writes
+    // unsynchronized after `LOCK_SPIN_LIMIT` iterations, a fixed, small
+    // cost per call, entirely unrelated to how long a *caller's own*
+    // workload takes to reach its next print. Re-verified against the
+    // full `riscv`/`cm3`/`mps2` QEMU suites and real STM32/S3/C6
+    // hardware, with adequate timeouts this time, before being kept.
+    let mut spins: u32 = 0;
+    while CONSOLE_WRITE_LOCK
+        .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+        .is_err()
+    {
+        spins += 1;
+        if spins >= LOCK_SPIN_LIMIT {
+            crate::port::board::console_write(bytes);
+            return;
+        }
+        core::hint::spin_loop();
+    }
     crate::port::board::console_write(bytes);
+    CONSOLE_WRITE_LOCK.store(false, Ordering::Release);
 }
+
+/// Bounded-retry lock for [`write_bytes`]'s polling path — see its own
+/// comment for why this is deliberately not `critical::enter` (which
+/// would block unboundedly). Plain `AtomicBool`, not the crate's usual
+/// nesting-aware `critical::enter`: this lock is only ever held for the
+/// duration of one `port::board::console_write` call, never nested.
+static CONSOLE_WRITE_LOCK: AtomicBool = AtomicBool::new(false);
+/// How many spin iterations to wait for [`CONSOLE_WRITE_LOCK`] before
+/// giving up and writing unsynchronized. Not calibrated against any
+/// particular board's clock — large enough that a healthy other hart's
+/// brief, normal-length write (a handful of bytes, one polling loop each)
+/// reliably finishes within it, small enough that a genuinely wedged
+/// other hart doesn't stall this one's own diagnostic output for long.
+const LOCK_SPIN_LIMIT: u32 = 100_000;
 
 /// Synchronously drain any bytes still queued in the TX ring, via the
 /// blocking polling write. No-op if interrupt-driven TX was never

@@ -70,20 +70,7 @@ pub fn enter<F, R>(f: F) -> R
 where
     F: FnOnce() -> R,
 {
-    #[cfg(feature = "latency-histograms")]
-    {
-        let start = crate::port::arch::cycle_count();
-        let r = enter_locked(f);
-        crate::latency::record(
-            crate::latency::Kind::CriticalSection,
-            crate::port::arch::cycle_count().wrapping_sub(start),
-        );
-        r
-    }
-    #[cfg(not(feature = "latency-histograms"))]
-    {
-        enter_locked(f)
-    }
+    enter_locked(f)
 }
 
 fn enter_locked<F, R>(f: F) -> R
@@ -94,6 +81,30 @@ where
     // the hart-id read and the nesting-depth check below themselves
     // race-free against this *same* hart's own interrupt handlers.
     crate::port::arch::critical_section(|| {
+        // plan.md Phase 30 (§11 outlier root cause): the latency-histogram
+        // timestamps used to be taken by the *caller* of `enter_locked`,
+        // outside this `critical_section` closure entirely — i.e. before
+        // interrupts were actually masked, and again after they'd already
+        // been restored. Interrupts are still live in both of those
+        // shoulder windows, so a rare interrupt (SysTick, tail-chained
+        // into a full PendSV context switch) landing in either one had
+        // its *entire* handler duration folded into the "critical
+        // section" measurement, even though the calling hart was really
+        // off servicing an interrupt, not executing the section body.
+        // That fully explains the rare 2^15-bucket outliers `stress_load_
+        // bench`/`critsec_isolate_bench` saw across all three boards: not
+        // a real unbounded cost in `PriorityMutexGuard::drop`'s unlock
+        // path (code review never found one because there isn't one), but
+        // a measurement artifact from timing a window wider than the
+        // region that's actually interrupt-masked. Taking both timestamps
+        // in here instead — strictly inside `critical_section`'s closure,
+        // i.e. after interrupts are masked and before they're restored —
+        // closes that gap: nothing can preempt this hart between them by
+        // construction, matching this histogram's own documented
+        // assumption (see module docs on `Kind::CriticalSection`).
+        #[cfg(feature = "latency-histograms")]
+        let start = crate::port::arch::cycle_count();
+
         let hart = crate::port::arch::hart_id();
         let depth = NESTING[hart].load(Ordering::Relaxed);
         if depth == 0 {
@@ -113,6 +124,13 @@ where
         if depth == 0 {
             LOCK_OWNER.store(-1, Ordering::Release);
         }
+
+        #[cfg(feature = "latency-histograms")]
+        crate::latency::record(
+            crate::latency::Kind::CriticalSection,
+            crate::port::arch::cycle_count().wrapping_sub(start),
+        );
+
         r
     })
 }

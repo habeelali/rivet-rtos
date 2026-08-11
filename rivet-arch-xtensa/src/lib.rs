@@ -491,8 +491,31 @@ mod periph_irq {
         [const { core::sync::atomic::AtomicU32::new(u32::MAX) }; rivet::config::MAX_HARTS];
 }
 
+/// Cycle timestamp of the most recent reschedule request per hart
+/// (plan.md Phase 12 precedent, extended here to Xtensa): set at every
+/// `__rivet_arch_request_reschedule`/`_on` call, read back in
+/// `__level_3_interrupt`'s Software1 branch to record
+/// [`rivet::latency::Kind::IrqEntry`] — the same "request to actual
+/// handler entry" latency `rivet-arch-cortex-m`'s `RESCHEDULE_REQUESTED_AT`
+/// measures for PendSV. Per-hart (unlike Cortex-M, which is single-core):
+/// hart 0 requesting a reschedule *on* hart 1 writes index 1 from hart 0's
+/// context, so this must be a real shared array, not hart-local storage.
+#[cfg(feature = "latency-histograms")]
+static RESCHEDULE_REQUESTED_AT: [core::sync::atomic::AtomicU32; rivet::config::MAX_HARTS] =
+    [const { core::sync::atomic::AtomicU32::new(0) }; rivet::config::MAX_HARTS];
+
+#[cfg(feature = "latency-histograms")]
+fn stamp_reschedule_requested(hart: usize) {
+    RESCHEDULE_REQUESTED_AT[hart].store(
+        rivet::port::arch::cycle_count() as u32,
+        core::sync::atomic::Ordering::Relaxed,
+    );
+}
+
 #[no_mangle]
 extern "Rust" fn __rivet_arch_request_reschedule_on(hart: usize) {
+    #[cfg(feature = "latency-histograms")]
+    stamp_reschedule_requested(hart);
     if hart == __rivet_arch_hart_id() {
         // SAFETY: identical to `__rivet_arch_request_reschedule`'s own
         // self-IPI — this *is* that path, taken explicitly rather than
@@ -588,6 +611,8 @@ extern "Rust" fn __rivet_arch_irq_set_priority(_irq_num: u32, _priority: u8) {
 
 #[no_mangle]
 extern "Rust" fn __rivet_arch_request_reschedule() {
+    #[cfg(feature = "latency-histograms")]
+    stamp_reschedule_requested(__rivet_arch_hart_id());
     // SAFETY: `set` with the Software1 bit (INT29, level 3 — see
     // `timer.rs`'s module docs) is the documented mechanism for pending a
     // software interrupt; only valid for software/edge-triggered
@@ -637,10 +662,59 @@ extern "C" fn rivet_appcpu_rust_entry() -> ! {
         xtensa_lx::timer::set_ccompare1(0);
         xtensa_lx::timer::set_ccompare2(0);
     }
-    // `rivet::run_secondary_hart()` calls `port::arch::init()` first
-    // (sets `VECBASE` for this core — see `__rivet_arch_init`'s docs —
-    // and this core's own half of the cross-core IPI mapping), then
-    // spins on `rivet::kernel_ready()` before entering the scheduler.
+    // Root cause (plan.md Phase 29), found on real hardware: this
+    // function's own comment used to claim `rivet::run_secondary_hart()`
+    // "spins on `rivet::kernel_ready()` before entering the scheduler" —
+    // it never actually did (its real contract, per `rivet/src/lib.rs`,
+    // is "call only after `kernel_ready()` is true" — the *caller*'s
+    // responsibility, which `rivet-rt`'s RISC-V secondary-hart boot
+    // upholds with an explicit wait loop and this port never had).
+    // Without it, APP_CPU — released from `__rivet_board_init`, i.e.
+    // inside `rivet::init()`, long before the app's `main()` has finished
+    // its own `spawn_ptask!` calls — could reach `start_secondary_hart()`
+    // and dispatch a task that had *just* become ready (a `spawn_ptask!`'s
+    // own `ready_add` broadcasts a wake IPI unconditionally, whether or
+    // not the kernel has actually started yet) while hart 0 was still
+    // mid-spawn of a *different* task, corrupting `Tcb.sp` for whichever
+    // task each hart ended up racing on.
+    //
+    // A first attempt at this fix (plain `Acquire`/`Release` ordering on
+    // `KERNEL_READY`, matching every other atomic in this codebase) did
+    // stop the corruption but introduced a *worse* regression: `smp_test.
+    // rs` (independent per-task counters, no mutex contention) hung
+    // indefinitely — hart 1 apparently spinning forever without ever
+    // observing hart 0's write. Upgrading `KERNEL_READY`'s store/load to
+    // `SeqCst` (see `rivet::kernel_ready`/`rivet::run`) closed that gap:
+    // both `smp_test.rs` and `smp_latency_bench`'s forced-cross-core
+    // scenario pass with this combination, where either fix alone did
+    // not. Not fully explained why plain Acquire/Release wasn't
+    // sufficient here specifically — this session's own real-time
+    // characterization work (`docs/realtime.md` §10) independently found
+    // reason to distrust plain-ordered cross-core atomic visibility on
+    // this SoC/toolchain combination for a *different* piece of shared
+    // state, so this may be the same underlying gap; flagged as a real
+    // open question about this port's atomics rather than claimed as
+    // fully understood.
+    while !rivet::kernel_ready() {
+        core::hint::spin_loop();
+    }
+    // plan.md Phase 30 (round-robin fairness): APP_CPU has no periodic
+    // tick of its own — three fix shapes were tried on real hardware:
+    // (1) giving APP_CPU its own independent `CCOMPARE1` running this
+    // function's *entire* tick body (including `watchdog`/`poll_timers`)
+    // fixed the fairness gap but broke `smp_latency_bench` by doubling
+    // those hart-0-owned duties' rate across both cores; (2) the same
+    // idea with those two calls guarded to hart 0 only hit a *different*,
+    // immediate real-hardware panic at boot (`Interrupt: 1`, an unhandled
+    // level-1 interrupt — likely `esp-hal`'s own per-core interrupt setup
+    // not covering APP_CPU the way it covers PRO_CPU, not investigated
+    // further given time cost); (3) periodically broadcasting the
+    // existing cross-hart reschedule IPI from PRO_CPU's own tick (see
+    // `timer::on_timer_irq`'s own comment) is what's actually shipped —
+    // the only one of three fundamentally different designs that passed
+    // real-hardware verification (18+ consecutive clean runs across all
+    // three dual-core tests). See `timer::on_timer_irq` for the full
+    // account and plan.md's Phase 30 notes for the complete history.
     rivet::run_secondary_hart();
 }
 
@@ -767,6 +841,19 @@ unsafe extern "Rust" fn __rivet_arch_start_first_task(sp: usize) -> ! {
     // scheduling decision itself) and only re-enabling the two sources
     // `tick_start` armed as literally the last action before the jump —
     // closing the window completely rather than narrowing it.
+    //
+    // Update (plan.md Phase 29): a related but distinct dual-core variant
+    // of this same failure mode was found and fixed separately, in
+    // `rivet::preempt::start`/`start_secondary_hart` themselves — those
+    // functions used two *separate* critical sections back-to-back (the
+    // scheduling decision, then this dispatch), leaving a real gap where
+    // local interrupts were briefly re-enabled between them, on real
+    // dual-core hardware. See their own doc comments for the fix. A
+    // second, independent contributor to the same symptom was also found
+    // and fixed: `rivet::console`'s polling write path had no cross-hart
+    // lock, so two harts printing concurrently (including a fault dump
+    // racing this exact bug's own diagnostics) corrupted or lost each
+    // other's output — see `rivet::console::write_bytes`'s own comment.
     xtensa_lx::interrupt::disable();
     let index = decode_bootstrap(sp)
         .expect("rivet-arch-xtensa: start_first_task given a non-bootstrap sp");
@@ -854,6 +941,12 @@ unsafe extern "Rust" fn __rivet_arch_start_first_task(sp: usize) -> ! {
 // __level_3_interrupt(...); }` declaration) sidesteps the macro entirely.
 #[no_mangle]
 extern "Rust" fn __level_3_interrupt(save_frame: &mut Context) {
+    // Cycle-stamped as early as possible in the handler, mirroring
+    // `rivet-arch-cortex-m::rivet_pendsv_rust`'s own `IrqEntry` timing —
+    // used below (only in the Software1/reschedule branch, the only
+    // source here with a matching `RESCHEDULE_REQUESTED_AT` stamp).
+    #[cfg(feature = "latency-histograms")]
+    let __entry_now = rivet::port::arch::cycle_count() as u32;
     // Root cause (plan.md Phase 22/23), found on real hardware: this used
     // to check `sched::current()` and return immediately if `None`,
     // *before* ever touching the hardware interrupt sources below. A tick
@@ -894,6 +987,15 @@ extern "Rust" fn __level_3_interrupt(save_frame: &mut Context) {
         // SAFETY: Software1 is edge-triggered; clearing it here is the
         // documented acknowledgement.
         unsafe { xtensa_lx::interrupt::clear(timer::SOFTWARE1_MASK) };
+        #[cfg(feature = "latency-histograms")]
+        {
+            let requested_at = RESCHEDULE_REQUESTED_AT[__rivet_arch_hart_id()]
+                .load(core::sync::atomic::Ordering::Relaxed);
+            rivet::latency::record(
+                rivet::latency::Kind::IrqEntry,
+                __entry_now.wrapping_sub(requested_at) as u64,
+            );
+        }
     }
     if pending & ipi::IPI_MASK != 0 {
         // Cross-core reschedule IPI (plan.md Phase 24): ack by clearing

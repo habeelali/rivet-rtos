@@ -405,47 +405,61 @@ pub fn stack_usage(stack: &[u8]) -> usize {
 /// # Panics
 /// Panics if no preemptive tasks have been spawned.
 pub fn start() -> ! {
-    // plan.md Phase 19: the read-decide-commit sequence (pick a task, mark
-    // it Running, publish it as this hart's `CURRENT`) must be atomic
-    // across harts, not just locally-interrupt-safe — a secondary hart
-    // could be inside the identical sequence in `start_secondary_hart`
-    // concurrently. Single-hart boards get the same control flow with an
-    // always-uncontended CAS (see `critical.rs`'s module docs).
-    let first = crate::critical::enter(|| {
-        let first = sched::schedule().expect(
-            "rivet::preempt::start(): no preemptive tasks spawned (call rivet::init() first, \
-             which spawns the async idle task, or spawn at least one via spawn_ptask!)",
-        );
-        sched::set_current(first);
-        if let Some(t) = tcb::get(first) {
-            t.set_state(first, TaskState::Running);
-        }
-        // First dispatch: advance the RR start past this task (plan.md
-        // [B14]).
-        sched::on_dispatch(first);
-        first
-    });
-    // Root cause (plan.md Phase 24), found on real dual-core hardware:
-    // `critical::enter` above already released this hart's interrupt
-    // mask by the time this line runs — `sched::set_current(first)` is
-    // visible, but this hart's own CPU registers/stack aren't anywhere
-    // near `first`'s bootstrap state yet. A tick landing in the gap
-    // between here and `port::arch::start_first_task` actually consuming
-    // `first_tcb.sp` sees `sched::current() == Some(first)` and, if it
-    // decides to switch, permanently rewrites `Tcb.sp` from a bootstrap
-    // marker to a real task id — before `first` has ever actually run a
-    // single instruction. `start_first_task` then reads a value its own
-    // arch-side bootstrap table doesn't recognize and panics ("given a
-    // non-bootstrap sp"). Confirmed on hardware: a genuine two-core test
-    // hit this on *both* cores simultaneously the moment real ticks
-    // started firing system-wide. `port::arch::critical_section` re-masks
-    // local interrupts around the entire remainder (its own `f` is `-> !`
-    // here, so its own irq-restore-on-return is simply never reached —
-    // the dispatched task's arch-side bootstrap is responsible for
-    // re-enabling interrupts as part of actually starting to run, the
-    // same handoff `fresh_task_context`'s `Context.PS`/equivalent already
-    // does for the *ordinary* tick-driven first-dispatch path).
+    // Root cause (plan.md Phase 24), found on real dual-core hardware,
+    // **re-found in this exact form** (plan.md Phase 29) after the Phase
+    // 24 fix below turned out to still have a gap: the original fix
+    // wrapped only the `port::arch::critical_section` block below around
+    // the dispatch, leaving `crate::critical::enter`'s own interrupt mask
+    // (below) to release *before* that block's `irq_save` took effect —
+    // a real, if narrow, window between the two separate critical
+    // sections where this hart's local interrupts are genuinely enabled
+    // again. A tick or cross-hart IPI landing in that specific gap hits
+    // the identical failure the comment below describes. Closed by
+    // making the *entire* function body — the scheduling decision and
+    // the dispatch — one unbroken interrupt-masked region: entering
+    // `port::arch::critical_section` first, `crate::critical::enter`'s
+    // own nested local-mask-then-restore composes correctly inside it
+    // (`critical_section`'s docs: "Nested calls compose... its restore is
+    // a no-op, leaving the outermost call to actually re-enable"), so
+    // interrupts never actually re-enable until the dispatched task's own
+    // context takes over. Confirmed: `smp_latency_bench`'s forced-cross-
+    // core scenario (holder+waiter only, no other tasks) reproduced this
+    // panic on every attempt before this fix; see the QEMU/hardware
+    // re-verification this phase ran after the change.
     crate::port::arch::critical_section(|| {
+        // plan.md Phase 19: the read-decide-commit sequence (pick a task,
+        // mark it Running, publish it as this hart's `CURRENT`) must be
+        // atomic across harts, not just locally-interrupt-safe — a
+        // secondary hart could be inside the identical sequence in
+        // `start_secondary_hart` concurrently. Single-hart boards get the
+        // same control flow with an always-uncontended CAS (see
+        // `critical.rs`'s module docs).
+        let first = crate::critical::enter(|| {
+            let first = sched::schedule().expect(
+                "rivet::preempt::start(): no preemptive tasks spawned (call rivet::init() \
+                 first, which spawns the async idle task, or spawn at least one via \
+                 spawn_ptask!)",
+            );
+            sched::set_current(first);
+            if let Some(t) = tcb::get(first) {
+                t.set_state(first, TaskState::Running);
+            }
+            // First dispatch: advance the RR start past this task (plan.md
+            // [B14]).
+            sched::on_dispatch(first);
+            first
+        });
+        // `sched::set_current(first)` (above) is visible the instant that
+        // inner `critical::enter` exits, but this hart's own CPU
+        // registers/stack aren't anywhere near `first`'s bootstrap state
+        // yet — a tick or IPI landing here, before interrupts are masked,
+        // would see `sched::current() == Some(first)` and, if it decides
+        // to switch, permanently rewrite `Tcb.sp` from a bootstrap marker
+        // to a real task id before `first` has ever run a single
+        // instruction. Because this whole function is now one continuous
+        // masked region (see the comment above `critical_section`), that
+        // window no longer exists — this comment describes what *would*
+        // happen without that framing, not a residual gap.
         crate::exec_time::on_first_dispatch();
         let first_tcb = tcb::get(first).unwrap();
         // Enable memory protection for this task's stack — hart-local,
@@ -459,6 +473,12 @@ pub fn start() -> ! {
         // SAFETY: `sp` is the freshly-initialized first stack frame of
         // the selected task (produced by `init_task_stack`);
         // `start_first_task` consumes it exactly once and never returns.
+        // `critical_section`'s own irq-restore-on-return is consequently
+        // never reached — the dispatched task's arch-side bootstrap is
+        // responsible for re-enabling interrupts as part of actually
+        // starting to run, the same handoff `fresh_task_context`'s
+        // `Context.PS`/equivalent already does for the *ordinary*
+        // tick-driven first-dispatch path.
         unsafe { crate::port::arch::start_first_task(sp) }
     })
 }
@@ -474,39 +494,53 @@ pub fn start() -> ! {
 /// nothing ever calls it there — `rivet-rt`'s hart bring-up only invokes
 /// this for harts `1..RIVET_MAX_HARTS`.
 pub fn start_secondary_hart() -> ! {
-    let first = loop {
-        let picked = crate::critical::enter(|| {
-            let first = sched::schedule()?;
-            sched::set_current(first);
-            if let Some(t) = tcb::get(first) {
-                t.set_state(first, TaskState::Running);
-            }
-            sched::on_dispatch(first);
-            Some(first)
+    // Same fix, same reason as `start`'s own (plan.md Phase 24, re-closed
+    // Phase 29 — see `start`'s comment for the full story): the
+    // scheduling decision and the dispatch must be one unbroken
+    // interrupt-masked region on *this* hart, not two separate critical
+    // sections with a real gap between them. `idle()` still needs to run
+    // with interrupts genuinely enabled (it's a wait-for-interrupt, it
+    // would never wake otherwise) — masked only starts once a candidate
+    // is actually found, per loop iteration, not around the whole loop.
+    loop {
+        let dispatched = crate::port::arch::critical_section(|| {
+            let first = crate::critical::enter(|| {
+                let first = sched::schedule()?;
+                sched::set_current(first);
+                if let Some(t) = tcb::get(first) {
+                    t.set_state(first, TaskState::Running);
+                }
+                sched::on_dispatch(first);
+                Some(first)
+            });
+            let Some(first) = first else {
+                return false;
+            };
+            let first_tcb = tcb::get(first).unwrap();
+            // No `exec_time::on_first_dispatch()` call here: hart 0's
+            // `start()` already stamped `BOOT_CYCLE`/`WALLCLOCK_BOOT_US`
+            // once for the whole system (plan.md Phase 19 §6 — exec-time
+            // accounting stays a single shared boot epoch, not per-hart;
+            // calling it again here would rewind `LAST_DISPATCH` and skew
+            // every other task's busy-cycle accounting).
+            crate::port::arch::on_switch_to(
+                first_tcb.stack_base.load(Ordering::Acquire),
+                first_tcb.stack_size.load(Ordering::Acquire),
+            );
+            let sp = first_tcb.sp.load(Ordering::Acquire);
+            // SAFETY: `sp` is the freshly-initialized first stack frame
+            // of the selected task (produced by `init_task_stack`);
+            // `start_first_task` consumes it exactly once and never
+            // returns. `critical_section`'s own irq-restore-on-return is
+            // consequently never reached on this path — the dispatched
+            // task's arch-side bootstrap re-enables interrupts itself,
+            // same as `start`'s identical call.
+            unsafe { crate::port::arch::start_first_task(sp) }
         });
-        match picked {
-            Some(id) => break id,
-            None => crate::port::arch::idle(),
+        if !dispatched {
+            crate::port::arch::idle();
         }
-    };
-    // Same fix, same reason as `start`'s identical block (plan.md Phase
-    // 24) — see its own comment for the full story.
-    crate::port::arch::critical_section(|| {
-        // No `exec_time::on_first_dispatch()` call here: hart 0's
-        // `start()` already stamped `BOOT_CYCLE`/`WALLCLOCK_BOOT_US`
-        // once for the whole system (plan.md Phase 19 §6 — exec-time
-        // accounting stays a single shared boot epoch, not per-hart;
-        // calling it again here would rewind `LAST_DISPATCH` and skew
-        // every other task's busy-cycle accounting).
-        let first_tcb = tcb::get(first).unwrap();
-        crate::port::arch::on_switch_to(
-            first_tcb.stack_base.load(Ordering::Acquire),
-            first_tcb.stack_size.load(Ordering::Acquire),
-        );
-        let sp = first_tcb.sp.load(Ordering::Acquire);
-        // SAFETY: same contract as `start`'s identical call.
-        unsafe { crate::port::arch::start_first_task(sp) }
-    })
+    }
 }
 
 /// Permanently remove the current preemptive task from scheduling. Useful

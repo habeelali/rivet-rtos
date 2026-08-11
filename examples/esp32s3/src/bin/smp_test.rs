@@ -104,7 +104,7 @@ fn main() -> ! {
     rivet::console::write_str("Rivet esp32s3 smp_test\n");
     #[allow(clippy::needless_range_loop)]
     for i in 0..N {
-        let _ = rivet::spawn_ptask!(stack = 512, priority = 2, entry = worker, arg = COUNTERS[i]);
+        let _ = rivet::spawn_ptask!(stack = 1024, priority = 2, entry = worker, arg = COUNTERS[i]);
     }
     rivet::run();
 }

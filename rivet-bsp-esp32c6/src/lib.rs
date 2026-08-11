@@ -559,6 +559,18 @@ extern "Rust" fn __rivet_board_on_async_trap(code: usize, resume_sp: usize) -> u
             let intpri = &*esp32c6::INTPRI::ptr();
             intpri.cpu_intr_from_cpu(0).write(|w| w.cpu_intr().clear_bit());
         }
+        // plan.md Phase 12 precedent, mirrored here since this board's
+        // reschedule dispatch goes through `board-irq-hook`, not the
+        // `clint`-gated path `rivet-arch-riscv` instruments itself —
+        // single-core board, so a plain `AtomicU32` (not per-hart) is
+        // enough, unlike the S3's own version of this same addition.
+        #[cfg(feature = "latency-histograms")]
+        rivet::latency::record(
+            rivet::latency::Kind::IrqEntry,
+            (rivet::port::arch::cycle_count() as u32)
+                .wrapping_sub(RESCHEDULE_REQUESTED_AT.load(core::sync::atomic::Ordering::Relaxed))
+                as u64,
+        );
         return rivet::preempt::on_tick(resume_sp);
     }
     if (FIRST_IRQ_LINE as usize..FIRST_IRQ_LINE as usize + N_IRQ_LINES).contains(&code) {
@@ -574,8 +586,20 @@ extern "Rust" fn __rivet_board_on_async_trap(code: usize, resume_sp: usize) -> u
     resume_sp
 }
 
+/// Cycle timestamp of the most recent reschedule request (plan.md Phase
+/// 12 precedent). Single-core board, so a plain `AtomicU32` — no per-hart
+/// array needed (contrast the S3's own version of this same addition).
+#[cfg(feature = "latency-histograms")]
+static RESCHEDULE_REQUESTED_AT: core::sync::atomic::AtomicU32 =
+    core::sync::atomic::AtomicU32::new(0);
+
 #[no_mangle]
 extern "Rust" fn __rivet_arch_request_reschedule() {
+    #[cfg(feature = "latency-histograms")]
+    RESCHEDULE_REQUESTED_AT.store(
+        rivet::port::arch::cycle_count() as u32,
+        core::sync::atomic::Ordering::Relaxed,
+    );
     configure_interrupt_matrix();
     // SAFETY: real, fixed-address SoC register; `cpu_intr_from_cpu(0)` is
     // this core's own self-trigger source (single-core board — "the

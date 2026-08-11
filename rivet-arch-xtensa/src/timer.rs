@@ -99,4 +99,66 @@ pub unsafe fn on_timer_irq() {
         .max(now.wrapping_add(period));
     xtensa_lx::timer::set_ccompare1(next);
     CCOMPARE_PREV.store(next, Ordering::Relaxed);
+
+    // plan.md Phase 30 (round-robin fairness): give every *other* hart a
+    // periodic "reconsider what you're running" nudge via the existing
+    // cross-hart IPI plumbing (the same `request_reschedule_on` machinery
+    // `ready_add`'s `wake_other_harts` already uses), without a second
+    // hardware timer or touching `critical::enter`'s locking. The only
+    // one of three fundamentally different fix designs that passed real-
+    // hardware verification — see `rivet_appcpu_rust_entry`'s own comment
+    // for the other two (both reverted on hardware evidence: one doubled
+    // hart-0-owned tick duties across both cores, the other panicked at
+    // boot on an unhandled level-1 interrupt).
+    //
+    // `BROADCAST_EVERY` was tuned empirically against real ESP32-S3
+    // hardware, not derived analytically — two higher rates were tried
+    // and rejected on hardware evidence:
+    //   - Every tick (1x): measurably slowed the receiving hart's own
+    //     useful work (`smp_latency_bench`'s `waiter` dropped from
+    //     completing 1000 cross-core samples well inside 5s to ~35).
+    //   - Every 2nd tick: hit a deterministic real-hardware fault —
+    //     confirmed *not* a stack overflow (doubling every task's stack
+    //     4096 → 8192 bytes reproduced the exact same fault, byte-for-
+    //     byte identical `PC`/`EXCVADDR`/every register, 3/3 runs), and
+    //     confirmed *not* random (fully deterministic across repeated
+    //     flashes at a given stack size). This matches a pattern already
+    //     independently documented elsewhere in this exact workload
+    //     (`examples/esp32s3/src/bin/smp_latency_bench.rs`'s own comment
+    //     on `waiter`, from an earlier, unrelated session: an earlier
+    //     mutex-generation-tracking design in this identical cross-core
+    //     contention scenario "reliably crashed... reproducible byte-for-
+    //     byte across rebuilds and stack-size changes" too) — two
+    //     independent sessions hitting the same deterministic-but-
+    //     unexplained-at-the-instruction-level fault class in this same
+    //     narrow scenario (high-frequency cross-core `PriorityMutex`
+    //     dispatch on this specific SoC/toolchain), both times without
+    //     JTAG access to pin the exact instruction, both times resolved
+    //     by staying clear of the triggering condition rather than by a
+    //     confirmed instruction-level fix. Manifested as either a hard
+    //     stall (`waiter` permanently stuck mid-run, confirmed not just
+    //     slow — a 4x longer watchdog window made no difference) or an
+    //     outright crash (`InstrProhibited`, landing mid-instruction
+    //     inside `core::fmt`'s formatting code).
+    // Every 32nd tick: 13/13 clean runs of `smp_latency_bench` and 5/5 of
+    // `stress_load_bench` on real hardware, both fully deterministic
+    // (identical `min`/`max`/`avg` and iteration counts every run) — no
+    // stall, no crash, and `stress_load_bench`'s `mutex_contender_iters`
+    // (the original starvation this fix exists for) went from 5-7 to a
+    // healthy, consistent 2811. Not proven safe at *every* possible rate
+    // between 2 and 32 — 32 is simply the value this session verified
+    // clean, not a value with a proven-safe boundary below it.
+    const BROADCAST_EVERY: u32 = 32;
+    static BROADCAST_TICK: AtomicU32 = AtomicU32::new(0);
+    if BROADCAST_TICK
+        .fetch_add(1, Ordering::Relaxed)
+        .is_multiple_of(BROADCAST_EVERY)
+    {
+        let me = rivet::port::arch::hart_id();
+        for other in 0..rivet::config::MAX_HARTS {
+            if other != me {
+                rivet::port::arch::request_reschedule_on(other);
+            }
+        }
+    }
 }
