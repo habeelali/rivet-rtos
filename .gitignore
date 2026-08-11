@@ -27,3 +27,15 @@ qemu.log
 /.reasonix/
 fuzz/target/
 __pycache__/
+
+# Local development log, not part of the shipped repository — referenced
+# by source comments throughout this codebase ("plan.md Phase N", "plan.md
+# §4.1") purely as historical context for whoever was doing that work at
+# the time; see CONTRIBUTING.md for why a fresh clone doesn't have it.
+/plan.md
+
+# PulseTrace: a separate, independent project (a companion desktop trace
+# viewer for Rivet, its own Cargo workspace/README/history) that lives
+# nested in this checkout rather than as a sibling directory — not part of
+# the rivet-rtos repository.
+/pulsetrace/
