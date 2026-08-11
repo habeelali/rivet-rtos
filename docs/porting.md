@@ -22,7 +22,14 @@ fine, it's a kernel fix then, not a board workaround).
 
 This guide was written *from* adding `rivet-bsp-mps2-an385` as the project's
 third board — every step here is something that was actually done, not
-theorized.
+theorized. Two more real-hardware ports followed the same shape:
+`rivet-bsp-esp32s3` (Xtensa LX7, dual-core — the only board needing a new
+`rivet-arch-*` crate, since Xtensa wasn't covered by the existing RISC-V/
+Cortex-M ports) and `rivet-bsp-stm32f401re` (Cortex-M4, single-core — a pure
+BSP-crate port onto the *existing* `rivet-arch-cortex-m`, closer to this
+guide's own worked example). `docs/wcet.md` and `docs/wcet-stm32f401re.md`
+are what real hardware made possible that QEMU alone couldn't: exact,
+measured timing figures, not just functional correctness.
 
 ## Step 0: check your target has what the kernel needs
 

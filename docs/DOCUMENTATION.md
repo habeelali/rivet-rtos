@@ -87,26 +87,36 @@ allocator in the scheduling or interrupt path.
 
 ## 3. Supported hardware
 
-Rivet runs today on three QEMU-emulated boards, deliberately chosen to be
-different from each other so the architecture/board split is proven, not
-just assumed:
+Rivet runs on seven boards across three architectures, three of them real
+silicon, chosen to keep the architecture/board split honest rather than
+implicitly written against just one target:
 
 | Board | Architecture | Notes |
 |---|---|---|
 | **QEMU `virt` (RV32)** | RISC-V, RV32IMAC | CLINT-based tick/IPI, NS16550 UART, `riscv.sifive.test` exit/reset device, software watchdog. |
-| **`lm3s6965evb`** | ARM Cortex-M3 | PL011 UART, real `luminary-watchdog` hardware block (genuine hardware-independent watchdog, verified in QEMU), typestate GPIO driver, SysTick/PendSV context switch. |
-| **`mps2-an385`** | ARM Cortex-M3 | A *different* memory map and peripheral set from lm3s6965 — CMSDK APB UART (different register layout than PL011), CMSDK/SP805-compatible watchdog. Added purely as a new board-support crate, without touching the kernel or the Cortex-M architecture port, as proof the boundary holds. |
+| **`lm3s6965evb`** | ARM Cortex-M3 (QEMU) | PL011 UART, real `luminary-watchdog` hardware block, typestate GPIO driver, SysTick/PendSV context switch. |
+| **`mps2-an385`** | ARM Cortex-M3 (QEMU) | A *different* memory map and peripheral set from lm3s6965 — CMSDK APB UART, CMSDK/SP805-compatible watchdog. Added purely as a new board-support crate, without touching the kernel or the Cortex-M architecture port, as proof the boundary holds. |
+| **ESP32-C6** | RISC-V, RV32IMAC | QEMU-validated board support. |
+| **ESP32-S3** | Xtensa LX7, dual-core | **Real hardware.** The only dual-core (`RIVET_MAX_HARTS=2`) target — cross-hart IPI-driven fairness, a genuine cross-hart data race found and fixed via live JTAG (`docs/realtime.md` §15), real-hardware-verified priority inheritance and round-robin fairness. Built with Espressif's separate `esp` Rust toolchain fork (excluded from the main workspace — see §15). |
+| **STM32F401RE (Nucleo-64)** | ARM Cortex-M4, single-core | **Real hardware** (ST-LINK/V2-1 onboard debugger, SWD). The current best hard-real-time story in this project: `docs/wcet-stm32f401re.md` gives a scoped, real-hardware-measured hard-RT declaration — zero-variance nested-interrupt latency (86 cycles, 500/500 identical samples), measured `PRIORITY_INVERSION_BOUNDED` with zero medium-priority interference, no cross-hart contention class of problem (single core). |
 
-A fourth target — ESP32-C3 (RV32IMC) — was evaluated and found to be a real,
-architectural blocker rather than a simple porting task: it lacks the RISC-V
-atomic (`A`) extension that the kernel's lock-free scheduler relies on
-throughout. Supporting it would require switching the kernel to
-software-emulated atomics, a cross-cutting change, not a new board. This is
-documented, not silently ignored — see [§18](#18-known-limitations-and-honest-gaps).
+An eighth target — ESP32-C3 (RV32IMC) — was evaluated and found to be a
+real, architectural blocker rather than a simple porting task: it lacks the
+RISC-V atomic (`A`) extension the kernel's lock-free scheduler relies on
+throughout. Supporting it would mean switching to software-emulated atomics,
+a cross-cutting kernel change, not a new board. Documented, not silently
+ignored — see [§18](#18-known-limitations-and-honest-gaps).
 
-Real hardware has not been tested; everything above runs in QEMU. See
-[§18](#18-known-limitations-and-honest-gaps) for exactly what that does and
-doesn't validate.
+**Real hardware has been tested** — ESP32-S3 and STM32F401RE above, both
+via live JTAG/SWD debugging (OpenOCD + GDB), not just flash-and-hope. See
+`docs/wcet.md` and `docs/wcet-stm32f401re.md` for exact, method-labeled
+(measured / derived / architectural / assumed) timing figures gathered this
+way — including real findings QEMU could never have surfaced, like a
+baud-rate-bound critical section discovered only by measuring on real
+silicon. The QEMU-only boards above still have the caveats in
+[§18](#18-known-limitations-and-honest-gaps): QEMU's TCG emulation has no
+caches, wait states, or flash latency, so it validates *mechanism*, not
+*timing magnitude*, on those specific targets.
 
 ---
 
@@ -627,12 +637,27 @@ rivet/                 the kernel — scheduler, TCB, executor, timers, sync,
 rivet-arch-riscv/       RV32 ISA port: trap entry/dispatch, PMP guards,
                         optional CLINT tick/IPI backend (feature "clint")
 rivet-arch-cortex-m/    Cortex-M ISA port: PendSV/MemManage, MPU guards,
-                        optional SysTick backend (feature "systick")
+                        NVIC IRQ dispatch, DWT cycle counter, optional
+                        SysTick backend (feature "systick")
+rivet-arch-xtensa/      Xtensa LX7 ISA port (ESP32-S3 only): context
+                        switch via xtensa-lx-rt's Context struct, dual-hart
+                        (RIVET_MAX_HARTS=2) dispatch, cross-hart IPI
+                        fairness broadcast. Excluded from the main
+                        workspace (needs Espressif's separate `esp` Rust
+                        toolchain fork) — build via `cd rivet-arch-xtensa
+                        && cargo +esp build`, never `cargo build --workspace`.
 
 rivet-bsp-qemu-virt/    board support: QEMU RISC-V "virt"
 rivet-bsp-lm3s6965/     board support: QEMU lm3s6965evb (+ typestate GPIO)
 rivet-bsp-mps2-an385/   board support: QEMU mps2-an385 (the "second board"
                         proof board)
+rivet-bsp-esp32c6/      board support: ESP32-C6 (RISC-V, QEMU-validated)
+rivet-bsp-esp32s3/      board support: ESP32-S3, real hardware, dual-core.
+                        Excluded from the main workspace alongside
+                        rivet-arch-xtensa (same toolchain reason).
+rivet-bsp-stm32f401re/  board support: STM32F401RE Nucleo-64, real
+                        hardware. Interrupt-driven USART2 console, IWDG
+                        watchdog, NVIC priority floor.
 rivet-bsp-support/      shared BSP helpers: software-watchdog fallback,
                         NS16550 UART driver
 
@@ -641,9 +666,19 @@ rivet-rt/               boot glue (_start/Reset, bss/data init, mhartid
                         #[rivet::main] macro's runtime half
 rivet-macros/           #[rivet::task] and #[rivet::main] proc macros
 
-examples/qemu-riscv/    demo + 11 QEMU test binaries for the riscv board
-examples/qemu-cm3/      demo + 10 QEMU test binaries for the cm3 board
-examples/mps2-an385/    demo + 8 QEMU test binaries for the mps2 board
+examples/qemu-riscv/    demo + QEMU test binaries for the riscv board
+examples/qemu-cm3/      demo + QEMU test binaries for the cm3 board
+examples/mps2-an385/    demo + QEMU test binaries for the mps2 board
+examples/esp32c6/       demo + QEMU test binaries for the esp32c6 board
+examples/esp32s3/       demo + real-hardware test/bench binaries for the
+                        esp32s3 board (smp_latency_bench, stress_load_bench,
+                        smp_test — the dual-hart fairness/race regression
+                        suite). Excluded from the main workspace (same
+                        toolchain reason as rivet-arch-xtensa).
+examples/stm32f401re/   demo + real-hardware test/bench binaries for the
+                        stm32f401re board, including the purpose-built WCET
+                        benchmarks (nested_irq_bench, critsec_isolate_bench,
+                        priority_inversion_bench, deadline_miss_bench).
 
 xtask/                  the QEMU test harness: board registry, per-test
                         golden-output/exit-code/qemu-log assertions
@@ -652,17 +687,32 @@ tests/gdb/              GDB-scripted context-switch verification
 tests/golden/           captured golden outputs + a running log of every
                         pre-existing and newly-found bug, fixed or not
 docs/porting.md         step-by-step guide to adding a new board
-plan.md                 the layering-overhaul design doc and its running
-                        implementation log (what's done, what's deferred,
-                        and why, phase by phase)
+docs/realtime.md        real-time characterization log: every timing bug
+                        found and fixed on real hardware, phase by phase,
+                        including the ESP32-S3 dual-hart race (§15)
+docs/wcet.md            formal WCET analysis, ESP32-S3/Xtensa — interrupt
+                        latency, context-switch, scheduling, critical-
+                        section, and blocking-time figures, each labeled
+                        by method (measured / derived / architectural /
+                        assumed)
+docs/wcet-stm32f401re.md
+                        formal WCET analysis and a scoped hard-real-time
+                        declaration for STM32F401RE — the same figures,
+                        gathered on real hardware, for a target that
+                        structurally avoids most of the ESP32-S3's
+                        dual-core-specific hazards
 ```
+
+`plan.md` (the layering-overhaul design doc and phase-by-phase implementation
+log this project has kept throughout its development) is a working document,
+not part of the tracked repository — see the root `.gitignore`.
 
 ---
 
 ## 16. Building, running, and testing
 
 ```bash
-# One-time setup
+# One-time setup — QEMU boards
 rustup target add riscv32imac-unknown-none-elf thumbv7m-none-eabi
 sudo apt install qemu-system-misc qemu-system-arm   # for the demos/tests
 
@@ -695,6 +745,42 @@ Every example binary is a `#![no_std] #![no_main]` crate depending on
 order and prints its progress: priority inheritance, real preemption, then
 the cooperative async tier — see any of the three `examples/*/src/main.rs`
 files for the exact narrated walkthrough.
+
+### Real hardware — STM32F401RE (Nucleo-64)
+
+No extra toolchain needed beyond the standard `thumbv7em-none-eabi` target
+and a system `openocd` (0.12+ has `board/st_nucleo_f4.cfg` built in) —
+everything flashes over the onboard ST-LINK/V2-1 via SWD:
+
+```bash
+rustup target add thumbv7em-none-eabi
+openocd -f interface/stlink.cfg -f board/st_nucleo_f4.cfg &   # GDB server on :3333
+
+cd examples/stm32f401re
+cargo build --release --bin demo
+gdb-multiarch -batch \
+  -ex "target extended-remote :3333" -ex "monitor reset halt" \
+  -ex load -ex "monitor reset" -ex detach -ex quit \
+  ../../target/thumbv7em-none-eabi/release/demo
+
+# Console output is on the same ST-LINK's CDC-ACM virtual COM port:
+# /dev/ttyACM<N> at 115200 8N1 (picocom, minicom, screen, or a plain
+# pyserial read all work).
+```
+
+### Real hardware — ESP32-S3
+
+Needs Espressif's separate `esp` Rust toolchain fork (`espup`) and
+`espflash`, since `rivet-arch-xtensa`/`rivet-bsp-esp32s3`/`examples/esp32s3`
+are excluded from the main workspace for exactly that reason:
+
+```bash
+# One-time: espup install, then `source ~/export-esp.sh` in every new shell
+export RIVET_MAX_HARTS=2   # for the dual-core fairness/race regression suite
+cd examples/esp32s3
+cargo build --release --bin demo --target xtensa-esp32s3-none-elf
+espflash flash --monitor target/xtensa-esp32s3-none-elf/release/demo
+```
 
 ---
 
@@ -742,21 +828,42 @@ cannot build for the host).
 
 Documented here rather than discovered the hard way:
 
-- **No real hardware has been tested.** Everything is verified in QEMU.
-  QEMU's TCG emulation has no caches, wait states, bus contention, or flash
-  latency — it validates *mechanism* (does the guard fire, does the switch
-  restore correctly), not *timing magnitude*. Any WCET/latency number from
-  QEMU is not a hardware number.
+- **QEMU-only boards (`virt`, `lm3s6965evb`, `mps2-an385`, `esp32c6`) have
+  not been hardware-validated.** QEMU's TCG emulation has no caches, wait
+  states, bus contention, or flash latency — it validates *mechanism* (does
+  the guard fire, does the switch restore correctly), not *timing
+  magnitude*. Any WCET/latency number from those boards is not a hardware
+  number. This caveat does **not** apply to ESP32-S3 or STM32F401RE — both
+  are real-hardware-validated, including live JTAG/SWD measurement; see
+  `docs/wcet.md` and `docs/wcet-stm32f401re.md`.
+- **The cross-hart critical-section lock (`critical::enter` on a
+  multi-hart build) has no FIFO/bounded-wait guarantee.** It's a raw
+  test-and-set, correct but not fair — a formal WCET analysis cannot derive
+  a closed-form upper bound on lock-acquisition wait time from the
+  algorithm alone on a multi-hart board (`docs/wcet.md` §6.2). This does not
+  affect any single-hart board, where the same lock's uncontended fast path
+  is the only path there is.
+- **`rivet::console::write_str` on the ESP32-S3 board holds `critical::
+  enter` across a UART-FIFO-drain busy-wait that scales with output length
+  once it exceeds the hardware FIFO's ~128-byte headroom** — bound by baud
+  rate, not CPU speed, measured at ~5.5 ms for ordinary `report()` output
+  (`docs/wcet.md` §6.1). Not present as a normal-operation hazard on
+  STM32F401RE, whose console is interrupt-driven/ring-buffered during
+  normal operation; the equivalent unbounded-by-length path there
+  (`flush_sync`) is architecturally confined to system termination, not
+  reachable from a running task (`docs/wcet-stm32f401re.md` §3).
 - **RISC-V M-mode memory protection is inherently weaker than Cortex-M's.**
   PMP entries affecting machine mode must be locked at boot and are
   immutable until reset, so RISC-V gets boot-time-static overflow *guards*,
   not Cortex-M's fully reprogrammable-per-switch mutual isolation.
-- **Multi-core is explicitly out of scope beyond a safety guard.** The
-  entire kernel's synchronization model rests on "disable interrupts = 
-  mutual exclusion," which is simply false under true SMP. `-smp N > 1` is
-  made *safe* (every hart but 0 parks without touching kernel state,
-  verified as a permanent regression check) but not *useful* — true SMP
-  would be a rewrite of the synchronization layer, not a feature addition.
+- **True multi-core SMP exists only on ESP32-S3 (Xtensa, `RIVET_MAX_HARTS=
+  2`).** Getting it right there required finding and fixing a genuine
+  cross-hart data race (a torn, unsynchronized `Context` struct copy — see
+  `docs/realtime.md` §15) via live JTAG; the fix has a measured stack-size
+  cost documented in the same section. RISC-V's own multi-hart path
+  (`-smp N > 1`) remains a safety guard only — every hart but 0 parks
+  without touching kernel state (verified as a permanent regression check),
+  not genuine concurrent SMP scheduling.
 - **ESP32-C3 (and any RV32IMC target without the atomic extension) cannot
   currently be supported.** The kernel's lock-free code needs
   `fetch_add`/`compare_exchange`, which don't exist on that ISA without
@@ -767,14 +874,19 @@ Documented here rather than discovered the hard way:
 - **`rivet::log!` has no argument interpolation yet** — it takes a level
   and a plain string, not a `format_args!`-style template. See
   [§10](#10-logging-and-diagnostics).
-- **No interrupt-driven peripheral drivers, no IRQ dispatch API, no
-  `embedded-hal` implementation.** The design for all three is fully
-  specified in `plan.md`'s Phase 8 section (down to which crate owns which
-  piece — the controller driver is arch, the IRQ number map is board) but
-  not implemented; each is a substantial project in its own right.
+- **`rivet::irq` (registration table, `enable`/`disable`/`set_priority`,
+  NVIC-backed on Cortex-M) exists and is exercised on real hardware** (the
+  STM32F401RE board's USART2 console is built entirely on it), but no
+  `embedded-hal` trait implementation exists yet in any BSP crate.
 - **No chaos/fault-injection testing, no Kani formal verification, no
   enforced coverage floor.** All three were evaluated and are documented as
   concrete next steps rather than attempted partially.
+- **`crate::latency::Kind::SchedulingWake`'s cycle-delta computation is not
+  wraparound-safe** on a 32-bit cycle counter — found on real ESP32-S3
+  hardware, producing a bogus multi-billion-cycle "latency" on longer runs
+  (`docs/wcet.md` §9). Reported, not fixed, since it was found during an
+  analysis pass, not a debugging one; the histogram's bucketed data is
+  likely contaminated by the same artifact on any sufficiently long run.
 
 The single source of truth for exactly what's done, what's deferred, and
 the reasoning behind every scope decision is `plan.md` — it's a running
@@ -785,27 +897,42 @@ lands.
 
 ## 19. Roadmap
 
-In roughly the order the project's own planning ranks them:
+Delivered since this list was first written — kept here so the history is
+visible rather than quietly rewritten:
 
-1. **IRQ dispatch** — a registration table + `enable`/`disable`/
-   `set_priority` API in the kernel, backed by an NVIC driver
-   (`rivet-arch-cortex-m`) and a PLIC driver (`rivet-arch-riscv`), with the
-   IRQ-number-to-peripheral map living in each board crate. This is the
-   actual missing primitive everything else in this list depends on.
-2. **Interrupt-driven peripheral drivers**, starting with UART RX/TX ring
-   buffers, as BSP-crate code (not kernel code) — proving the IRQ mechanism
-   end-to-end.
-3. **`embedded-hal` 1.0 + `-async`** trait implementations in the BSP
+- ✅ **IRQ dispatch** (`rivet::irq`, NVIC-backed on Cortex-M) — done,
+  exercised on real STM32F401RE hardware (interrupt-driven USART2 console).
+- ✅ **Interrupt-driven peripheral drivers** — the STM32F401RE console is
+  one; RX/TX ring buffers, BSP-crate code, not kernel code, as planned.
+- ✅ **Execution-time accounting, deadlines, and latency histograms**
+  (`rivet::exec_time`, `rivet::deadlines`, `rivet::latency`) — done, and
+  used directly to produce `docs/wcet.md`/`docs/wcet-stm32f401re.md`'s
+  real-hardware figures.
+- ✅ **Real hardware validation** — done, on two boards (ESP32-S3 dual-core
+  Xtensa, STM32F401RE Cortex-M4), via live JTAG/SWD, not just flash-and-hope.
+  Found and fixed a genuine cross-hart race in the process
+  (`docs/realtime.md` §15).
+
+Remaining, in roughly the order the project's own planning ranks them:
+
+1. **`embedded-hal` 1.0 + `-async`** trait implementations in the BSP
    crates, opening up the existing Rust embedded driver ecosystem.
-4. **Execution-time accounting, deadlines, and latency histograms**,
-   extending `rivet::report()` once a cycle-counter port symbol exists.
-5. **Argument interpolation for `rivet::log!`**, plus the originally-
+2. **Fix the `SchedulingWake` cycle-counter wraparound bug** found during
+   the WCET analysis pass (`docs/wcet.md` §9) — a 64-bit monotonic
+   timestamp, or explicit wraparound-aware subtraction.
+3. **Move `rivet::console::write_str` on ESP32-S3 off the FIFO-polling
+   critical section** (`docs/wcet.md` §6.1) — the interrupt-driven path
+   this crate already has for other boards (and that STM32F401RE already
+   uses) closes the one normal-operation gap standing between the ESP32-S3
+   board and a STM32F401RE-style scoped hard-RT declaration.
+4. **Argument interpolation for `rivet::log!`**, plus the originally-
    planned interned-format-string/host-decoder design if the simpler
    current version turns out not to be enough.
-6. **A real multi-hour soak run** (scaling `soak_smoke`'s iteration count
+5. **A real multi-hour soak run** (scaling `soak_smoke`'s iteration count
    and the harness timeout together), randomized tick-jitter and
    GDB-driven fault-injection chaos testing, and an enforced coverage
    floor.
-7. **Real hardware validation**, once the above is further along — the
-   project is explicit that this is a separate phase, not a stepping stone
-   to rush toward.
+6. **A provably-fair (FIFO) cross-hart lock** for `critical::enter` on
+   multi-hart boards, closing `docs/wcet.md` §6.2's open bound — needed for
+   an ESP32-S3-class hard-RT declaration, not needed on any single-hart
+   board.
