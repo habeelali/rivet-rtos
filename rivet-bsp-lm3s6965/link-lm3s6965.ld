@@ -12,8 +12,13 @@ ENTRY(Reset);
 
 SECTIONS
 {
-  /* Vector table at start of flash */
+  /* Vector table at start of flash. `__vector_table` lets
+   * rivet-arch-cortex-m's init set SCB.VTOR unconditionally on every
+   * board (a no-op here, where it happens to already equal VTOR's reset
+   * value of 0 — see rivet-bsp-stm32f401re's own linker script for the
+   * board where it's load-bearing). */
   .vector_table ORIGIN(FLASH) : {
+    __vector_table = .;
     LONG(ORIGIN(RAM) + LENGTH(RAM));  /* Initial stack pointer */
     LONG(Reset);                        /* Reset handler */
     LONG(NMI);

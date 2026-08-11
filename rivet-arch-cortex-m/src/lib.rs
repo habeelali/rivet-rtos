@@ -25,6 +25,26 @@
 
 #![no_std]
 
+// This crate's context-switch/SVC asm assumes a soft-float ABI
+// throughout: `rivet_svc_handler`'s EXC_RETURN decode checks the fixed
+// byte pattern for "no FP frame" (`0xFD`/`0xF9`) rather than testing
+// EXC_RETURN bit 2 (the FP-context-active flag), and neither it nor the
+// `PendSV` handler save/restore `s16-s31`/`FPSCR`. Both are silently
+// correct only because a soft-float target (`thumbv7em-none-eabi`, not
+// `-eabihf`) never sets the FPU's context-active state (`FPCA`) in the
+// first place — no VFP instruction is ever emitted, so there's no FP
+// context to lose. Catch the unsupported configuration at compile time
+// instead of producing a corrupted stack frame (garbage SP from
+// `rivet_svc_handler` reading the wrong exception-frame location) the
+// first time a task is spawned from inside another task on a hardfloat
+// build.
+#[cfg(target_feature = "vfp2")]
+compile_error!(
+    "rivet-arch-cortex-m assumes a soft-float ABI (build for e.g. \
+     thumbv7em-none-eabi, not -eabihf) — see this crate's own module \
+     docs for what a hardfloat port would additionally need"
+);
+
 pub mod dwt;
 pub mod mpu;
 #[cfg(feature = "nvic")]
@@ -40,6 +60,35 @@ pub const MIN_TASK_STACK: usize = 64 + 64;
 
 #[no_mangle]
 extern "Rust" fn __rivet_arch_init() {
+    // SCB.VTOR's reset value is architecturally 0x00000000 — correct for
+    // every board in this workspace that happens to load its flash at
+    // address 0 (QEMU's `lm3s6965evb`/`mps2-an385`), a no-op write here,
+    // but *wrong* for a board whose vector table lives somewhere else
+    // (a real chip's actual flash base, e.g. the STM32F401RE's
+    // 0x08000000): without this, exceptions vector through whatever
+    // VTOR defaults to instead of the board's real table, which reads
+    // as "boot works, then total silence the instant the first
+    // interrupt (SysTick) would otherwise fire" — no fault, no crash,
+    // because the hardware is faithfully doing exactly what it's told
+    // to, just not with the table this kernel actually built. Confirmed
+    // by bisection on real STM32F401RE hardware (see
+    // rivet-bsp-stm32f401re/link-stm32f401re.ld's own doc for the full
+    // story). `__vector_table` is provided by every Cortex-M board's
+    // linker script in this workspace, so this is unconditional, not
+    // feature-gated.
+    unsafe extern "C" {
+        static __vector_table: u32;
+    }
+    // SAFETY: `SCB::PTR` is the statically-known System Control Block
+    // base; `__vector_table` is a linker-defined symbol (its address,
+    // not its value, is what VTOR needs — matches every other `la
+    // __symbol`-style linker-script constant this workspace uses).
+    unsafe {
+        (*cortex_m::peripheral::SCB::PTR)
+            .vtor
+            .write(core::ptr::addr_of!(__vector_table) as u32);
+    }
+
     mpu::init();
     dwt::init();
 
@@ -64,6 +113,33 @@ extern "Rust" fn __rivet_arch_init() {
             | (1 << 18), // USGFAULTENA
         );
     }
+
+    // Every external NVIC IRQ resets to priority 0 — the *highest*
+    // configurable priority, strictly above PendSV/SysTick's 0xFF. Left
+    // alone, any future peripheral IRQ that touches kernel state
+    // (`rivet::irq::dispatch` calling `unblock`/a waker, or anything
+    // else that ends up in `sched`/`timer`) could preempt PendSV or
+    // SysTick *mid-reschedule* — the two-separate-atomics
+    // `READY_BITMAP`/`QUEUES` update `sched::ready_add`/`ready_remove`
+    // do is exactly the kind of thing that isn't safe to interrupt.
+    // Floor every implemented IRQ to PendSV/SysTick's own 0xFF so
+    // nothing outranks the scheduler unless a board *deliberately*
+    // raises one (every board that registers its own IRQ already does,
+    // explicitly, via `rivet::irq::set_priority` — matching this floor,
+    // not fighting it). `NVIC::PTR.ipr` covers the architectural maximum
+    // (240 IRQs); writing entries a given chip doesn't implement is
+    // architecturally safe (unimplemented IPR bits/registers are
+    // fixed/ignored, never a fault).
+    //
+    // SAFETY: `NVIC::PTR` is the statically-known NVIC base, valid on
+    // every Cortex-M; IPR is byte-addressable, plain volatile MMIO,
+    // and this runs once, before any IRQ is enabled.
+    unsafe {
+        let nvic = &*cortex_m::peripheral::NVIC::PTR;
+        for ipr in nvic.ipr.iter() {
+            ipr.write(0xFF);
+        }
+    }
 }
 
 #[no_mangle]
@@ -74,6 +150,16 @@ extern "Rust" fn __rivet_arch_idle() {
 #[no_mangle]
 extern "Rust" fn __rivet_arch_min_task_stack() -> usize {
     MIN_TASK_STACK
+}
+
+/// No hardware minimum: the CM3 MPU denies the whole task-stack pool with
+/// one region rather than a per-stack guard (see this crate's own
+/// `on_switch_to`), so this value is unused for actual protection —
+/// still a real power of two, matching the historical guard size, since
+/// `rivet::preempt::stack_pool`'s layout math needs *some* value.
+#[no_mangle]
+extern "Rust" fn __rivet_arch_min_guard_size() -> usize {
+    64
 }
 
 #[no_mangle]
@@ -278,6 +364,27 @@ unsafe extern "Rust" fn __rivet_arch_start_first_task(sp: usize) -> ! {
     #[cfg(feature = "systick")]
     systick::enable();
 
+    // Root cause (plan.md Phase 24), found via a real regression on real
+    // Cortex-M hardware: `rivet::preempt::start()` now wraps its call
+    // into this function in `port::arch::critical_section` (masking
+    // interrupts for the whole gap between the scheduling decision and
+    // this function actually consuming the picked task's state — closes
+    // a real race found on Xtensa dual-core, plan.md Phase 24's own
+    // section has the full story). That wrapper's own interrupt-restore
+    // never runs, because its closure diverges into this `-> !`
+    // function — every arch's `start_first_task` is now responsible for
+    // re-enabling interrupts itself as part of dispatch. RISC-V's
+    // `mret`-based resume already does this implicitly (the fabricated
+    // context's own `mstatus` carries `MIE = 1`); this port had no
+    // equivalent, so the very first task's interrupts silently never
+    // came back — the whole system froze the instant any code past this
+    // point needed a tick or exception. `cortex_m::interrupt::enable()`
+    // is the same primitive `__rivet_arch_irq_restore` above already
+    // uses.
+    unsafe {
+        cortex_m::interrupt::enable();
+    }
+
     unsafe {
         core::arch::asm!(
             "mov r0, {arg}",
@@ -349,8 +456,23 @@ unsafe fn init_task_stack_impl(stack: &mut [u8], entry_fn: usize, arg: usize) ->
 ///
 /// Naked (no prologue): the exception frame base must be read from `sp`
 /// *before* the compiler pushes anything, and the exception return value
-/// in `lr` must be preserved across the call so the handler returns with
-/// `bx lr` (EXC_RETURN), not a normal branch.
+/// in `lr` must be preserved across the `bl rivet_svc_core` call so the
+/// handler returns with `bx lr` (EXC_RETURN), not a normal branch.
+///
+/// Preserves `lr` with a real `push`/`pop` on this handler's own stack
+/// (MSP — Handler mode always uses it), the same shape `PendSV`'s own
+/// asm below already uses for the identical alignment reason, rather
+/// than stashing it in a register across the call. An earlier version
+/// used `mov r4, lr` instead: `r4` is AAPCS callee-saved, but this naked
+/// handler has no prologue to actually save/restore the *caller's*
+/// (i.e. the interrupted code's) live `r4` — so it silently clobbered
+/// whatever value the compiler's register allocator happened to be
+/// keeping there, live across the SVC boundary, the instant it made
+/// that choice (confirmed by disassembling a real build where it did
+/// exactly that). `r12` isn't a fix either: it's AAPCS *caller*-saved,
+/// so `bl rivet_svc_core` is free to clobber it too. `r1` here is dead
+/// (only used for the EXC_RETURN low-byte check, already done) and just
+/// rides along as the push/pop's 8-byte-alignment partner.
 ///
 /// # Safety
 /// Exception entry point; installed via the board's vector table
@@ -361,18 +483,19 @@ unsafe extern "C" fn rivet_svc_handler() {
     // SAFETY: naked handler with no stack frame; the register-level
     // protocol with `rivet_svc_core` is documented in the doc comment.
     core::arch::naked_asm!(
-        "mov r4, lr",     // preserve EXC_RETURN (r4 is callee-saved)
-        "uxtb r1, r4",    // EXC_RETURN 0xFFFFFFFD = taken from thread
+        "uxtb r1, lr",    // EXC_RETURN 0xFFFFFFFD = taken from thread
         "cmp  r1, #0xfd", // mode with PSP (spawn from a running task);
         "bne  1f",        // 0xF9 = thread mode with MSP (boot context)
         "mrs  r0, psp",   // frame on PSP
         "b    2f",
         "1:",
-        "mov  r0, sp", // frame on MSP
+        "mov  r0, sp", // frame on MSP — computed before the push below
+                       // touches *this* handler's own (MSP) stack
         "2:",
-        "bl  rivet_svc_core",
-        "mov lr, r4", // restore EXC_RETURN
-        "bx  lr",     // exception return
+        "push {{r1, lr}}", // preserve EXC_RETURN across the call
+        "bl   rivet_svc_core",
+        "pop  {{r1, lr}}",
+        "bx   lr", // exception return
     );
 }
 
@@ -428,6 +551,21 @@ fn rivet_svc_core(frame: *mut u32) {
 /// highest configurable priority, so nothing (SysTick/PendSV at 0xFF) can
 /// preempt the frame write; the critical section's purpose — no task runs
 /// mid-initialization — is preserved.
+///
+/// (A real, if narrow, gap exists in the handful of instructions between
+/// `cpsie` and the `svc` actually being taken, and again between the
+/// `svc` returning and `cpsid` — during which SysTick/PendSV genuinely
+/// could preempt Thread-mode execution, even though nothing can preempt
+/// the SVC handler's own body once it's running. Tried closing it with
+/// `BASEPRI` — raise it to mask everything below SVC's priority before
+/// clearing `PRIMASK`, lower it back after — which is architecturally
+/// the right tool, but it reproducibly hard-faulted `cm3/demo` under
+/// QEMU's lm3s6965 model (root cause not yet isolated — possibly a
+/// `BASEPRI`-handling difference in QEMU's NVIC model, possibly a real
+/// interaction this crate's other assumptions don't account for). Reset
+/// back to the plain `PRIMASK` toggle rather than ship a fix that traded
+/// a rare real-hardware race for a reliable QEMU regression; revisit
+/// with `BASEPRI` again once the QEMU-specific failure is understood.)
 #[no_mangle]
 unsafe extern "Rust" fn __rivet_arch_init_task_stack(
     stack_ptr: *mut u8,

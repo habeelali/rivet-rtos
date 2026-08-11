@@ -1,0 +1,37 @@
+[package]
+name = "stm32f401re-demo"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[[bin]]
+name = "demo"
+path = "src/main.rs"
+test = false
+
+[dependencies]
+rivet = { path = "../../rivet" }
+rivet-rt = { path = "../../rivet-rt" }
+rivet-bsp-stm32f401re = { path = "../../rivet-bsp-stm32f401re" }
+# Must match rivet-bsp-stm32f401re's own feature selection exactly —
+# Cargo unifies features across a build graph (see rivet-bsp-esp32c6's
+# own Cargo.toml comment for the footgun this avoids).
+rivet-arch-cortex-m = { path = "../../rivet-arch-cortex-m", features = ["systick", "nvic"] }
+rivet-bsp-support = { path = "../../rivet-bsp-support" }
+# For test/demo binaries that poke a peripheral's registers directly
+# (main.rs's LED toggle) — same version/feature selection
+# rivet-bsp-stm32f401re itself uses (see its own Cargo.toml comment for
+# why `default-features = false`).
+stm32f4 = { version = "0.16", default-features = false, features = ["stm32f401"] }
+embedded-hal-async = "1.0"
+embedded-hal-nb = "1.0"
+nb = "1.1"
+
+[profile.release]
+opt-level = "s"
+lto = true
+debug = true
+panic = "abort"
+
+[profile.dev]
+panic = "abort"

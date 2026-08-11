@@ -1,0 +1,10 @@
+[build]
+target = "thumbv7em-none-eabi"
+
+[env]
+# STM32F401's own peripheral IRQ numbers run up to 84 (SPI4) — past
+# `rivet::irq`'s default 32-slot table (`rivet::irq::dispatch`/`enable`
+# index it directly by NVIC IRQ number on Cortex-M, unlike the ESP32-C6's
+# board-owned indirection, since NVIC operations genuinely need the real
+# hardware line number). Comfortable headroom above 84, not a tight fit.
+RIVET_MAX_IRQS = "100"

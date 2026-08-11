@@ -8,16 +8,27 @@ members = [
     "rivet-bsp-qemu-virt",
     "rivet-bsp-lm3s6965",
     "rivet-bsp-mps2-an385",
+    "rivet-bsp-esp32c6",
+    "rivet-bsp-stm32f401re",
     "rivet-rt",
     "examples/qemu-cm3",
     "examples/qemu-riscv",
     "examples/mps2-an385",
+    "examples/esp32c6",
+    "examples/stm32f401re",
     "xtask",
 ]
 resolver = "2"
 # cargo-fuzz crate: pinned deps + its own lockfile; built only via
 # `cargo +nightly fuzz run`, never as part of workspace builds.
-exclude = ["fuzz"]
+#
+# The Xtensa (ESP32-S3, plan.md Phase 21+) crates are excluded the same
+# way and for the same reason: they need Espressif's separate `esp` Rust
+# toolchain fork (no upstream Xtensa backend), which is incompatible with
+# the `stable`/`nightly` toolchains every other member builds under.
+# Building them is `cd rivet-arch-xtensa && cargo +esp build` (or via
+# their own `rust-toolchain.toml`), never `cargo build --workspace`.
+exclude = ["fuzz", "rivet-arch-xtensa", "rivet-bsp-esp32s3", "examples/esp32s3"]
 
 [workspace.package]
 version = "0.1.0"
