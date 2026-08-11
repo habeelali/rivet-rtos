@@ -112,42 +112,48 @@ pub unsafe fn on_timer_irq() {
     // boot on an unhandled level-1 interrupt).
     //
     // `BROADCAST_EVERY` was tuned empirically against real ESP32-S3
-    // hardware, not derived analytically — two higher rates were tried
-    // and rejected on hardware evidence:
+    // hardware, not derived analytically — a higher rate was tried and
+    // rejected on hardware evidence:
     //   - Every tick (1x): measurably slowed the receiving hart's own
     //     useful work (`smp_latency_bench`'s `waiter` dropped from
     //     completing 1000 cross-core samples well inside 5s to ~35).
-    //   - Every 2nd tick: hit a deterministic real-hardware fault —
-    //     confirmed *not* a stack overflow (doubling every task's stack
-    //     4096 → 8192 bytes reproduced the exact same fault, byte-for-
-    //     byte identical `PC`/`EXCVADDR`/every register, 3/3 runs), and
-    //     confirmed *not* random (fully deterministic across repeated
-    //     flashes at a given stack size). This matches a pattern already
-    //     independently documented elsewhere in this exact workload
-    //     (`examples/esp32s3/src/bin/smp_latency_bench.rs`'s own comment
-    //     on `waiter`, from an earlier, unrelated session: an earlier
-    //     mutex-generation-tracking design in this identical cross-core
-    //     contention scenario "reliably crashed... reproducible byte-for-
-    //     byte across rebuilds and stack-size changes" too) — two
-    //     independent sessions hitting the same deterministic-but-
-    //     unexplained-at-the-instruction-level fault class in this same
-    //     narrow scenario (high-frequency cross-core `PriorityMutex`
-    //     dispatch on this specific SoC/toolchain), both times without
-    //     JTAG access to pin the exact instruction, both times resolved
-    //     by staying clear of the triggering condition rather than by a
-    //     confirmed instruction-level fix. Manifested as either a hard
-    //     stall (`waiter` permanently stuck mid-run, confirmed not just
-    //     slow — a 4x longer watchdog window made no difference) or an
-    //     outright crash (`InstrProhibited`, landing mid-instruction
-    //     inside `core::fmt`'s formatting code).
-    // Every 32nd tick: 13/13 clean runs of `smp_latency_bench` and 5/5 of
-    // `stress_load_bench` on real hardware, both fully deterministic
-    // (identical `min`/`max`/`avg` and iteration counts every run) — no
-    // stall, no crash, and `stress_load_bench`'s `mutex_contender_iters`
-    // (the original starvation this fix exists for) went from 5-7 to a
-    // healthy, consistent 2811. Not proven safe at *every* possible rate
-    // between 2 and 32 — 32 is simply the value this session verified
-    // clean, not a value with a proven-safe boundary below it.
+    //
+    // Every 2nd tick used to hit a deterministic real-hardware fault
+    // (`InstrProhibited`, `console::write_str`'s `retw.n` computing a
+    // garbage return target because `A0` had gone to exactly zero) —
+    // root-caused via live JTAG (`xtensa-esp-elf-gdb` + `openocd-esp32`
+    // against the S3's native USB-JTAG): `CONTEXTS` (this crate's
+    // per-task saved-register array, keyed by task id) is genuinely
+    // shared across harts, but each `CONTEXTS[id]` read/write was a
+    // plain, non-atomic 136-byte struct copy with *no* synchronization —
+    // not even a lock scoped to just the copy. A higher broadcast rate
+    // means more concurrent tick/dispatch activity on both harts, which
+    // made a torn read of a live `Context` (hart B reading `CONTEXTS[id]`
+    // mid-write by hart A) enough likelier to actually land within a
+    // realistic test run. Fixed in `__level_3_interrupt` (see its own
+    // comment) by wrapping each `CONTEXTS` copy in `critical::enter`. See
+    // `ContextCell`'s own `unsafe impl Sync` comment for the corrected
+    // safety reasoning.
+    //
+    // That fix has a real, measured cost: the extra `critical::enter`
+    // call sites add stack usage to every dispatch, and dispatches run on
+    // whichever task's stack was interrupted — 4096-byte task stacks
+    // (this bench's original size) were no longer enough headroom even
+    // at the shipped rate of 32, let alone 2; a *different* hardware
+    // fault (`StoreProhibited`/`LoadProhibited`, a garbage-pointer write
+    // from genuine stack corruption) appeared instead. 8192 bytes (2x)
+    // still wasn't enough; 16384 (4x, this bench's current size) was
+    // clean, 6/6 runs, at both `BROADCAST_EVERY = 2` and `= 32`. Any
+    // application built against this arch with tight task stacks should
+    // re-check its own headroom against this cost.
+    //
+    // Every 32nd tick: 3/3 clean runs of `smp_latency_bench` at each of
+    // `BROADCAST_EVERY = 2` and `= 32` on real hardware post-fix (see
+    // above), both fully deterministic (identical `min`/`max`/`avg` and
+    // iteration counts every run) — no stall, no crash. Not proven safe
+    // at *every* possible rate between 2 and 32 — 32 is simply the value
+    // this session verified clean, not a value with a proven-safe
+    // boundary below it.
     const BROADCAST_EVERY: u32 = 32;
     static BROADCAST_TICK: AtomicU32 = AtomicU32::new(0);
     if BROADCAST_TICK

@@ -113,8 +113,15 @@ const BOOTSTRAP_CAPACITY: usize = MAX_PTASKS + BOOTSTRAP_HEADROOM;
 
 struct ContextCell(UnsafeCell<Context>);
 // SAFETY: every access happens from inside the level-3 interrupt handler,
-// which cannot be re-entered (same interrupt line, masked for its own
-// duration) — never concurrent.
+// which cannot be re-entered on the *same* hart (same interrupt line,
+// masked for its own duration) — but `CONTEXTS` is indexed by task id,
+// not by hart, so that alone does not rule out two different harts each
+// running their own level-3 handler and touching the same slot at once.
+// The real guarantee is cross-hart: every access is wrapped in
+// `rivet::critical::enter` (see `__level_3_interrupt`'s dispatch code),
+// a genuine cross-hart spinlock, not just local interrupt masking — found
+// missing on real hardware (a torn read of a same-task `Context` under
+// concurrent save/restore) before that wrap was added.
 unsafe impl Sync for ContextCell {}
 
 static CONTEXTS: [ContextCell; MAX_PTASKS] =
@@ -1047,14 +1054,31 @@ extern "Rust" fn __level_3_interrupt(save_frame: &mut Context) {
         return;
     };
 
-    // Persist the outgoing task's *real* current state before asking the
-    // scheduler for a decision — from this point `Tcb.sp` for `tid`
-    // permanently means "task id", not a bootstrap marker (see module
-    // docs), since we always pass `tid` itself as `interrupted_sp` below.
+    // `CONTEXTS` is a *cross-hart-shared* array (`ContextCell`'s
+    // `unsafe impl Sync` only reasoned about same-hart interrupt
+    // reentrancy — never actually true on this dual-core target), but
+    // each individual `CONTEXTS[id]` read/write was a plain, non-atomic
+    // struct copy (several store/load instructions, not one) with *no*
+    // synchronization at all — not even a lock spanning just the copy
+    // itself. That leaves a real window: hart A can be mid-way through
+    // `*CONTEXTS[tid] = *save_frame` while hart B's own, separately-timed
+    // dispatch reads `CONTEXTS[tid]` back out mid-write — a torn read of
+    // a live struct, not a benign race, and exactly the kind of fault
+    // that gets more likely (not less) the more often both harts are
+    // ticking concurrently, matching this crash's exact sensitivity to
+    // `timer::on_timer_irq`'s broadcast rate. Wrapping *each* copy in its
+    // own `critical::enter` closes that specific torn-copy race with the
+    // smallest possible lock-hold time — deliberately *not* spanning the
+    // scheduling decision itself (`on_tick` already protects that on its
+    // own), since holding the cross-hart spinlock for the full
+    // save-decide-restore span starved the other hart's own tick
+    // handling badly enough to stall the whole system (found on real
+    // hardware while verifying a first, wider-locking attempt at this
+    // exact fix).
     // SAFETY: `tid < MAX_PTASKS` (a real task id).
-    unsafe {
+    rivet::critical::enter(|| unsafe {
         *CONTEXTS[tid].0.get() = *save_frame;
-    }
+    });
 
     let resume = rivet::preempt::on_tick(tid);
     if resume == tid {
@@ -1066,14 +1090,15 @@ extern "Rust" fn __level_3_interrupt(save_frame: &mut Context) {
         // restore its last-saved full state.
         // SAFETY: `resume` is a task id this crate itself populated on a
         // prior switch-out.
-        unsafe {
+        rivet::critical::enter(|| unsafe {
             *save_frame = *CONTEXTS[resume].0.get();
-        }
+        });
     } else {
         // The candidate has never run before (dispatched for the first
         // time via this tick, not via `start_first_task` — only one task
         // in the whole system gets to be "first" that way). Fabricate its
         // initial state the same way `start_first_task` would have.
+        // Never touches `CONTEXTS`, so no lock needed here.
         let index = decode_bootstrap(resume)
             .expect("rivet-arch-xtensa: on_tick returned an sp that is neither a task id nor a bootstrap marker");
         // SAFETY: consumed at most once, matching `start_first_task`'s

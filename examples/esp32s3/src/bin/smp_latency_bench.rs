@@ -286,9 +286,13 @@ fn watchdog(_: &'static Unit) -> ! {
 fn main() -> ! {
     rivet::console::write_str("Rivet smp_latency_bench (forced cross-core)\n");
 
-    let _ = rivet::spawn_ptask!(stack = 4096, priority = 10, entry = watchdog, arg = UNIT);
-    let _ = rivet::spawn_ptask!(stack = 4096, priority = 3, entry = waiter, arg = UNIT);
-    let _ = rivet::spawn_ptask!(stack = 4096, priority = 5, entry = holder, arg = UNIT);
+    // 16384, not the original 4096: `rivet-arch-xtensa::timer`'s
+    // `on_timer_irq` doc comment covers why — the cross-hart `CONTEXTS`
+    // race fix adds real stack usage to every dispatch, and 4096 no
+    // longer had enough headroom once that fix landed.
+    let _ = rivet::spawn_ptask!(stack = 16384, priority = 10, entry = watchdog, arg = UNIT);
+    let _ = rivet::spawn_ptask!(stack = 16384, priority = 3, entry = waiter, arg = UNIT);
+    let _ = rivet::spawn_ptask!(stack = 16384, priority = 5, entry = holder, arg = UNIT);
 
     rivet::run();
 }

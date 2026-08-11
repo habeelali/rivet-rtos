@@ -930,9 +930,101 @@ whole investigation (18 in the original verification round, 8 after two
 further rejected fix attempts, 8 more after the stack-size experiment),
 fully deterministic every time — a wide, repeatedly-reconfirmed margin
 below a threshold that itself behaves deterministically rather than
-probabilistically, not a guess dressed up as a number. Anyone
-investigating the instruction-level cause with proper JTAG access, or
-revisiting the per-hart-tick design to find why it panics at boot, should
-re-run the same hardware verification (`smp_test.rs`, `smp_latency_
-bench`, `stress_load_bench`, several repeats each) before trusting a
-change to this value.
+probabilistically, not a guess dressed up as a number.
+
+**Update: JTAG access was later obtained and the fault above was
+root-caused and fixed — see §15.** The paragraphs above are kept as the
+historical record of what was known before that session; §15 is now the
+authoritative account of the actual instruction-level cause.
+
+## 15. The `InstrProhibited` fault, root-caused: a torn cross-hart `Context` copy
+
+A live JTAG session (Espressif's `openocd-esp32` + `xtensa-esp-elf-gdb`
+against the ESP32-S3's native USB-JTAG, once a second USB connection to
+it became available) pinned the exact fault from §14 down to the
+instruction level, and it turned out to be a genuine bug, not hardware
+noise: the crash reproduced byte-for-byte identical to §14's own
+description — `PC` at the `retw.n` ending `console::write_str`, `A0`
+(the return-address register) reading exactly `0x00000000`, `EXCCAUSE`
+`InstrProhibited`, `EXCVADDR` a garbage computed return target — with
+`waiter` having already completed all 1000 cross-core samples before the
+crash landed in the final summary print.
+
+**Root cause.** `rivet-arch-xtensa`'s `CONTEXTS` array (per-task saved
+register state, keyed by task id) is genuinely shared across harts — any
+task can be dispatched onto either core — but `__level_3_interrupt`'s
+`CONTEXTS[id]` reads and writes were plain, non-atomic 136-byte struct
+copies (`*CONTEXTS[id].0.get() = *save_frame` and its mirror), with *no*
+synchronization at all, not even a lock scoped to just the copy.
+`ContextCell`'s `unsafe impl Sync` justified this by reasoning that the
+level-3 handler "cannot be re-entered" — true on a *single* hart, but
+`CONTEXTS` is indexed by task id, not by hart, so that reasoning never
+actually covered the real hazard: two different harts, each running
+their own level-3 handler, touching the same task's slot at the same
+time. A higher `on_timer_irq` broadcast rate means more concurrent
+tick/dispatch activity on both harts, which is exactly why §14 saw this
+fault get *more* likely, not less, as `BROADCAST_EVERY` dropped from 32
+towards 2 — more chances per second for hart B to read `CONTEXTS[id]`
+while hart A was mid-write, a torn read landing on a live task's saved
+`A0` field.
+
+**The fix**, in `__level_3_interrupt`: wrap each individual `CONTEXTS`
+copy (the outgoing task's save, the incoming task's restore) in its own
+`rivet::critical::enter` call — the cross-hart spinlock this workspace
+already uses everywhere else for exactly this kind of shared-state
+access. Deliberately scoped to *just* the two copies, not the whole
+save-decide-restore sequence: a first attempt that wrapped the entire
+sequence (so the scheduling decision and both `CONTEXTS` copies were one
+atomic unit) closed the race just as well, but held the cross-hart lock
+long enough to starve the other hart's own tick handling — the system
+never made forward progress at all (not even watchdog's own periodic
+print) at every broadcast rate tried. Locking only the individual copies
+avoids that: the scheduling decision itself was already correctly
+protected by `on_tick`'s own internal `critical::enter` (nested calls to
+the same lock compose correctly by construction — see `critical.rs`'s
+module docs), so the only genuinely unprotected operation was the raw
+struct copy, and that's the only thing that needed its own lock.
+
+**A real, measured cost, not a free fix.** The extra `critical::enter`
+call sites add stack usage to every dispatch — and a dispatch always
+runs on whichever task's stack was interrupted, not a separate ISR
+stack (`xtensa-lx-rt`'s exception entry allocates its frame on top of
+whatever stack was live, per this crate's own module docs). Applying the
+fix at `smp_latency_bench`'s original 4096-byte task stacks reproduced a
+*different* real-hardware fault instead — `StoreProhibited`/
+`LoadProhibited`, a garbage-pointer write from genuine stack corruption,
+at **both** `BROADCAST_EVERY = 2` and the shipped `= 32`, so this was not
+specific to the crash-reproducing rate. Doubling to 8192 bytes still
+wasn't enough headroom; 16384 (4x the original) was clean. This is a
+property of `smp_latency_bench` specifically (its crash site is deep
+inside `console::write_str`'s own formatting call chain, `print_u64` →
+`write_str` → `write_bytes`, which was already using a meaningful
+fraction of 4096 bytes before the fix added anything) — `smp_test.rs`
+and `stress_load_bench`, whose task bodies never call into the console
+formatter, needed **no** stack changes at all and passed clean at their
+original 512–2048-byte sizes. Any application on this arch with tight
+task stacks and a deep call chain at a plausible interrupt point should
+budget for this cost explicitly rather than assume the original margin
+still holds.
+
+**Verified.** `smp_latency_bench` (16384-byte stacks): 6/6 clean,
+fully deterministic runs — 3/3 at `BROADCAST_EVERY = 2` (the rate that
+reliably reproduced the crash pre-fix, re-confirmed via a real,
+byte-for-byte-identical baseline run against the unfixed code first),
+3/3 at the shipped `= 32`. `smp_test.rs` and `stress_load_bench`
+(original stack sizes, unmodified): both pass cleanly, deterministically,
+alongside the fix — `stress_load_bench`'s `mutex_contender_iters` (§14's
+own original starvation metric) came back at **13,997**, comfortably
+above §14's already-healthy 2811, confirming no fairness regression.
+Host-side `cargo test -p rivet` and clippy on `rivet-arch-xtensa`
+(`--target xtensa-esp32s3-none-elf`) both stayed green — this fix
+touches only `rivet-arch-xtensa`, which no QEMU-tested board links, so
+the three-board QEMU suite is unaffected by construction, not just
+untested.
+
+`BROADCAST_EVERY` remains `32`, unchanged from §14 — this session's fix
+addresses the fault at every rate tried (2 and 32 both verified clean),
+not just the shipped one, but 32 is still the only value with a real
+hardware-verified fairness benefit backing it (§14's `stress_load_bench`
+result), so there's no reason to move off it now that the fault it used
+to trigger is actually fixed rather than just avoided.
