@@ -55,6 +55,18 @@ loom::lazy_static! {
         core::array::from_fn(|_| core::array::from_fn(|_| AtomicU32::new(0)));
 }
 
+/// Exact worst-case-observed cycle count per `Kind`, alongside the
+/// bucketed histogram above — the top histogram bucket (`[2^15, ∞)`) is
+/// unbounded above by construction, so it alone cannot answer "what was
+/// the actual worst cycle count seen," only "at least 32768." Needed for
+/// WCET reporting, where an open-ended top bucket isn't an exact figure.
+#[cfg(not(loom))]
+static MAX_CYCLES: [AtomicU32; KINDS] = [const { AtomicU32::new(0) }; KINDS];
+#[cfg(loom)]
+loom::lazy_static! {
+    static ref MAX_CYCLES: [AtomicU32; KINDS] = core::array::from_fn(|_| AtomicU32::new(0));
+}
+
 #[cfg(any(feature = "latency-histograms", test))]
 fn bucket_of(cycles: u64) -> usize {
     if cycles == 0 {
@@ -72,6 +84,8 @@ fn bucket_of(cycles: u64) -> usize {
 #[cfg(feature = "latency-histograms")]
 pub fn record(kind: Kind, cycles: u64) {
     HISTOGRAMS[index(kind)][bucket_of(cycles)].fetch_add(1, Ordering::Relaxed);
+    let capped = cycles.min(u32::MAX as u64) as u32;
+    MAX_CYCLES[index(kind)].fetch_max(capped, Ordering::Relaxed);
 }
 
 /// See the feature-gated [`record`] above; a no-op stub keeps call sites
@@ -84,6 +98,13 @@ pub fn record(_kind: Kind, _cycles: u64) {}
 /// Snapshot of one histogram's 16 bucket counts.
 pub fn snapshot(kind: Kind) -> [u32; BUCKETS] {
     core::array::from_fn(|b| HISTOGRAMS[index(kind)][b].load(Ordering::Relaxed))
+}
+
+/// Exact worst-case-observed cycle count for `kind` (0 if never recorded)
+/// — see [`MAX_CYCLES`]'s own doc for why this exists alongside the
+/// bucketed histogram.
+pub fn max_cycles(kind: Kind) -> u32 {
+    MAX_CYCLES[index(kind)].load(Ordering::Relaxed)
 }
 
 /// Human-readable name, for `report()`.

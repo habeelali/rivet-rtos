@@ -168,6 +168,9 @@ fn print_latency_histograms() {
         }
         if !any {
             crate::console::write_str("(no samples)");
+        } else {
+            crate::console::write_str("max=");
+            print_dec(crate::latency::max_cycles(kind) as usize);
         }
         crate::console::write_str("\n");
     }
