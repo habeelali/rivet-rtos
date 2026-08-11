@@ -174,42 +174,51 @@ pub fn on_effective_priority_change(id: usize, old_prio: u8, new_prio: u8) {
 /// Pure: has NO side effects (plan.md [B14]); the rotation offset only
 /// advances via [`on_dispatch`] at real context switches.
 pub fn schedule() -> Option<usize> {
-    let bitmap = READY_BITMAP.load(Ordering::Acquire);
-    if bitmap == 0 {
-        return None;
+    let mut bitmap = READY_BITMAP.load(Ordering::Acquire);
+    loop {
+        if bitmap == 0 {
+            return None;
+        }
+        let prio = (31 - bitmap.leading_zeros()) as usize;
+        let word = QUEUES[prio].load(Ordering::Acquire);
+        if word == 0 {
+            // Stale bitmap bit: `READY_BITMAP` and `QUEUES` are two
+            // separate atomics (`ready_add`/`ready_remove` each touch
+            // both, but not as one atomic RMW), so a reader can observe
+            // the bitmap bit set for an instant after the last task at
+            // that priority already left the queue — normally
+            // self-correcting on the very next read. But if a caller
+            // ever sets `READY_BITMAP`'s bit without a matching queue
+            // entry surviving (a real bug elsewhere, not a case this
+            // function can prevent), the old code returned `None` here
+            // permanently: every future `schedule()` call would keep
+            // hitting the same empty word at the same top-priority bit
+            // and never look lower, wedging the *entire* scheduler even
+            // though lower-priority tasks are genuinely ready. Self-heal
+            // instead: clear the stale bit here (a plain diagnostic
+            // correction, not a real state change — nothing was ever
+            // actually queued at `prio`) and fall through to whatever
+            // priority is next, exactly as if the stale bit had never
+            // been set. A single scheduling call degrading to "skip one
+            // empty priority level" is a far cheaper failure mode than
+            // "the scheduler never recovers".
+            bitmap = READY_BITMAP.fetch_and(!(1u32 << prio), Ordering::AcqRel) & !(1u32 << prio);
+            continue;
+        }
+        let rr = (RR_OFFSET.load(Ordering::Relaxed) & 31) as u32;
+        let rotated = word.rotate_right(rr);
+        let idx = rotated.trailing_zeros();
+        let id = ((idx + rr) & 31) as usize;
+        if id >= MAX_PTASKS {
+            // Bit outside the registry width (shouldn't happen); fall
+            // back to a scan of the word.
+            return word
+                .trailing_zeros()
+                .checked_rem(MAX_PTASKS as u32)
+                .map(|i| i as usize);
+        }
+        return Some(id);
     }
-    let prio = (31 - bitmap.leading_zeros()) as usize;
-    let word = QUEUES[prio].load(Ordering::Acquire);
-    if word == 0 {
-        // Queue drained between the loads; retry once.
-        return schedule_retry(bitmap, prio, word);
-    }
-    let rr = (RR_OFFSET.load(Ordering::Relaxed) & 31) as u32;
-    let rotated = word.rotate_right(rr);
-    let idx = rotated.trailing_zeros();
-    let id = ((idx + rr) & 31) as usize;
-    if id >= MAX_PTASKS {
-        // Bit outside the registry width (shouldn't happen); fall back to
-        // a scan of the word.
-        return word
-            .trailing_zeros()
-            .checked_rem(MAX_PTASKS as u32)
-            .map(|i| i as usize);
-    }
-    Some(id)
-}
-
-fn schedule_retry(_bitmap: u32, prio: usize, _word: u32) -> Option<usize> {
-    // The queue word was drained concurrently (ISR path); re-read.
-    let word = QUEUES[prio].load(Ordering::Acquire);
-    if word == 0 {
-        return None;
-    }
-    let rr = (RR_OFFSET.load(Ordering::Relaxed) & 31) as u32;
-    let rotated = word.rotate_right(rr);
-    let idx = rotated.trailing_zeros();
-    let id = ((idx + rr) & 31) as usize;
-    (id < MAX_PTASKS).then_some(id)
 }
 
 /// Record that task `id` was actually dispatched: advance the round-robin

@@ -64,12 +64,19 @@ pub extern "C" fn rivet_task_exit_core(val_lo: usize, val_hi: usize) -> ! {
                     }
                 }
             }
-            // Publish the result, then the exited flag (join reads both).
-            t.exited.store(true, Ordering::Release);
-            let joiner = t.joiner.swap(NO_TASK, Ordering::AcqRel);
-            if joiner != NO_TASK {
-                sched::unblock(joiner);
-            }
+            // Publish the result, then the exited flag (join reads both),
+            // then wake the joiner — all under one critical section so a
+            // tick can't observe `exited` set but the joiner not yet
+            // woken (or worse, `unblock`'s `ready_add` interrupted
+            // mid-update, tearing `READY_BITMAP`/`QUEUES`; see
+            // `PriorityMutexGuard::drop`'s identical reasoning).
+            crate::critical::enter(|| {
+                t.exited.store(true, Ordering::Release);
+                let joiner = t.joiner.swap(NO_TASK, Ordering::AcqRel);
+                if joiner != NO_TASK {
+                    sched::unblock(joiner);
+                }
+            });
         }
     }
     // Park forever (the slot stays used until explicitly despawned).

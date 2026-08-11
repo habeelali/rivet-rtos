@@ -361,37 +361,58 @@ impl<'a, T> DerefMut for PriorityMutexGuard<'a, T> {
 
 impl<'a, T> Drop for PriorityMutexGuard<'a, T> {
     fn drop(&mut self) {
-        let owner = self.mutex.owner.swap(NO_TASK, Ordering::AcqRel);
-        if owner != NO_TASK {
-            // Remove this mutex from the holder's held list, then recompute
-            // the holder's effective priority from what remains (plan.md
-            // [B11]: unlocking one mutex must not drop the boost held for
-            // another).
-            if let Some(t) = tcb::get(owner) {
-                t.remove_held(self.mutex as *const _ as *const ());
-                let base = t.base_priority.load(Ordering::Acquire);
-                let mut eff = base;
-                for slot in &t.held {
-                    let ptr = slot.ptr.load(Ordering::Acquire);
-                    if !ptr.is_null() {
-                        // SAFETY: the hwp fn pointer was registered by the
-                        // matching `push_held` for a live mutex; loading
-                        // ptr (Acquire) orders the hwp read.
-                        let hwp = unsafe {
-                            let f: fn(*const ()) -> u8 =
-                                core::mem::transmute(slot.hwp.load(Ordering::Acquire));
-                            f(ptr)
-                        };
-                        if hwp > eff {
-                            eff = hwp;
+        // The whole unlock — held-list update, effective-priority
+        // recompute, and waking every waiter — must commit as one step.
+        // `ready_add`/`ready_remove` (reached via `set_effective_priority`
+        // and `wake_all_waiters`'s `unblock`) touch `READY_BITMAP` and
+        // `QUEUES` as two separate atomics; without a critical section
+        // here, a tick landing mid-unlock can observe that torn state —
+        // e.g. a waiter's `Ready` transition half-applied — and the
+        // scheduler's bitmap/queue pair can end up permanently
+        // inconsistent (a stale `READY_BITMAP` bit with an empty queue
+        // word). Matches the pattern already used for the equivalent
+        // lock-side sequence (`lock_timeout`'s own `critical::enter`
+        // around boost/add_waiter/register/block) and the join path.
+        crate::critical::enter(|| {
+            let owner = self.mutex.owner.swap(NO_TASK, Ordering::AcqRel);
+            if owner != NO_TASK {
+                // Remove this mutex from the holder's held list, then
+                // recompute the holder's effective priority from what
+                // remains (plan.md [B11]: unlocking one mutex must not
+                // drop the boost held for another).
+                if let Some(t) = tcb::get(owner) {
+                    t.remove_held(self.mutex as *const _ as *const ());
+                    let base = t.base_priority.load(Ordering::Acquire);
+                    let mut eff = base;
+                    for slot in &t.held {
+                        let ptr = slot.ptr.load(Ordering::Acquire);
+                        if !ptr.is_null() {
+                            // SAFETY: the hwp fn pointer was registered by
+                            // the matching `push_held` for a live mutex;
+                            // loading ptr (Acquire) orders the hwp read.
+                            let hwp = unsafe {
+                                let f: fn(*const ()) -> u8 =
+                                    core::mem::transmute(slot.hwp.load(Ordering::Acquire));
+                                f(ptr)
+                            };
+                            if hwp > eff {
+                                eff = hwp;
+                            }
                         }
                     }
+                    // `set_effective_priority` (not a plain store): the
+                    // unlocking task is normally `Running` (unqueued), so
+                    // this is usually a no-op queue-wise — but going
+                    // through the real API keeps that true by
+                    // construction instead of by the caller happening to
+                    // always be the running task, and costs nothing extra
+                    // when it is.
+                    t.set_effective_priority(owner, eff);
                 }
-                t.effective_priority.store(eff, Ordering::Release);
             }
-        }
-        self.mutex.locked.store(false, Ordering::Release);
-        self.mutex.wake_all_waiters();
+            self.mutex.locked.store(false, Ordering::Release);
+            self.mutex.wake_all_waiters();
+        });
         // Give a higher-priority waiter (now Ready) an immediate chance to
         // preempt us rather than waiting for the next tick.
         crate::port::arch::request_reschedule();

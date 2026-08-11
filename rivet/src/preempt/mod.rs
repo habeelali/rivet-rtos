@@ -158,7 +158,11 @@ impl TaskHandle {
         if !t.used.load(Ordering::Acquire) {
             return false;
         }
-        crate::preempt::sched::ready_remove(self.id as usize);
+        // See `PriorityMutexGuard::drop`'s doc for why `ready_remove`
+        // needs a critical section: it isn't a single atomic RMW against
+        // `READY_BITMAP`+`QUEUES` together, so a tick interleaving with
+        // it can observe/leave torn scheduler state.
+        crate::critical::enter(|| crate::preempt::sched::ready_remove(self.id as usize));
 
         // Drop any stored result, then reset the slot (state READY so the
         // next `register` claim CAS can succeed; `used=false` publishes).
@@ -203,19 +207,25 @@ impl TaskHandle {
         if t.generation.load(Ordering::Acquire) != self.generation {
             return false;
         }
-        let was_ready = t
-            .state
-            .compare_exchange(
-                tcb::READY,
-                tcb::SUSPENDED,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            )
-            .is_ok();
-        if was_ready {
-            crate::preempt::sched::ready_remove(self.id as usize);
-        }
-        was_ready
+        // The CAS and `ready_remove` commit as one step (see
+        // `PriorityMutexGuard::drop`'s doc for why) — otherwise a tick
+        // between them could dispatch this task (still queued) even
+        // though its state already reads `SUSPENDED`.
+        crate::critical::enter(|| {
+            let was_ready = t
+                .state
+                .compare_exchange(
+                    tcb::READY,
+                    tcb::SUSPENDED,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                )
+                .is_ok();
+            if was_ready {
+                crate::preempt::sched::ready_remove(self.id as usize);
+            }
+            was_ready
+        })
     }
 
     /// Resume a suspended task (plan.md §5.5). Returns false for a stale
@@ -227,19 +237,22 @@ impl TaskHandle {
         if t.generation.load(Ordering::Acquire) != self.generation {
             return false;
         }
-        let was_suspended = t
-            .state
-            .compare_exchange(
-                tcb::SUSPENDED,
-                tcb::READY,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            )
-            .is_ok();
-        if was_suspended {
-            crate::preempt::sched::ready_add(self.id as usize);
-        }
-        was_suspended
+        // See `pause`'s identical reasoning.
+        crate::critical::enter(|| {
+            let was_suspended = t
+                .state
+                .compare_exchange(
+                    tcb::SUSPENDED,
+                    tcb::READY,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                )
+                .is_ok();
+            if was_suspended {
+                crate::preempt::sched::ready_add(self.id as usize);
+            }
+            was_suspended
+        })
     }
 }
 
@@ -412,19 +425,42 @@ pub fn start() -> ! {
         sched::on_dispatch(first);
         first
     });
-    crate::exec_time::on_first_dispatch();
-    let first_tcb = tcb::get(first).unwrap();
-    // Enable memory protection for this task's stack — hart-local, done
-    // outside the critical section like the rest of the arch dispatch.
-    crate::port::arch::on_switch_to(
-        first_tcb.stack_base.load(Ordering::Acquire),
-        first_tcb.stack_size.load(Ordering::Acquire),
-    );
-    let sp = first_tcb.sp.load(Ordering::Acquire);
-    // SAFETY: `sp` is the freshly-initialized first stack frame of the
-    // selected task (produced by `init_task_stack`); `start_first_task`
-    // consumes it exactly once and never returns.
-    unsafe { crate::port::arch::start_first_task(sp) }
+    // Root cause (plan.md Phase 24), found on real dual-core hardware:
+    // `critical::enter` above already released this hart's interrupt
+    // mask by the time this line runs — `sched::set_current(first)` is
+    // visible, but this hart's own CPU registers/stack aren't anywhere
+    // near `first`'s bootstrap state yet. A tick landing in the gap
+    // between here and `port::arch::start_first_task` actually consuming
+    // `first_tcb.sp` sees `sched::current() == Some(first)` and, if it
+    // decides to switch, permanently rewrites `Tcb.sp` from a bootstrap
+    // marker to a real task id — before `first` has ever actually run a
+    // single instruction. `start_first_task` then reads a value its own
+    // arch-side bootstrap table doesn't recognize and panics ("given a
+    // non-bootstrap sp"). Confirmed on hardware: a genuine two-core test
+    // hit this on *both* cores simultaneously the moment real ticks
+    // started firing system-wide. `port::arch::critical_section` re-masks
+    // local interrupts around the entire remainder (its own `f` is `-> !`
+    // here, so its own irq-restore-on-return is simply never reached —
+    // the dispatched task's arch-side bootstrap is responsible for
+    // re-enabling interrupts as part of actually starting to run, the
+    // same handoff `fresh_task_context`'s `Context.PS`/equivalent already
+    // does for the *ordinary* tick-driven first-dispatch path).
+    crate::port::arch::critical_section(|| {
+        crate::exec_time::on_first_dispatch();
+        let first_tcb = tcb::get(first).unwrap();
+        // Enable memory protection for this task's stack — hart-local,
+        // done outside the cross-hart critical section like the rest of
+        // the arch dispatch.
+        crate::port::arch::on_switch_to(
+            first_tcb.stack_base.load(Ordering::Acquire),
+            first_tcb.stack_size.load(Ordering::Acquire),
+        );
+        let sp = first_tcb.sp.load(Ordering::Acquire);
+        // SAFETY: `sp` is the freshly-initialized first stack frame of
+        // the selected task (produced by `init_task_stack`);
+        // `start_first_task` consumes it exactly once and never returns.
+        unsafe { crate::port::arch::start_first_task(sp) }
+    })
 }
 
 /// Start the preemptive scheduler on a **secondary** hart (plan.md
@@ -453,19 +489,24 @@ pub fn start_secondary_hart() -> ! {
             None => crate::port::arch::idle(),
         }
     };
-    // No `exec_time::on_first_dispatch()` call here: hart 0's `start()`
-    // already stamped `BOOT_CYCLE`/`WALLCLOCK_BOOT_US` once for the whole
-    // system (plan.md Phase 19 §6 — exec-time accounting stays a single
-    // shared boot epoch, not per-hart; calling it again here would rewind
-    // `LAST_DISPATCH` and skew every other task's busy-cycle accounting).
-    let first_tcb = tcb::get(first).unwrap();
-    crate::port::arch::on_switch_to(
-        first_tcb.stack_base.load(Ordering::Acquire),
-        first_tcb.stack_size.load(Ordering::Acquire),
-    );
-    let sp = first_tcb.sp.load(Ordering::Acquire);
-    // SAFETY: same contract as `start`'s identical call.
-    unsafe { crate::port::arch::start_first_task(sp) }
+    // Same fix, same reason as `start`'s identical block (plan.md Phase
+    // 24) — see its own comment for the full story.
+    crate::port::arch::critical_section(|| {
+        // No `exec_time::on_first_dispatch()` call here: hart 0's
+        // `start()` already stamped `BOOT_CYCLE`/`WALLCLOCK_BOOT_US`
+        // once for the whole system (plan.md Phase 19 §6 — exec-time
+        // accounting stays a single shared boot epoch, not per-hart;
+        // calling it again here would rewind `LAST_DISPATCH` and skew
+        // every other task's busy-cycle accounting).
+        let first_tcb = tcb::get(first).unwrap();
+        crate::port::arch::on_switch_to(
+            first_tcb.stack_base.load(Ordering::Acquire),
+            first_tcb.stack_size.load(Ordering::Acquire),
+        );
+        let sp = first_tcb.sp.load(Ordering::Acquire);
+        // SAFETY: same contract as `start`'s identical call.
+        unsafe { crate::port::arch::start_first_task(sp) }
+    })
 }
 
 /// Permanently remove the current preemptive task from scheduling. Useful
@@ -494,8 +535,19 @@ pub fn sleep_until(deadline_us: u64) {
     let Some(me) = sched::current() else {
         return;
     };
-    sched::block_current();
-    let _ = crate::timer::register_ptask_deadline(deadline_us, me);
+    // `block_current()` and `register_ptask_deadline()` must commit
+    // together: a tick landing between them would see the task already
+    // Blocked but with no deadline registered yet, switch away from it
+    // (correctly — it's not ready), and then never find anything to wake
+    // it later — a permanent lost-wakeup hang. Same shape, same fix as
+    // the mutex slow path (`mutex.rs`'s own `critical::enter` around the
+    // equivalent boost/add_waiter/register/block sequence) and the
+    // lifecycle join path; this call site was the one left over from
+    // before that pattern was established.
+    crate::critical::enter(|| {
+        sched::block_current();
+        let _ = crate::timer::register_ptask_deadline(deadline_us, me);
+    });
     crate::port::arch::request_reschedule();
     crate::timer::cancel_ptask_deadline(me);
 }
