@@ -431,9 +431,11 @@ than blocking whatever tried to log.
 
 The current implementation stores each frame's message as a plain
 `&'static str` pointer, not an interned index into a linker-section format
-table — which means no `printf`-style argument interpolation yet. See
-[§18](#18-known-limitations-and-honest-gaps) for what a fuller version
-would add.
+table. `rivet::log!` does support up to two `{}` placeholders in `$msg`,
+substituted in order at drain time from a small closed set of argument
+types (`u32`/`i32`/`f32`/`&'static str`) — not a full `format_args!`-style
+template. See [§18](#18-known-limitations-and-honest-gaps) for what a
+fuller version would add.
 
 ### `rivet::report()` — one-call kernel state dump
 
@@ -943,9 +945,10 @@ Documented here rather than discovered the hard way:
   see [§3](#3-supported-hardware). Boots, brings up its own clock tree,
   and transmits real bytes over a USB CDC-ACM console; the scheduler/
   task-spawn path running end to end is not yet confirmed.
-- **`rivet::log!` has no argument interpolation yet** — it takes a level
-  and a plain string, not a `format_args!`-style template. See
-  [§10](#10-logging-and-diagnostics).
+- **`rivet::log!` supports up to two `{}` placeholders, not a full
+  `format_args!`-style template** — arguments are a small closed set
+  (`u32`/`i32`/`f32`/`&'static str`), not arbitrary `Display`/`Debug`
+  types. See [§10](#10-logging-and-diagnostics).
 - **`rivet::irq` (registration table, `enable`/`disable`/`set_priority`,
   NVIC-backed on Cortex-M) exists and is exercised on real hardware** (the
   STM32F401RE board's USART2 console is built entirely on it), but no
