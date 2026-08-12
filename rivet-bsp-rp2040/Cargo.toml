@@ -1,0 +1,46 @@
+[package]
+name = "rivet-bsp-rp2040"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Rivet RTOS board support: Raspberry Pi Pico (RP2040, Cortex-M0+), real hardware"
+# Lets this crate's build.rs publish its linker script path to direct
+# dependents as DEP_RIVET_BSP_RP2040_LINKER_SCRIPT (see build.rs and
+# rivet-bsp-stm32f401re's identical pattern).
+links = "rivet_bsp_rp2040"
+
+[dependencies]
+rivet = { path = "../rivet" }
+rp2040-pac = { version = "0.6", default-features = false }
+# USB CDC-ACM console: the Pico has no onboard USB-serial bridge chip
+# (unlike the Nucleo's ST-LINK), so seeing output over the same cable
+# used to flash it means implementing a real USB device. Using
+# `rp2040-hal`'s `UsbBus` (DPRAM buffer/endpoint/SIE management is
+# genuinely intricate hardware, the same category of "don't hand-roll
+# what a focused, well-tested crate already gets right" as this crate's
+# use of `rp2040-boot2`) plus `usb-device`/`usbd-serial` for the CDC-ACM
+# class on top of it — not adopting the rest of `rp2040-hal` (GPIO,
+# UART, watchdog stay this crate's own raw `rp2040-pac` register code).
+# `rp2040-hal`'s clock bring-up (`init_clocks_and_plls`) is used too —
+# see `__rivet_board_init`'s own comment for why (it owns `PLL_USB`,
+# which `UsbBus::new` requires a proof-of-configuration token from).
+rp2040-hal = { version = "0.12", default-features = false }
+usb-device = "0.3"
+usbd-serial = "0.2"
+# RP2040's boot ROM reads the first 256 bytes of flash as a checksummed
+# second-stage bootloader that brings the QSPI flash into fast
+# execute-in-place mode before jumping to the real vector table — this
+# crate ships the well-known, pre-built stage2 blob for the Pico's W25Q080
+# flash chip. Hand-writing this is not a reasonable thing to attempt from
+# scratch (see this crate's own linker script comments for what it does
+# and why it's a binary blob, not source).
+rp2040-boot2 = "0.3"
+
+# Cortex-M0+ specific (real asm!/naked_asm! blocks transitively) — only
+# pulled in for the actual target, matching every other rivet-bsp-*'s own
+# split so `cargo test -p rivet-bsp-rp2040` still runs on host.
+[target.'cfg(target_arch = "arm")'.dependencies]
+rivet-arch-cortex-m0 = { path = "../rivet-arch-cortex-m0", features = ["systick", "nvic"] }
+
+[lib]

@@ -1,0 +1,8 @@
+[build]
+target = "thumbv6m-none-eabi"
+
+[env]
+# RP2040 has 26 external IRQ lines (see rivet-bsp-rp2040::irq) —
+# comfortably under the default 32-slot table, so no override needed
+# here (unlike the STM32F401RE example, whose 84-line vector table
+# exceeds the default).

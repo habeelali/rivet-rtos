@@ -1,0 +1,30 @@
+[package]
+name = "rivet-arch-cortex-m0"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Rivet RTOS: ARM Cortex-M0/M0+ (ARMv6-M) ISA port — no board/MMIO knowledge"
+
+[features]
+default = []
+# Same reasoning as rivet-arch-cortex-m's own `systick`/`nvic` features:
+# both are architected (fixed addresses on every Cortex-M0/M0+), kept as
+# features for symmetry and in case a future ARMv6-M board needs a
+# different tick/IRQ source.
+systick = []
+nvic = []
+latency-histograms = ["rivet/latency-histograms"]
+
+[dependencies]
+# ARMv6-M has no hardware CAS — see rivet's own `atomics-polyfill` feature
+# doc for why this is required, not optional, on this arch.
+rivet = { path = "../rivet", features = ["atomics-polyfill"] }
+# `critical-section-single-core`: registers a `critical_section::Impl`
+# (PRIMASK disable/enable) that `portable-atomic` uses for its RMW
+# fallback — see rivet's `atomics-polyfill` feature doc. Correct as long
+# as this port stays single-core (documented scope, see this crate's own
+# lib.rs docs on `__rivet_arch_hart_id`).
+cortex-m = { version = "0.7", features = ["critical-section-single-core"] }
+
+[lib]
