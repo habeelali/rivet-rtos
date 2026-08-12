@@ -13,7 +13,7 @@ default = []
 latency-histograms = ["rivet/latency-histograms"]
 
 [dependencies]
-rivet = { path = "../rivet" }
+rivet = { path = "../rivet", package = "rivet-rtos" }
 xtensa-lx = "0.13"
 xtensa-lx-rt = "0.22"
 # Cross-core IPI (plan.md Phase 24) needs the `SYSTEM.cpu_intr_from_cpu_*`

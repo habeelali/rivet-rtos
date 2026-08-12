@@ -10,7 +10,7 @@ description = "Rivet RTOS board support: STM32F401RE Nucleo-64 (Cortex-M4), real
 links = "rivet_bsp_stm32f401re"
 
 [dependencies]
-rivet = { path = "../rivet" }
+rivet = { path = "../rivet", package = "rivet-rtos" }
 # `default-features = false`: the PAC's default `rt` feature pulls in
 # `cortex-m-rt/device`, which provides its own `Reset`/vector-table
 # symbols — this workspace's own `rivet-rt` already owns that (a real

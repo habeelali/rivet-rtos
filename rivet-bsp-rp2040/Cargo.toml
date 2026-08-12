@@ -11,7 +11,7 @@ description = "Rivet RTOS board support: Raspberry Pi Pico (RP2040, Cortex-M0+),
 links = "rivet_bsp_rp2040"
 
 [dependencies]
-rivet = { path = "../rivet" }
+rivet = { path = "../rivet", package = "rivet-rtos" }
 rp2040-pac = { version = "0.6", default-features = false }
 # USB CDC-ACM console: the Pico has no onboard USB-serial bridge chip
 # (unlike the Nucleo's ST-LINK), so seeing output over the same cable

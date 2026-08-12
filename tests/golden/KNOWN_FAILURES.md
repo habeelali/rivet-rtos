@@ -259,7 +259,7 @@ unaffected, confirming the fix is behavior-preserving there.
 
 ## Phase 19 — pre-existing Miri UB in `irq::dispatch`'s function-pointer round-trip
 
-Found while re-running the full verification block (`cargo +nightly miri test -p rivet
+Found while re-running the full verification block (`cargo +nightly miri test -p rivet-rtos
 --lib`) as part of Phase 19's acceptance criteria — a real, pre-existing bug from Phase
 13, not introduced by Phase 19's own changes (confirmed via `git stash`: reproduces
 identically on the pre-Phase-19 commit).
@@ -288,7 +288,7 @@ function-pointer table stored as `AtomicUsize` slots.
 ## Phase 19 — pre-existing loom compile failures in four unrelated statics
 
 Found the same way as the Miri bug above: re-running the full verification block
-(`RUSTFLAGS='--cfg loom' cargo test -p rivet --features loom --test loom --release`)
+(`RUSTFLAGS='--cfg loom' cargo test -p rivet-rtos --features loom --test loom --release`)
 surfaced 12 compile errors across `console.rs` (RX/TX `Channel`/`Sender`/`Receiver`),
 `log.rs` (`CHANNEL`/`SENDER`/`RECEIVER`), `deadlines.rs` (`PERIOD_US`/`BUDGET_US`), and
 `latency.rs` (`HISTOGRAMS`) — all pre-existing (Phases 11/12/14/16), reproduces

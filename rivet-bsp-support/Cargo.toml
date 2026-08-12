@@ -7,7 +7,7 @@ repository.workspace = true
 description = "Rivet RTOS: shared helpers for rivet-bsp-* crates (software watchdog, NS16550 UART)"
 
 [dependencies]
-rivet = { path = "../rivet" }
+rivet = { path = "../rivet", package = "rivet-rtos" }
 embedded-hal-async = "1.0"
 embedded-hal-nb = "1.0"
 nb = "1.1"

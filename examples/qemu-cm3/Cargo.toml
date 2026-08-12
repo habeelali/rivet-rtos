@@ -14,7 +14,7 @@ test = false
 latency-histograms = ["rivet/latency-histograms", "rivet-arch-cortex-m/latency-histograms"]
 
 [dependencies]
-rivet = { path = "../../rivet" }
+rivet = { path = "../../rivet", package = "rivet-rtos" }
 rivet-rt = { path = "../../rivet-rt" }
 rivet-bsp-lm3s6965 = { path = "../../rivet-bsp-lm3s6965" }
 # Direct dependency for one test's tick-counter seeding hook

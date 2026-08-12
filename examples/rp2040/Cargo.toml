@@ -13,7 +13,7 @@ test = false
 latency-histograms = ["rivet/latency-histograms", "rivet-arch-cortex-m0/latency-histograms"]
 
 [dependencies]
-rivet = { path = "../../rivet" }
+rivet = { path = "../../rivet", package = "rivet-rtos" }
 rivet-rt = { path = "../../rivet-rt" }
 rivet-bsp-rp2040 = { path = "../../rivet-bsp-rp2040" }
 # Must match rivet-bsp-rp2040's own feature selection exactly — Cargo

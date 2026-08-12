@@ -39,7 +39,7 @@ etc.). The kernel's scheduler, waker bitmaps, and timer queue are lock-free and
 use these throughout. Concretely:
 
 ```bash
-cargo check -p rivet --target <your-target-triple>
+cargo check -p rivet-rtos --target <your-target-triple>
 ```
 
 If this fails with `no method named 'fetch_or' found for struct 'Atomic<T>'`

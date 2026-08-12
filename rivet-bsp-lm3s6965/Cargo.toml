@@ -10,7 +10,7 @@ description = "Rivet RTOS board support: TI/Luminary LM3S6965 (Stellaris) Cortex
 links = "rivet_bsp_lm3s6965"
 
 [dependencies]
-rivet = { path = "../rivet" }
+rivet = { path = "../rivet", package = "rivet-rtos" }
 embedded-hal = "1.0"
 
 # Cortex-M specific (build errors on host: real asm!/naked_asm! blocks) —

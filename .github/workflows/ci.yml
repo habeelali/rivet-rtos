@@ -19,13 +19,13 @@ jobs:
       # asm!/naked_asm! blocks transitively) and is linted under its own
       # target in the qemu job's per-target clippy step instead.
       - name: clippy (host crates)
-        run: cargo clippy -p rivet -p rivet-macros -p xtask -p rivet-bsp-support --all-targets -- -D warnings
+        run: cargo clippy -p rivet-rtos -p rivet-macros -p xtask -p rivet-bsp-support --all-targets -- -D warnings
       - name: test (debug)
-        run: cargo test -p rivet
+        run: cargo test -p rivet-rtos
       - name: test (release) # catch opt-level-dependent UB
-        run: cargo test -p rivet --release
+        run: cargo test -p rivet-rtos --release
       - name: test (release-checked)
-        run: cargo test -p rivet --profile release-checked
+        run: cargo test -p rivet-rtos --profile release-checked
 
   miri:
     runs-on: ubuntu-latest
@@ -38,9 +38,9 @@ jobs:
       # lib + integration tests under the interpreter; proptest is excluded
       # (its case volume is impractical under miri's ~1000x slowdown).
       - name: miri (lib)
-        run: cargo +nightly miri test -p rivet --lib
+        run: cargo +nightly miri test -p rivet-rtos --lib
       - name: miri (integration)
-        run: cargo +nightly miri test -p rivet --test integration
+        run: cargo +nightly miri test -p rivet-rtos --test integration
 
   loom:
     runs-on: ubuntu-latest
@@ -49,7 +49,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: loom models
-        run: RUSTFLAGS='--cfg loom' cargo test -p rivet --features loom --test loom --release
+        run: RUSTFLAGS='--cfg loom' cargo test -p rivet-rtos --features loom --test loom --release
 
   kani:
     # plan.md Phase 17: bounded model-checked proof (not just tested
@@ -68,7 +68,7 @@ jobs:
       - name: kani setup
         run: cargo kani setup
       - name: kani proofs (preempt::sched invariant)
-        run: cargo kani -p rivet --features test-support
+        run: cargo kani -p rivet-rtos --features test-support
 
   coverage:
     # Crate-wide is informational only (plan.md Phase 9): host-test line
@@ -92,10 +92,10 @@ jobs:
       - name: install cargo-llvm-cov
         run: cargo install cargo-llvm-cov --locked
       - name: coverage (host suite, informational summary)
-        run: cargo llvm-cov -p rivet --tests --summary-only
+        run: cargo llvm-cov -p rivet-rtos --tests --summary-only
       - name: coverage floor (sched/waker/mutex/channel/timer, gating)
         run: |
-          cargo llvm-cov -p rivet --tests --json --output-path cov.json
+          cargo llvm-cov -p rivet-rtos --tests --json --output-path cov.json
           python3 scripts/check-coverage-floor.py cov.json
 
   fuzz:

@@ -14,7 +14,7 @@ test = false
 latency-histograms = ["rivet/latency-histograms", "rivet-arch-xtensa/latency-histograms"]
 
 [dependencies]
-rivet = { path = "../../rivet" }
+rivet = { path = "../../rivet", package = "rivet-rtos" }
 rivet-rt = { path = "../../rivet-rt" }
 rivet-arch-xtensa = { path = "../../rivet-arch-xtensa" }
 rivet-bsp-esp32s3 = { path = "../../rivet-bsp-esp32s3" }

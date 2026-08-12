@@ -18,7 +18,7 @@ latency-histograms = [
 ]
 
 [dependencies]
-rivet = { path = "../../rivet" }
+rivet = { path = "../../rivet", package = "rivet-rtos" }
 rivet-rt = { path = "../../rivet-rt" }
 # Must match rivet-bsp-esp32c6's own feature selection exactly — Cargo
 # unifies features across a build graph, so leaving this at defaults

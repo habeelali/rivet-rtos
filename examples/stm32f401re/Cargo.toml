@@ -17,7 +17,7 @@ latency-histograms = ["rivet/latency-histograms", "rivet-arch-cortex-m/latency-h
 trace = ["rivet/trace", "rivet-bsp-stm32f401re/trace"]
 
 [dependencies]
-rivet = { path = "../../rivet" }
+rivet = { path = "../../rivet", package = "rivet-rtos" }
 rivet-rt = { path = "../../rivet-rt" }
 rivet-bsp-stm32f401re = { path = "../../rivet-bsp-stm32f401re" }
 # Must match rivet-bsp-stm32f401re's own feature selection exactly —

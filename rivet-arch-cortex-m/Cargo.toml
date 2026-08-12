@@ -23,7 +23,7 @@ nvic = []
 latency-histograms = ["rivet/latency-histograms"]
 
 [dependencies]
-rivet = { path = "../rivet" }
+rivet = { path = "../rivet", package = "rivet-rtos" }
 cortex-m = "0.7"
 
 [lib]

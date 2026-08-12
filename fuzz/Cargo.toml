@@ -9,7 +9,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-rivet = { path = "../rivet", features = ["test-support"] }
+rivet = { path = "../rivet", package = "rivet-rtos", features = ["test-support"] }
 
 [[bin]]
 name = "fuzz_sched"

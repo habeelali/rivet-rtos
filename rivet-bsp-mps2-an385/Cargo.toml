@@ -10,7 +10,7 @@ description = "Rivet RTOS board support: ARM MPS2 AN385 FPGA image (Cortex-M3), 
 links = "rivet_bsp_mps2_an385"
 
 [dependencies]
-rivet = { path = "../rivet" }
+rivet = { path = "../rivet", package = "rivet-rtos" }
 
 [target.'cfg(target_arch = "arm")'.dependencies]
 rivet-arch-cortex-m = { path = "../rivet-arch-cortex-m", features = ["systick"] }

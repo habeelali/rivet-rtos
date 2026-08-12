@@ -10,7 +10,7 @@ description = "Rivet RTOS board support: QEMU RISC-V 'virt' machine (rv32)"
 links = "rivet_bsp_qemu_virt"
 
 [dependencies]
-rivet = { path = "../rivet" }
+rivet = { path = "../rivet", package = "rivet-rtos" }
 rivet-arch-riscv = { path = "../rivet-arch-riscv", features = ["clint", "plic"] }
 rivet-bsp-support = { path = "../rivet-bsp-support" }
 

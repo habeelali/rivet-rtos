@@ -9,7 +9,7 @@ exercises instead, which llvm-cov can't see). Everything else in the
 report stays informational, exactly as the existing `coverage` CI job
 already treats it.
 
-Usage: cargo llvm-cov -p rivet --tests --json --output-path cov.json
+Usage: cargo llvm-cov -p rivet-rtos --tests --json --output-path cov.json
        python3 scripts/check-coverage-floor.py cov.json
 """
 

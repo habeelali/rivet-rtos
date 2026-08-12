@@ -2,7 +2,7 @@
 //!
 //! Built and run with:
 //! ```text
-//! RUSTFLAGS='--cfg loom' cargo test -p rivet --test loom --release
+//! RUSTFLAGS='--cfg loom' cargo test -p rivet-rtos --test loom --release
 //! ```
 //!
 //! Models:
