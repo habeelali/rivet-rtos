@@ -54,7 +54,7 @@ trace = []
 atomics-polyfill = ["dep:portable-atomic"]
 
 [dependencies]
-rivet-macros = { path = "../rivet-macros" }
+rivet-macros = { path = "../rivet-macros", version = "0.1.0" }
 loom = { version = "0.7", optional = true }
 # See the `atomics-polyfill` feature's own doc above. `critical-section`
 # (not `unsafe-assume-single-core`): the fallback needs a real
