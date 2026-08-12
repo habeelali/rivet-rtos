@@ -126,7 +126,13 @@ mod board {
                 .write(|w| w.div_mantissa().bits(mantissa as u16).div_fraction().bits(fraction as u8));
             usart2.cr1().write(|w| w.ue().set_bit().te().set_bit().re().set_bit());
 
-            rivet::irq::register(super::irq::USART2, uart_irq_handler).unwrap();
+            // `register_untraced`, not `register`: this ISR drains the
+            // same UART the trace stream itself rides on (once `trace`
+            // routes through `console`'s interrupt-driven TX ring — see
+            // `__rivet_board_trace_write`'s own docs) — tracing it would
+            // queue more bytes on every invocation, re-arming its own
+            // interrupt forever.
+            rivet::irq::register_untraced(super::irq::USART2, uart_irq_handler).unwrap();
             rivet::irq::set_priority(super::irq::USART2, 0xFF);
             rivet::irq::enable(super::irq::USART2);
             usart2.cr1().modify(|_, w| w.rxneie().set_bit());
@@ -136,7 +142,12 @@ mod board {
 
     #[no_mangle]
     extern "Rust" fn __rivet_board_now_us() -> u64 {
-        rivet_arch_cortex_m::systick::now_micros()
+        // Sub-tick precision (see `systick::now_micros_precise`'s own
+        // docs): a Rivet Debugger trace timeline is useless if every event
+        // between two 1kHz ticks reports the exact same timestamp — this
+        // still costs nothing scheduling-critical since `sleep_ms`/
+        // deadlines only ever needed whole-tick granularity anyway.
+        rivet_arch_cortex_m::systick::now_micros_precise()
     }
 
     #[no_mangle]
@@ -158,6 +169,37 @@ mod board {
             }
             usart2.dr().write(|w| unsafe { w.dr().bits(b as u16) });
         }
+    }
+
+    #[cfg(feature = "trace")]
+    #[no_mangle]
+    unsafe extern "Rust" fn __rivet_board_trace_write(ptr: *const u8, len: usize) {
+        // Same physical wire as the console (this board's only easily
+        // reachable UART is the ST-LINK's own USART2 VCP — a second UART
+        // would need extra wiring this Nucleo doesn't expose by default).
+        //
+        // Routed through `rivet::console`'s own interrupt-driven TX ring
+        // (`__rivet_board_init` already calls `enable_irq_tx()`), NOT a
+        // raw polling write — this used to block here directly, byte by
+        // byte, for ~87µs/byte at 115200 baud (~1.8ms for a whole frame).
+        // Every trace call site in `rivet::trace` fires from inside
+        // `preempt::on_tick`, i.e. from *inside the PendSV exception
+        // handler* — no Thread-mode code, on any task, runs again until
+        // that handler returns. A real, confirmed bug: two equal-priority
+        // tasks that round-robin every tick each paid that ~1.8ms
+        // *every single dispatch*, on a 1ms tick — strictly more than
+        // their entire timeslice, so neither task ever advanced past its
+        // own entry point (verified live: `PC` stuck at the function's
+        // first instruction after several real seconds of uptime, via
+        // GDB, non-invasively). Pushing into the ring is a few instructions
+        // (bounded, no hardware wait); the actual bytes drain later via
+        // `uart_irq_handler`'s own TXE-driven loop, fully outside this
+        // call and outside any interrupt context that matters for
+        // scheduling. `trace_demo` never calls `console::write_str`, so
+        // nothing text-shaped ever shares this ring with the binary
+        // frames — the wire stays pure trace, same as before.
+        let bytes = unsafe { core::slice::from_raw_parts(ptr, len) };
+        rivet::console::write_bytes(bytes);
     }
 
     #[no_mangle]

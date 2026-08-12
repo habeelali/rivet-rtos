@@ -16,7 +16,7 @@
 //! Cortex-M) in Handler mode, so a `'static fn()` is the right shape: no
 //! captured state beyond what a `static` can already hold.
 
-use crate::sync::atomic::{AtomicUsize, Ordering};
+use crate::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 pub const MAX_IRQS: usize = crate::config::MAX_IRQS;
 
@@ -25,6 +25,15 @@ static HANDLERS: [AtomicUsize; MAX_IRQS] = [const { AtomicUsize::new(0) }; MAX_I
 #[cfg(loom)]
 loom::lazy_static! {
     static ref HANDLERS: [AtomicUsize; MAX_IRQS] = core::array::from_fn(|_| AtomicUsize::new(0));
+}
+
+// Which `irq_num`s [`dispatch`] must never wrap in `trace::isr(...)`, even
+// when the `trace` feature is on — see [`register_untraced`].
+#[cfg(not(loom))]
+static UNTRACED: [AtomicBool; MAX_IRQS] = [const { AtomicBool::new(false) }; MAX_IRQS];
+#[cfg(loom)]
+loom::lazy_static! {
+    static ref UNTRACED: [AtomicBool; MAX_IRQS] = core::array::from_fn(|_| AtomicBool::new(false));
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,12 +53,36 @@ pub fn register(irq_num: u32, handler: fn()) -> Result<(), IrqError> {
     Ok(())
 }
 
+/// Same as [`register`], but [`dispatch`] never wraps this handler in
+/// `trace::isr(...)` — for the one class of IRQ where tracing it would be
+/// actively wrong, not just noisy: whatever handler drains the UART the
+/// trace stream itself is transmitted over. Emitting an `IrqEnter`/
+/// `IrqExit` frame from inside that handler queues *more* bytes on the
+/// same wire, which (if interrupt-driven TX is in use, per
+/// [`crate::console::enable_irq_tx`]) re-arms the same interrupt before it
+/// returns — a self-sustaining feedback loop, confirmed on real hardware:
+/// the console UART IRQ re-triggered itself continuously, at a priority
+/// equal to `PendSV`/`SysTick` (so neither could preempt it), starving the
+/// scheduler entirely before the very first task ever spawned. Use this
+/// for a board's console/trace UART ISR; every other handler should keep
+/// using plain [`register`].
+pub fn register_untraced(irq_num: u32, handler: fn()) -> Result<(), IrqError> {
+    register(irq_num, handler)?;
+    if let Some(slot) = UNTRACED.get(irq_num as usize) {
+        slot.store(true, Ordering::Release);
+    }
+    Ok(())
+}
+
 /// Deregister `irq_num`'s handler (a spurious/unhandled interrupt after
 /// this becomes a silent no-op in [`dispatch`], not a fault — matching
 /// how a not-yet-registered slot behaves before the first [`register`]).
 pub fn unregister(irq_num: u32) {
     if let Some(slot) = HANDLERS.get(irq_num as usize) {
         slot.store(0, Ordering::Release);
+    }
+    if let Some(slot) = UNTRACED.get(irq_num as usize) {
+        slot.store(false, Ordering::Release);
     }
 }
 
@@ -95,6 +128,21 @@ pub fn dispatch(irq_num: u32) {
     // function; transmuting a pointer-to-pointer-width `fn()` changes
     // only the type, not the bits.
     let handler: fn() = unsafe { core::mem::transmute::<*const (), fn()>(raw_ptr) };
+    #[cfg(feature = "trace")]
+    {
+        let traced = !UNTRACED
+            .get(irq_num as usize)
+            .map(|f| f.load(Ordering::Acquire))
+            .unwrap_or(false);
+        if traced {
+            crate::trace::isr(irq_num, true);
+        }
+        handler();
+        if traced {
+            crate::trace::isr(irq_num, false);
+        }
+    }
+    #[cfg(not(feature = "trace"))]
     handler();
 }
 

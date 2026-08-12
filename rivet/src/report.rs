@@ -35,6 +35,46 @@ fn print_dec(mut n: usize) {
     }
 }
 
+/// A registered task's stack watermark: `(used, total)` bytes, or `None`
+/// if `id` isn't a live, registered task or has no stack pool entry.
+/// Factored out of [`report`] so callers that need just one task's number
+/// (e.g. a periodic trace-emitting task) don't have to re-derive the
+/// scratch-window dance below.
+///
+/// On Cortex-M, another task's pool-allocated stack is outside the
+/// *currently running* task's MPU region-7 window (region 6 denies the
+/// rest of the whole pool by design) — reading it needs the same
+/// scratch-window primitive `preempt::spawn`/`stack_pool::release_stack`
+/// already use for the same reason (a no-op on arches without a
+/// whole-pool deny region, e.g. RISC-V). Opening the window disables that
+/// deny for the *entire* pool, not just this stack, so it must run under
+/// a critical section: a context switch mid-window would leave every
+/// other task's stack briefly unguarded too.
+pub fn task_stack_usage(id: usize) -> Option<(usize, usize)> {
+    let t = tcb::get(id)?;
+    let base_addr = t.stack_base.load(Ordering::Acquire);
+    let size = t.stack_size.load(Ordering::Acquire);
+    if base_addr == 0 || size == 0 {
+        return None;
+    }
+    let used = crate::critical::enter(|| {
+        crate::port::arch::scratch_open(base_addr, size);
+        // SAFETY: reading a registered task's own stack range from
+        // outside that task is safe for watermarking purposes — the
+        // bytes below the high-water mark are never written again once
+        // touched, and this doesn't rely on the *current* contents above
+        // it, only on how far the 0xAA fill pattern has been
+        // overwritten. The scratch window (opened above, under this
+        // critical section) ensures this is also *permitted* by the MPU,
+        // not just logically sound.
+        let stack = unsafe { core::slice::from_raw_parts(base_addr as *const u8, size) };
+        let used = crate::preempt::stack_usage(stack);
+        crate::port::arch::scratch_close();
+        used
+    });
+    Some((used, size))
+}
+
 /// Print a full kernel state dump to the console. Safe to call from any
 /// task context (not ISR-safe — it does blocking console writes, same as
 /// [`crate::console::write_str`] in general; see [`crate::log`] for the
@@ -73,38 +113,7 @@ pub fn report() {
             });
         }
 
-        let base_addr = t.stack_base.load(Ordering::Acquire);
-        let size = t.stack_size.load(Ordering::Acquire);
-        if base_addr != 0 && size != 0 {
-            // On Cortex-M, another task's pool-allocated stack is outside
-            // the *currently running* task's MPU region-7 window (region
-            // 6 denies the rest of the whole pool by design) — reading it
-            // needs the same scratch-window primitive `preempt::spawn`/
-            // `stack_pool::release_stack` already use for the same reason
-            // (a no-op on arches without a whole-pool deny region, e.g.
-            // RISC-V). Opening the window disables that deny for the
-            // *entire* pool, not just this stack, so — matching every
-            // other scratch_open/close use in the kernel — it must run
-            // under a critical section: a context switch mid-window would
-            // leave every other task's stack briefly unguarded too. Keep
-            // the window to just the byte-scan; the console write below
-            // happens after closing it, off the critical section.
-            let used = crate::critical::enter(|| {
-                crate::port::arch::scratch_open(base_addr, size);
-                // SAFETY: reading a registered task's own stack range from
-                // outside that task is safe for watermarking purposes —
-                // the bytes below the high-water mark are never written
-                // again once touched, and report() doesn't rely on the
-                // *current* contents above it, only on how far the 0xAA
-                // fill pattern has been overwritten. The scratch window
-                // (opened above, under this critical section) ensures
-                // this is also *permitted* by the MPU, not just logically
-                // sound.
-                let stack = unsafe { core::slice::from_raw_parts(base_addr as *const u8, size) };
-                let used = crate::preempt::stack_usage(stack);
-                crate::port::arch::scratch_close();
-                used
-            });
+        if let Some((used, size)) = task_stack_usage(id) {
             crate::console::write_str(" stack=");
             print_dec(used);
             crate::console::write_str("/");

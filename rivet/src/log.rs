@@ -31,7 +31,7 @@
 //! real SMP too, not only the single-hart case.
 
 use crate::sync::{Channel, Once, Receiver, Sender};
-use core::sync::atomic::{AtomicU32, Ordering};
+use crate::sync::atomic::{AtomicU32, Ordering};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Level {

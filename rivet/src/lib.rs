@@ -82,6 +82,7 @@ pub mod sync;
 pub mod task;
 pub mod time;
 pub mod timer;
+pub mod trace;
 pub mod waker;
 pub mod watchdog;
 

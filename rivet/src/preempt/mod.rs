@@ -340,10 +340,14 @@ pub unsafe fn spawn<T: 'static + Send, A: 'static>(
         Some((id, t.generation.load(Ordering::Acquire)))
     });
     match registered {
-        Some((id, generation)) => Ok(TaskHandle {
-            id: id as u16,
-            generation,
-        }),
+        Some((id, generation)) => {
+            #[cfg(feature = "trace")]
+            crate::trace::task_created(id as u16, priority, size as u32);
+            Ok(TaskHandle {
+                id: id as u16,
+                generation,
+            })
+        }
         None => Err(SpawnError::RegistryFull),
     }
 }
@@ -612,8 +616,66 @@ pub fn on_tick(interrupted_sp: usize) -> usize {
         crate::latency::Kind::DispatchDecision,
         crate::port::arch::cycle_count().wrapping_sub(__latency_start),
     );
+    // Real bug, found via the debugger it was corrupting the timing of:
+    // `on_tick_locked` used to call `crate::trace::context_switch(...)`
+    // directly, inside `on_tick_impl`'s own `critical::enter` (PRIMASK
+    // masked, i.e. the *whole system* stopped, not just this hart's local
+    // interrupts). A trace emission is a blocking, byte-at-a-time polling
+    // UART write — tens of microseconds per byte, over a millisecond for
+    // a whole frame at 115200 baud — which is worse than the entire 1kHz
+    // tick period. Two equal-priority tasks that round-robin every tick
+    // (`should_preempt`'s documented "equal priority round-robins on
+    // tick" semantics) hit this on *every single dispatch*: the outgoing
+    // task's ContextSwitch trace_write alone consumed the whole tick
+    // budget, so the incoming task got dispatched, immediately had its
+    // one tick's worth of runway eaten by the *next* tick's own blocking
+    // trace_write (already pending the instant PRIMASK lifted), and never
+    // advanced past its own entry point — confirmed via a live GDB
+    // capture showing two worker tasks permanently stuck with their saved
+    // PC at their function's first instruction, cumulative spin/sleep
+    // completions stuck at 0 after several real seconds of uptime. Same
+    // hazard class as the reannounce comment below (`docs/wcet.md` §6.1);
+    // this is the sequel finding it in the one spot that had already
+    // shipped it inside the lock instead of just being tempted to.
+    // `PENDING_CTX_SWITCH` carries the (prev,next) pair out of the locked
+    // region so the actual UART write happens here, after PRIMASK lifts.
+    #[cfg(feature = "trace")]
+    {
+        use core::sync::atomic::Ordering;
+        let packed = PENDING_CTX_SWITCH.swap(u32::MAX, Ordering::Relaxed);
+        if packed != u32::MAX {
+            let prev = (packed >> 16) as u16;
+            let next = (packed & 0xFFFF) as u16;
+            crate::trace::context_switch(prev, next, crate::trace::SwitchReason::Preempted);
+        }
+    }
+    // Deliberately outside on_tick_impl's own critical::enter: a full
+    // task-table scan plus one trace_write per live task is far more
+    // than a critical section should ever hold (this exact class of
+    // "console/trace I/O under critical::enter" cost is a real, measured
+    // hazard — see docs/wcet.md §6.1 in this workspace's own real-
+    // hardware WCET analysis). Gated to roughly once every two seconds
+    // at the default 1kHz tick, not every tick.
+    #[cfg(feature = "trace")]
+    {
+        use core::sync::atomic::{AtomicU32, Ordering};
+        static REANNOUNCE_TICK: AtomicU32 = AtomicU32::new(0);
+        if REANNOUNCE_TICK.fetch_add(1, Ordering::Relaxed).is_multiple_of(2000) {
+            crate::trace::reannounce_all_tasks();
+            crate::trace::reannounce_stream_header();
+        }
+    }
     result
 }
+
+/// Packs `(prev_task << 16) | next_task` for the most recent tick-driven
+/// switch, `u32::MAX` = none pending. Written (Relaxed — single-hart-tick-
+/// owner, same reasoning as `REANNOUNCE_TICK`) from inside
+/// `on_tick_locked`'s critical section, read/cleared from [`on_tick`]
+/// after that section has already released PRIMASK — see `on_tick`'s own
+/// doc for why this indirection exists at all.
+#[cfg(feature = "trace")]
+static PENDING_CTX_SWITCH: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(u32::MAX);
 
 /// plan.md Phase 19: the entire read-decide-commit sequence below (read
 /// `sched::current()`, decide via `schedule()`/`should_preempt`, commit via
@@ -709,6 +771,15 @@ fn on_tick_locked(interrupted_sp: usize) -> usize {
     crate::exec_time::on_switch(running);
     let to_tcb = tcb::get(candidate).unwrap();
     to_tcb.set_state(candidate, TaskState::Running);
+    // NOT a direct `crate::trace::context_switch(...)` call here — see
+    // `on_tick`'s doc comment on `PENDING_CTX_SWITCH` for why a blocking
+    // UART write from inside this critical section is a real, confirmed
+    // starvation bug, not just a theoretical latency concern.
+    #[cfg(feature = "trace")]
+    PENDING_CTX_SWITCH.store(
+        ((running as u32) << 16) | (candidate as u32),
+        core::sync::atomic::Ordering::Relaxed,
+    );
     sched::set_current(candidate);
     // An actual switch occurred: advance the RR start past the dispatched
     // task (plan.md [B14] — never advance on no-switch ticks), and enable

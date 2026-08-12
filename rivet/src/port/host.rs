@@ -160,3 +160,7 @@ extern "Rust" fn __rivet_board_wdt_feed() {}
 
 #[no_mangle]
 extern "Rust" fn __rivet_board_wdt_check() {}
+
+#[cfg(feature = "trace")]
+#[no_mangle]
+extern "Rust" fn __rivet_board_trace_write(_ptr: *const u8, _len: usize) {}

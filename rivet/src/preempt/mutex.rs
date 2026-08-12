@@ -207,7 +207,11 @@ impl<T> PriorityMutex<T> {
             return None;
         }
         match self.push_held(me) {
-            Ok(()) => Some(PriorityMutexGuard { mutex: self }),
+            Ok(()) => {
+                #[cfg(feature = "trace")]
+                crate::trace::mutex_lock_acquired(me as u16, self as *const _ as usize as u32);
+                Some(PriorityMutexGuard { mutex: self })
+            }
             Err(_) => {
                 // Roll back the acquire we just made so the lock is never
                 // left held without a guard.
@@ -280,6 +284,11 @@ impl<T> PriorityMutex<T> {
                 let owner_eff = owner_tcb.effective_priority.load(Ordering::Acquire);
                 if my_base > owner_eff {
                     owner_tcb.set_effective_priority(owner_id, my_base);
+                    #[cfg(feature = "trace")]
+                    crate::trace::priority_inherit(
+                        owner_id as u16,
+                        self as *const _ as usize as u32,
+                    );
                 }
             }
         }
@@ -375,6 +384,13 @@ impl<'a, T> Drop for PriorityMutexGuard<'a, T> {
         // around boost/add_waiter/register/block) and the join path.
         crate::critical::enter(|| {
             let owner = self.mutex.owner.swap(NO_TASK, Ordering::AcqRel);
+            #[cfg(feature = "trace")]
+            if owner != NO_TASK {
+                crate::trace::mutex_unlock(
+                    owner as u16,
+                    self.mutex as *const _ as usize as u32,
+                );
+            }
             if owner != NO_TASK {
                 // Remove this mutex from the holder's held list, then
                 // recompute the holder's effective priority from what

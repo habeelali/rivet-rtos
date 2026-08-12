@@ -29,7 +29,7 @@
 //! write path at all.
 
 use core::fmt::{self, Write};
-use core::sync::atomic::{AtomicBool, Ordering};
+use crate::sync::atomic::{AtomicBool, Ordering};
 
 use crate::sync::{Channel, Once, Receiver, Sender};
 

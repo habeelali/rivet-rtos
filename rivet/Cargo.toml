@@ -27,10 +27,36 @@ loom = ["dep:loom"]
 # unasked); the QEMU example binaries enable it explicitly so the test
 # suite actually exercises the instrumentation.
 latency-histograms = []
+# PulseTrace live tracing (the companion desktop app, `pulsetrace/` at the
+# repo root): emits the app's binary wire protocol from real scheduler/
+# fault/IRQ events. Off by default — needs a board crate that both enables
+# this feature and implements `port::board::trace_write`. See
+# `rivet::trace`'s own module docs.
+trace = []
+# ARMv6-M (Cortex-M0/M0+) has no LDREX/STREX exclusive-monitor
+# instructions — `core::sync::atomic::AtomicU32` etc. on that target
+# expose only `load`/`store`, not `compare_exchange`/`fetch_or`/`swap`/
+# anything RMW, because there's no native instruction sequence for them.
+# The entire lock-free core (`waker`, `sync::{semaphore,channel}`,
+# `preempt::{sched,tcb}`) is written against those RMW ops. `sync::atomic`
+# swaps its re-export to `portable-atomic` when this is on, which is a
+# byte-for-byte API-compatible drop-in providing the missing methods via
+# a critical-section-guarded load-modify-store fallback — every call site
+# in this crate is unaffected; only the atomic *implementation* changes.
+# Enable this for any ARMv6-M board (`rivet-bsp-rp2040` does); leave it
+# off for ARMv7-M+/RISC-V boards, which have real hardware CAS and don't
+# need the fallback's overhead.
+atomics-polyfill = ["dep:portable-atomic"]
 
 [dependencies]
 rivet-macros = { path = "../rivet-macros" }
 loom = { version = "0.7", optional = true }
+# See the `atomics-polyfill` feature's own doc above. `critical-section`
+# (not `unsafe-assume-single-core`): the fallback needs a real
+# `critical_section::Impl` registered — the consuming board crate
+# provides one (`cortex-m`'s own `critical-section-single-core` feature is
+# the standard choice for a single-core Cortex-M target).
+portable-atomic = { version = "1", default-features = false, features = ["critical-section"], optional = true }
 
 [dev-dependencies]
 # Enable the test-support feature when building any test target of this

@@ -69,14 +69,14 @@ pub struct Executor {
     /// Number of tasks not yet completed (plan.md [B10]): decremented the
     /// first time a task's poll returns `Ready`. Used to skip re-polling
     /// completed tasks and to know when the cooperative tier is idle.
-    live_tasks: core::sync::atomic::AtomicUsize,
+    live_tasks: crate::sync::atomic::AtomicUsize,
 }
 
 impl Executor {
     pub const fn new() -> Self {
         Self {
             registry: TaskRegistry::new(),
-            live_tasks: core::sync::atomic::AtomicUsize::new(0),
+            live_tasks: crate::sync::atomic::AtomicUsize::new(0),
         }
     }
 
@@ -110,7 +110,7 @@ impl Executor {
             counts[prio] += 1;
             self.registry.total += 1;
             self.live_tasks
-                .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                .fetch_add(1, crate::sync::atomic::Ordering::Relaxed);
         }
 
         self.registry.count_per_priority[..=(crate::task::MAX_PRIORITY as usize)]
@@ -164,7 +164,7 @@ impl Executor {
 
                 if result == Poll::Ready(()) {
                     self.live_tasks
-                        .fetch_sub(1, core::sync::atomic::Ordering::Relaxed);
+                        .fetch_sub(1, crate::sync::atomic::Ordering::Relaxed);
                 }
             }
 

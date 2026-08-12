@@ -17,7 +17,7 @@
 //! own static stacks.
 
 #[cfg(not(feature = "host-port"))]
-use core::sync::atomic::{AtomicUsize, Ordering};
+use crate::sync::atomic::{AtomicUsize, Ordering};
 
 #[cfg(not(feature = "host-port"))]
 extern "C" {

@@ -256,6 +256,23 @@ impl Tcb {
             TaskState::Blocked => BLOCKED,
         };
         self.state.store(v, Ordering::Release);
+        // Deliberately NOT tracing Ready/Blocked transitions here: every
+        // caller of `set_state` (this function's own doc + grep confirms
+        // it — `on_tick_locked`, `sleep_until`, mutex blocking, `pause`/
+        // `resume`) holds `critical::enter` (PRIMASK masked) around the
+        // call. A trace emission is a blocking, byte-at-a-time polling
+        // UART write (`docs/wcet.md` §6.1's own documented hazard) — for
+        // two equal-priority tasks that round-robin every tick (a real
+        // case this exact bug was found on: two workers permanently
+        // starved because their *entire* tick budget went to a blocking
+        // trace_write of the outgoing task's Ready transition, leaving
+        // ~0 time to actually run before the next tick, already pending,
+        // fired) this alone was enough to prevent either task from ever
+        // making forward progress. `ContextSwitch` (emitted from
+        // `preempt::on_tick`, outside its own critical section — see
+        // that function's docs) already covers the common case; a
+        // `TaskBlocked`/`TaskReady` event would need the same deferred-
+        // outside-the-lock treatment before it's safe to add here.
         match s {
             TaskState::Ready => crate::preempt::sched::ready_add(id),
             TaskState::Running | TaskState::Blocked => crate::preempt::sched::ready_remove(id),

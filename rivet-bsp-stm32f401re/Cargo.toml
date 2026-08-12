@@ -24,4 +24,9 @@ stm32f4 = { version = "0.16", default-features = false, features = ["stm32f401"]
 [target.'cfg(target_arch = "arm")'.dependencies]
 rivet-arch-cortex-m = { path = "../rivet-arch-cortex-m", features = ["systick", "nvic"] }
 
+[features]
+# PulseTrace live tracing — forwards to rivet's own `trace` feature and
+# implements the board-side `__rivet_board_trace_write` symbol it needs.
+trace = ["rivet/trace"]
+
 [lib]

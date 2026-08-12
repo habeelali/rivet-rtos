@@ -13,6 +13,8 @@ test = false
 # plan.md Phase 12: forwards to both crates' own `latency-histograms`
 # feature (independent flags per crate, same name).
 latency-histograms = ["rivet/latency-histograms", "rivet-arch-cortex-m/latency-histograms"]
+# PulseTrace live tracing — see rivet-bsp-stm32f401re's own Cargo.toml.
+trace = ["rivet/trace", "rivet-bsp-stm32f401re/trace"]
 
 [dependencies]
 rivet = { path = "../../rivet" }

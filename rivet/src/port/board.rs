@@ -58,6 +58,19 @@ extern "Rust" {
     fn __rivet_board_wdt_check();
 }
 
+// Group B, `trace` feature only (plan.md-adjacent, PulseTrace integration):
+// separate extern block so a board that never enables `trace` doesn't
+// need to implement this — unlike everything above, which every board
+// must provide unconditionally.
+#[cfg(feature = "trace")]
+extern "Rust" {
+    /// Write raw PulseTrace wire-protocol bytes to whatever transport the
+    /// board wants (a UART, same or different from the debug console).
+    /// Called from [`crate::trace`]'s encoder functions; never called
+    /// directly by kernel code.
+    fn __rivet_board_trace_write(ptr: *const u8, len: usize);
+}
+
 pub fn init() {
     // SAFETY: implemented by exactly one `rivet-bsp-*` crate linked into
     // the final binary; called once, after `port::arch::init`.
@@ -113,4 +126,12 @@ pub fn wdt_feed() {
 pub fn wdt_check() {
     // SAFETY: see `init`.
     unsafe { __rivet_board_wdt_check() }
+}
+
+#[cfg(feature = "trace")]
+pub fn trace_write(bytes: &[u8]) {
+    // SAFETY: forwarded to the board crate under the same contract as
+    // every other symbol in this module — implemented by exactly one
+    // `rivet-bsp-*` crate that opted into the `trace` feature.
+    unsafe { __rivet_board_trace_write(bytes.as_ptr(), bytes.len()) }
 }

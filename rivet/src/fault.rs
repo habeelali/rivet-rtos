@@ -83,6 +83,18 @@ pub fn set_on_task_fault(hook: OnTaskFault) {
 /// resets). Under [`FaultPolicy::IsolateTask`] it returns the stack pointer
 /// the trap handler should resume — the next ready task's.
 pub fn on_fault(info: &FaultInfo) -> usize {
+    #[cfg(feature = "trace")]
+    {
+        let reason = match info.kind {
+            FaultKind::InstructionAccess => 0,
+            FaultKind::LoadAccess => 1,
+            FaultKind::StoreAccess => 2,
+            FaultKind::MemManage(_) => 3,
+            FaultKind::StackOverflow => 4,
+            FaultKind::BudgetExceeded => 5,
+        };
+        crate::trace::fault(info.task_id.map(|id| id as u16).unwrap_or(0xffff), reason, info.pc as u32);
+    }
     if POLICY.load(Ordering::Acquire) == POLICY_ISOLATE {
         isolate(info)
     } else {

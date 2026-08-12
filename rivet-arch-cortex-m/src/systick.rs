@@ -99,3 +99,41 @@ pub fn handler() {
 pub fn now_micros() -> u64 {
     (SYSTEM_TICKS.load(Ordering::Acquire) as u64) * (TICK_PERIOD_US.load(Ordering::Acquire) as u64)
 }
+
+/// Same as [`now_micros`] but with sub-tick resolution: reads SysTick's own
+/// down-counter (`CVR`) for how far into the *current* tick period we are,
+/// instead of only reporting whole-tick multiples. [`now_micros`] alone is
+/// fine for scheduling deadlines (millisecond-granularity is the point —
+/// the tick period *is* the scheduling quantum), but it makes every event
+/// that happens between two ticks look like it happened at the exact same
+/// instant, which is useless for anything that wants to see what actually
+/// happened *within* a tick (e.g. a trace/debugger timeline).
+///
+/// Reads `SYSTEM_TICKS` before and after `CVR` and retries once if a tick
+/// boundary landed between them (rare — only within a few cycles of a
+/// rollover) rather than risk pairing a stale tick count with a
+/// post-rollover `CVR`, which would show time briefly running backward.
+/// Still anchored to the same monotonic tick counter as [`now_micros`], so
+/// it carries the same ~49-day wraparound, not the ~4.5-minute wraparound
+/// a raw 32-bit cycle counter would have at a typical MCU clock.
+pub fn now_micros_precise() -> u64 {
+    // SAFETY: SYST::PTR is the statically-known SysTick base (see `init`);
+    // CVR/RVR reads are volatile MMIO accesses, read-only here.
+    let syst = unsafe { &*cortex_m::peripheral::SYST::PTR };
+    loop {
+        let t0 = SYSTEM_TICKS.load(Ordering::Acquire);
+        let cvr = syst.cvr.read();
+        let t1 = SYSTEM_TICKS.load(Ordering::Acquire);
+        if t0 != t1 {
+            continue;
+        }
+        let rvr = syst.rvr.read();
+        let period_us = TICK_PERIOD_US.load(Ordering::Acquire) as u64;
+        // CVR counts DOWN from RVR to 0 each period, so elapsed-into-this-
+        // tick ticks = RVR - CVR, out of a full period of RVR+1 ticks
+        // (init() programs RVR = reload_ticks - 1).
+        let elapsed = (rvr.saturating_sub(cvr)) as u64;
+        let frac_us = elapsed.saturating_mul(period_us) / (rvr as u64 + 1);
+        return (t0 as u64) * period_us + frac_us;
+    }
+}
