@@ -100,12 +100,42 @@ implicitly written against just one target:
 | **ESP32-S3** | Xtensa LX7, dual-core | **Real hardware.** The only dual-core (`RIVET_MAX_HARTS=2`) target — cross-hart IPI-driven fairness, a genuine cross-hart data race found and fixed via live JTAG (`docs/realtime.md` §15), real-hardware-verified priority inheritance and round-robin fairness. Built with Espressif's separate `esp` Rust toolchain fork (excluded from the main workspace — see §15). |
 | **STM32F401RE (Nucleo-64)** | ARM Cortex-M4, single-core | **Real hardware** (ST-LINK/V2-1 onboard debugger, SWD). The current best hard-real-time story in this project: `docs/wcet-stm32f401re.md` gives a scoped, real-hardware-measured hard-RT declaration — zero-variance nested-interrupt latency (86 cycles, 500/500 identical samples), measured `PRIORITY_INVERSION_BOUNDED` with zero medium-priority interference, no cross-hart contention class of problem (single core). |
 
-An eighth target — ESP32-C3 (RV32IMC) — was evaluated and found to be a
-real, architectural blocker rather than a simple porting task: it lacks the
+An eighth target — ESP32-C3 (RV32IMC) — was evaluated and found to lack the
 RISC-V atomic (`A`) extension the kernel's lock-free scheduler relies on
-throughout. Supporting it would mean switching to software-emulated atomics,
-a cross-cutting kernel change, not a new board. Documented, not silently
-ignored — see [§18](#18-known-limitations-and-honest-gaps).
+throughout. This was originally documented as a hard architectural
+blocker; it's narrower than that now. Bringing up the RP2040 port (Cortex-
+M0+/ARMv6-M, which has the identical problem — no LDREX/STREX) added an
+`atomics-polyfill` feature: `rivet::sync::atomic` swaps its re-export from
+`core::sync::atomic` to `portable-atomic`, a byte-for-byte API-compatible
+drop-in that provides the missing `compare_exchange`/`fetch_or`/etc. via a
+critical-section-guarded fallback, with every call site elsewhere in the
+kernel unaffected. ESP32-C3 support would still need a RISC-V
+`critical_section::Impl` registered (the RP2040 port uses `cortex-m`'s
+ready-made one; ESP32-C3 has no equivalent off the shelf yet) — real work,
+not zero work — but "switch to software-emulated atomics" is no longer a
+cross-cutting kernel change, it's enabling an existing feature plus writing
+one new critical-section backend. A good first issue for RISC-V experience.
+
+## RP2040 (Raspberry Pi Pico) — experimental, not yet validated
+
+A ninth port, `rivet-arch-cortex-m0` + `rivet-bsp-rp2040`, is in the
+workspace but **does not yet meet this project's real-hardware bar** and
+is deliberately not listed in the table above. What's actually confirmed
+on real hardware: the board boots, brings up its own clock tree (XOSC +
+dual PLL — RP2040 resets on an imprecise ring oscillator, unlike this
+project's other boards' factory-trimmed defaults), and a USB CDC-ACM
+console (`rivet-bsp-rp2040::usb`) enumerates and transmits real bytes.
+What's *not* yet confirmed: the scheduler/context-switch/task-spawn path
+running end to end — the full demo (priority inheritance, forced
+preemption, the async tier) has been flashed but hasn't yet produced
+observable output past board bring-up. A real, reproducible finding from
+this work: RP2040's `BUFF_STATUS` USB interrupt reliably completes EP0
+control transfers (enumeration works every time) but never once drove a
+CDC bulk-data transfer to completion in testing — only direct, repeated,
+synchronous `poll()` calls did. Root cause not isolated; a real open
+question, not swept under the rug (see the open issues for the current
+state). Treat this port as "compiles and partially boots," not "works,"
+until this section is updated.
 
 **Real hardware has been tested** — ESP32-S3 and STM32F401RE above, both
 via live JTAG/SWD debugging (OpenOCD + GDB), not just flash-and-hope. See
@@ -158,7 +188,7 @@ directly inside the kernel's architecture files, gated by
   was keyed on the *target triple*, not the board.
 - Adding hardware support meant editing the kernel itself.
 
-Today, `rivet` is checkably board-free: `cargo build -p rivet` compiles for
+Today, `rivet` is checkably board-free: `cargo build -p rivet-rtos` compiles for
 any target with zero board or architecture crate present (an `rlib` doesn't
 need its `extern "Rust"` symbols resolved until final link time). Building
 an actual runnable binary without a real board crate fails at the *link*
@@ -621,6 +651,12 @@ spawns the async executor as the lowest-priority preemptive task.
 
 ## 15. Project / crate map
 
+Published to crates.io as **`rivet-rtos`** (`[package] name`) — the
+crate name `rivet` was already taken; `[lib] name = "rivet"` in
+`rivet/Cargo.toml` keeps every `use rivet::...` in this workspace and any
+downstream consumer's code unchanged (`cargo add rivet-rtos` and then
+`use rivet::...`, same as here).
+
 ```
 rivet/                 the kernel — scheduler, TCB, executor, timers, sync,
                         fault policy, log, report. Builds on any host target
@@ -633,12 +669,25 @@ rivet/                 the kernel — scheduler, TCB, executor, timers, sync,
   src/fault.rs          fault policy and dispatch
   src/log.rs, report.rs deferred logging, kernel state dump
   src/watchdog.rs       watchdog policy (hardware-agnostic)
+  src/trace.rs          optional (feature "trace") live event emission —
+                        scheduler/IRQ/fault events over whatever transport
+                        the board's port::board::trace_write implements,
+                        for external tooling. Off by default; zero cost
+                        when the feature isn't enabled.
 
 rivet-arch-riscv/       RV32 ISA port: trap entry/dispatch, PMP guards,
                         optional CLINT tick/IPI backend (feature "clint")
-rivet-arch-cortex-m/    Cortex-M ISA port: PendSV/MemManage, MPU guards,
-                        NVIC IRQ dispatch, DWT cycle counter, optional
-                        SysTick backend (feature "systick")
+rivet-arch-cortex-m/    Cortex-M3/M4/M7 (ARMv7-M) ISA port: PendSV/
+                        MemManage, MPU guards, NVIC IRQ dispatch, DWT
+                        cycle counter, optional SysTick backend
+                        (feature "systick")
+rivet-arch-cortex-m0/   Cortex-M0/M0+ (ARMv6-M) ISA port — a separate
+                        crate from rivet-arch-cortex-m, not a #[cfg]
+                        branch inside it: ARMv6-M has no MPU, no DWT, no
+                        32-bit Thumb-2 STM/LDM (PendSV shuttles r8-r11
+                        through r4-r7 with `mov` instead), and no
+                        MemManage/BusFault/UsageFault. Experimental — see
+                        §3's RP2040 section.
 rivet-arch-xtensa/      Xtensa LX7 ISA port (ESP32-S3 only): context
                         switch via xtensa-lx-rt's Context struct, dual-hart
                         (RIVET_MAX_HARTS=2) dispatch, cross-hart IPI
@@ -658,6 +707,17 @@ rivet-bsp-esp32s3/      board support: ESP32-S3, real hardware, dual-core.
 rivet-bsp-stm32f401re/  board support: STM32F401RE Nucleo-64, real
                         hardware. Interrupt-driven USART2 console, IWDG
                         watchdog, NVIC priority floor.
+rivet-bsp-rp2040/       board support: Raspberry Pi Pico (RP2040), real
+                        hardware. Experimental — see §3. Boot2 second-
+                        stage bootloader, hand-rolled XOSC/PLL clock tree
+                        plus rp2040-hal's for PLL_USB, USB CDC-ACM debug
+                        console (rp2040-hal's UsbBus + usb-device/
+                        usbd-serial — the one dependency in this
+                        workspace on a peripheral driver crate that isn't
+                        a bare PAC, for the same reason rivet-boot2 is a
+                        pre-built blob: DPRAM/endpoint/SIE management is
+                        genuinely intricate hardware not worth hand-
+                        rolling blind).
 rivet-bsp-support/      shared BSP helpers: software-watchdog fallback,
                         NS16550 UART driver
 
@@ -675,10 +735,13 @@ examples/esp32s3/       demo + real-hardware test/bench binaries for the
                         smp_test — the dual-hart fairness/race regression
                         suite). Excluded from the main workspace (same
                         toolchain reason as rivet-arch-xtensa).
-examples/stm32f401re/   demo + real-hardware test/bench binaries for the
+examples/stm32f401re/  demo + real-hardware test/bench binaries for the
                         stm32f401re board, including the purpose-built WCET
                         benchmarks (nested_irq_bench, critsec_isolate_bench,
                         priority_inversion_bench, deadline_miss_bench).
+examples/rp2040/        demo binary for the rp2040 board. Experimental —
+                        see §3; builds and partially boots, not yet a
+                        validated test suite.
 
 xtask/                  the QEMU test harness: board registry, per-test
                         golden-output/exit-code/qemu-log assertions
@@ -721,7 +784,7 @@ sudo apt install qemu-system-misc qemu-system-arm   # for the demos/tests
 ./scripts/run-cm3.sh     # Cortex-M3 (lm3s6965evb)
 
 # Host-side kernel tests (unit + integration + property-based)
-cargo test -p rivet
+cargo test -p rivet-rtos
 
 # The full QEMU test harness
 cargo xtask boards                          # list registered boards
@@ -733,10 +796,10 @@ cargo xtask test --target riscv --suite gdb # context-switch verification (needs
 cargo xtask soak --target riscv --sim-hours 4   # bounded soak-invariant proof (see plan.md Phase 9)
 
 # Deeper verification (see §17)
-cargo +nightly miri test -p rivet --lib
-RUSTFLAGS='--cfg loom' cargo test -p rivet --features loom --test loom --release
+cargo +nightly miri test -p rivet-rtos --lib
+RUSTFLAGS='--cfg loom' cargo test -p rivet-rtos --features loom --test loom --release
 cargo +nightly fuzz run fuzz_sched -- -max_total_time=60
-cargo llvm-cov -p rivet --tests --summary-only
+cargo llvm-cov -p rivet-rtos --tests --summary-only
 ```
 
 Every example binary is a `#![no_std] #![no_main]` crate depending on
@@ -789,7 +852,7 @@ espflash flash --monitor target/xtensa-esp32s3-none-elf/release/demo
 Rivet's testing strategy is layered specifically to catch different classes
 of bugs that "run the demo and eyeball it" cannot:
 
-- **Host-side unit + integration tests** (`cargo test -p rivet`) — the
+- **Host-side unit + integration tests** (`cargo test -p rivet-rtos`) — the
   scheduler, waker bitmap, sync primitives, and an end-to-end async
   producer/consumer test driven through the real polling machinery, run
   under a serialized-and-reset harness (`kernel_test!`) so parallel test
@@ -864,13 +927,22 @@ Documented here rather than discovered the hard way:
   (`-smp N > 1`) remains a safety guard only — every hart but 0 parks
   without touching kernel state (verified as a permanent regression check),
   not genuine concurrent SMP scheduling.
-- **ESP32-C3 (and any RV32IMC target without the atomic extension) cannot
-  currently be supported.** The kernel's lock-free code needs
-  `fetch_add`/`compare_exchange`, which don't exist on that ISA without
-  switching to software-emulated atomics — a real, cross-cutting kernel
-  change, verified by directly attempting it (`cargo check -p rivet
-  --target riscv32imc-unknown-none-elf` fails with 36 missing-method
-  errors), not assumed.
+- **ESP32-C3 (and any RV32IMC target without the atomic extension) is not
+  yet supported, though the blocker is narrower than it used to be.** The
+  kernel's lock-free code needs `fetch_add`/`compare_exchange`, which
+  don't exist on that ISA natively — verified by directly attempting it
+  (`cargo check -p rivet-rtos --target riscv32imc-unknown-none-elf` fails
+  with 36 missing-method errors). The `atomics-polyfill` feature (added
+  for the RP2040 port, which has the identical problem on ARMv6-M) now
+  provides exactly the missing-method fallback via `portable-atomic`; what
+  ESP32-C3 still needs is a RISC-V `critical_section::Impl` for that
+  fallback to use (the RP2040 port gets this for free from `cortex-m`'s
+  `critical-section-single-core` feature; nothing equivalent exists yet
+  for this target). Good first issue.
+- **The RP2040 port is experimental, not real-hardware-validated yet** —
+  see [§3](#3-supported-hardware). Boots, brings up its own clock tree,
+  and transmits real bytes over a USB CDC-ACM console; the scheduler/
+  task-spawn path running end to end is not yet confirmed.
 - **`rivet::log!` has no argument interpolation yet** — it takes a level
   and a plain string, not a `format_args!`-style template. See
   [§10](#10-logging-and-diagnostics).

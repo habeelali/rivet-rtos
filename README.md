@@ -1,9 +1,20 @@
 # Rivet RTOS
 
+[![crates.io](https://img.shields.io/crates/v/rivet-rtos.svg)](https://crates.io/crates/rivet-rtos)
+[![docs.rs](https://img.shields.io/docsrs/rivet-rtos)](https://docs.rs/rivet-rtos)
+
 > **[Read the full documentation →](docs/DOCUMENTATION.md)** — architecture,
 > every feature, the port contract, configuration, and how to write an
 > application. This README is the quick tour; that document is the
 > complete reference.
+
+```bash
+cargo add rivet-rtos
+```
+
+Published as `rivet-rtos` on crates.io (`rivet` was already taken) but
+imported as `rivet` — every example below and in the docs uses `rivet::`
+directly, no rename needed on your end.
 
 **The kernel contains no allocator, and never will.** Every resource is a
 fixed pool sized at compile time (see `rivet/build.rs` / the `RIVET_*`
@@ -25,9 +36,10 @@ A zero-allocation, dual-tier RTOS for ARM Cortex-M, RISC-V, and Xtensa, written 
 - **Typestate GPIO** (`rivet_bsp_lm3s6965::gpio`) for the Cortex-M board — pin direction is tracked in the type, not a runtime flag; calling `.set_high()` on a pin still typed as `Input` is a compile error.
 - **Async sync primitives** for the cooperative tier — `Semaphore::acquire().await`, `Channel::send().await`/`recv().await`, lock-free, ISR-safe on the signaling side.
 - **Tickless `Sleep`** — registers a deadline with a timer queue instead of busy-polling; the executor genuinely reaches `WFI` between events.
-- **Seven validated boards** across three architectures — RISC-V (QEMU `virt`, ESP32-C6), ARM Cortex-M3 (QEMU `lm3s6965evb`, `mps2-an385`), ARM Cortex-M4 (**STM32F401RE, real hardware**), and Xtensa LX7 (**ESP32-S3, real hardware, dual-core**) — proving the arch/board split actually holds, not just working on the one board it was written against. See `docs/porting.md` to add your own board.
+- **Seven validated boards** across three architectures — RISC-V (QEMU `virt`, ESP32-C6), ARM Cortex-M3 (QEMU `lm3s6965evb`, `mps2-an385`), ARM Cortex-M4 (**STM32F401RE, real hardware**), and Xtensa LX7 (**ESP32-S3, real hardware, dual-core**) — proving the arch/board split actually holds, not just working on the one board it was written against. See `docs/porting.md` to add your own board. (An eighth, RP2040/Cortex-M0+, is in the workspace but explicitly experimental — compiles and partially boots, not yet a validated port. See `docs/DOCUMENTATION.md` §3.)
+- **Optional live event tracing** (`trace` feature, off by default) — `rivet::trace` emits scheduler dispatch, IRQ, mutex, and fault events over whatever transport a board's `port::board::trace_write` implements, for external tooling to consume. Zero cost when disabled.
 - **Formal WCET analysis**, exact figures (not estimates) for interrupt latency, context-switch time, scheduling-decision cost, critical-section hold time, and priority-inheritance blocking time, each labeled by how it was obtained — see [Hard real-time analysis](#hard-real-time-analysis).
-- **33+ host-side tests** (`cargo test -p rivet`), covering the scheduler, priority inheritance, waker bitmap, sync primitives, and an end-to-end async producer/consumer test driven through the real polling machinery.
+- **33+ host-side tests** (`cargo test -p rivet-rtos`), covering the scheduler, priority inheritance, waker bitmap, sync primitives, and an end-to-end async producer/consumer test driven through the real polling machinery.
 
 ## Hard real-time analysis
 
@@ -109,7 +121,7 @@ real-hardware ones.
 ## Tests
 
 ```bash
-cargo test -p rivet -- --test-threads=1
+cargo test -p rivet-rtos -- --test-threads=1
 ```
 
 ## QEMU
