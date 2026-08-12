@@ -10,7 +10,7 @@ description = "Rivet RTOS board support: TI/Luminary LM3S6965 (Stellaris) Cortex
 links = "rivet_bsp_lm3s6965"
 
 [dependencies]
-rivet = { path = "../rivet", package = "rivet-rtos" }
+rivet = { path = "../rivet", version = "0.1.0", package = "rivet-rtos" }
 embedded-hal = "1.0"
 
 # Cortex-M specific (build errors on host: real asm!/naked_asm! blocks) —
@@ -18,6 +18,6 @@ embedded-hal = "1.0"
 # still runs the host-testable parts (the GPIO typestate compile-check)
 # without needing an ARM target/runner.
 [target.'cfg(target_arch = "arm")'.dependencies]
-rivet-arch-cortex-m = { path = "../rivet-arch-cortex-m", features = ["systick"] }
+rivet-arch-cortex-m = { path = "../rivet-arch-cortex-m", version = "0.1.0", features = ["systick"] }
 
 [lib]

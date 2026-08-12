@@ -16,7 +16,7 @@ links = "rivet_bsp_esp32c6"
 latency-histograms = ["rivet/latency-histograms", "rivet-arch-riscv/latency-histograms"]
 
 [dependencies]
-rivet = { path = "../rivet", package = "rivet-rtos" }
+rivet = { path = "../rivet", version = "0.1.0", package = "rivet-rtos" }
 # Deliberately NOT enabling "clint"/"plic": the C6 has neither a SiFive
 # CLINT nor a real SiFive PLIC — it has SYSTIMER (tick) and Espressif's
 # own PLIC_MX + INTERRUPT_CORE0 interrupt-matrix controller (a different
@@ -34,8 +34,8 @@ rivet = { path = "../rivet", package = "rivet-rtos" }
 # print statements down to this exact single-instruction CSR read. This
 # crate provides `__rivet_arch_cycle_count` itself instead (below), from
 # SYSTIMER.
-rivet-arch-riscv = { path = "../rivet-arch-riscv", default-features = false, features = ["no-mcycle", "board-irq-hook", "vectored-trap"] }
-rivet-bsp-support = { path = "../rivet-bsp-support" }
+rivet-arch-riscv = { path = "../rivet-arch-riscv", version = "0.1.0", default-features = false, features = ["no-mcycle", "board-irq-hook", "vectored-trap"] }
+rivet-bsp-support = { path = "../rivet-bsp-support", version = "0.1.0" }
 esp32c6 = { version = "0.23", features = ["rt"] }
 esp-bootloader-esp-idf = { version = "0.5", features = ["esp32c6"] }
 

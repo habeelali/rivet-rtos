@@ -7,9 +7,9 @@ repository = "https://github.com/habeelali/rivet-rtos"
 description = "Rivet RTOS: ESP32-S3 board port (UART0 console, watchdog disable, Xtensa CCOUNT tick) — real hardware, no QEMU model"
 
 [dependencies]
-rivet = { path = "../rivet", package = "rivet-rtos" }
-rivet-arch-xtensa = { path = "../rivet-arch-xtensa" }
-rivet-bsp-support = { path = "../rivet-bsp-support" }
+rivet = { path = "../rivet", version = "0.1.0", package = "rivet-rtos" }
+rivet-arch-xtensa = { path = "../rivet-arch-xtensa", version = "0.1.0" }
+rivet-bsp-support = { path = "../rivet-bsp-support", version = "0.1.0" }
 esp32s3 = { version = "0.35", features = ["rt"] }
 xtensa-lx = "0.13"
 esp-bootloader-esp-idf = { version = "0.5", features = ["esp32s3"] }

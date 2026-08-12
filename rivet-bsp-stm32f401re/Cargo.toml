@@ -10,7 +10,7 @@ description = "Rivet RTOS board support: STM32F401RE Nucleo-64 (Cortex-M4), real
 links = "rivet_bsp_stm32f401re"
 
 [dependencies]
-rivet = { path = "../rivet", package = "rivet-rtos" }
+rivet = { path = "../rivet", version = "0.1.0", package = "rivet-rtos" }
 # `default-features = false`: the PAC's default `rt` feature pulls in
 # `cortex-m-rt/device`, which provides its own `Reset`/vector-table
 # symbols — this workspace's own `rivet-rt` already owns that (a real
@@ -22,7 +22,7 @@ stm32f4 = { version = "0.16", default-features = false, features = ["stm32f401"]
 # pulled in for the actual target, matching rivet-bsp-lm3s6965's own
 # split so `cargo test -p rivet-bsp-stm32f401re` still runs on host.
 [target.'cfg(target_arch = "arm")'.dependencies]
-rivet-arch-cortex-m = { path = "../rivet-arch-cortex-m", features = ["systick", "nvic"] }
+rivet-arch-cortex-m = { path = "../rivet-arch-cortex-m", version = "0.1.0", features = ["systick", "nvic"] }
 
 [features]
 # PulseTrace live tracing — forwards to rivet's own `trace` feature and
