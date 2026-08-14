@@ -30,6 +30,26 @@
 //! precise (every tick still fires and is handled), only real-world
 //! timing accuracy does. Tracked as a follow-up once basic preemption is
 //! proven on hardware.
+//!
+//! # This board's mask ROM needs a JTAG-assisted boot, every boot
+//!
+//! Confirmed live on the N16R8 devkit this session (chip revision v0.2),
+//! reproduces after a full USB power cycle with no debugger ever
+//! attached — this is a real, persistent property of this chip, not a
+//! debugging artifact: on reset, before any flashed firmware (or even
+//! the 2nd-stage bootloader) ever runs, Espressif's own mask ROM
+//! `main()` reads the CPU's `PRID` special register, finds it equal to
+//! `0xabab` (the value ROM treats as "running under a simulator"), and
+//! spins forever in a tight loop waiting for an external debugger to
+//! write the real boot entry point into a fixed hardware register
+//! (`0x600c0004`) — normal SPI-flash boot is never attempted. Nothing
+//! in this crate, `rivet-arch-xtensa`, or `rivet` itself can fix this:
+//! it happens entirely inside ROM, before any of our code is reachable.
+//! `scripts/esp32s3-jtag-unblock.sh` (repo root) automates the
+//! workaround — reset, halt in the spin loop, write the ELF's real
+//! entry point into that register, resume — and was verified to let
+//! the flashed app run to completion (traced via JTAG all the way to
+//! `__rivet_board_exit`). Needed on every boot, not just once.
 
 #![no_std]
 
