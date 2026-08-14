@@ -12,6 +12,7 @@ links = "rivet_bsp_stm32f401re"
 [dependencies]
 rivet = { path = "../rivet", version = "0.1.0", package = "rivet-rtos" }
 embedded-hal = "1.0"
+embedded-hal-async = "1.0"
 # `default-features = false`: the PAC's default `rt` feature pulls in
 # `cortex-m-rt/device`, which provides its own `Reset`/vector-table
 # symbols — this workspace's own `rivet-rt` already owns that (a real

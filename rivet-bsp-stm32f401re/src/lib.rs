@@ -22,12 +22,18 @@
 #![no_std]
 
 pub mod gpio;
+pub mod i2c;
 
 /// Board IRQ number map (plan.md Phase 13/26 follow-up): which NVIC IRQ
 /// number is which peripheral, per the `stm32f401` PAC's own `Interrupt`
 /// enum (cross-checked, not guessed).
 pub mod irq {
     pub const USART2: u32 = 38;
+    /// I2C1 event interrupt (`SB`/`ADDR`/`BTF`/`TXE`/`RXNE`) — position
+    /// 31 in the `stm32f401` PAC's `Interrupt` enum.
+    pub const I2C1_EV: u32 = 31;
+    /// I2C1 error interrupt (`AF`/`BERR`/`ARLO`/`OVR`) — position 32.
+    pub const I2C1_ER: u32 = 32;
 }
 
 // Everything below is genuinely Cortex-M specific (real asm!/naked_asm!
