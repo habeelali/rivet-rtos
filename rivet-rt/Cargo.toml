@@ -14,6 +14,6 @@ default = ["panic-handler"]
 panic-handler = []
 
 [dependencies]
-rivet = { path = "../rivet", version = "0.1.0", package = "rivet-rtos" }
+rivet = { path = "../rivet", version = "0.2.0", package = "rivet-rtos" }
 
 [lib]

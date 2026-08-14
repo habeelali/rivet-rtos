@@ -34,7 +34,7 @@ resolver = "2"
 exclude = ["fuzz", "rivet-arch-xtensa", "rivet-bsp-esp32s3", "examples/esp32s3"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/habeelali/rivet-rtos"

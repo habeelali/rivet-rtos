@@ -1,6 +1,6 @@
 [package]
 name = "rivet-arch-xtensa"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/habeelali/rivet-rtos"
@@ -13,7 +13,7 @@ default = []
 latency-histograms = ["rivet/latency-histograms"]
 
 [dependencies]
-rivet = { path = "../rivet", version = "0.1.0", package = "rivet-rtos" }
+rivet = { path = "../rivet", version = "0.2.0", package = "rivet-rtos" }
 xtensa-lx = "0.13"
 xtensa-lx-rt = "0.22"
 # Cross-core IPI (plan.md Phase 24) needs the `SYSTEM.cpu_intr_from_cpu_*`

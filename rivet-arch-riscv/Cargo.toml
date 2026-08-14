@@ -76,7 +76,7 @@ plic = []
 latency-histograms = ["rivet/latency-histograms"]
 
 [dependencies]
-rivet = { path = "../rivet", version = "0.1.0", package = "rivet-rtos" }
+rivet = { path = "../rivet", version = "0.2.0", package = "rivet-rtos" }
 riscv = "0.12"
 
 [lib]

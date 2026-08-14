@@ -19,7 +19,7 @@ latency-histograms = ["rivet/latency-histograms"]
 [dependencies]
 # ARMv6-M has no hardware CAS — see rivet's own `atomics-polyfill` feature
 # doc for why this is required, not optional, on this arch.
-rivet = { path = "../rivet", version = "0.1.0", package = "rivet-rtos", features = ["atomics-polyfill"] }
+rivet = { path = "../rivet", version = "0.2.0", package = "rivet-rtos", features = ["atomics-polyfill"] }
 # `critical-section-single-core`: registers a `critical_section::Impl`
 # (PRIMASK disable/enable) that `portable-atomic` uses for its RMW
 # fallback — see rivet's `atomics-polyfill` feature doc. Correct as long

@@ -10,8 +10,8 @@ description = "Rivet RTOS board support: QEMU RISC-V 'virt' machine (rv32)"
 links = "rivet_bsp_qemu_virt"
 
 [dependencies]
-rivet = { path = "../rivet", version = "0.1.0", package = "rivet-rtos" }
-rivet-arch-riscv = { path = "../rivet-arch-riscv", version = "0.1.0", features = ["clint", "plic"] }
-rivet-bsp-support = { path = "../rivet-bsp-support", version = "0.1.0" }
+rivet = { path = "../rivet", version = "0.2.0", package = "rivet-rtos" }
+rivet-arch-riscv = { path = "../rivet-arch-riscv", version = "0.2.0", features = ["clint", "plic"] }
+rivet-bsp-support = { path = "../rivet-bsp-support", version = "0.2.0" }
 
 [lib]

@@ -11,7 +11,7 @@ description = "Rivet RTOS board support: Raspberry Pi Pico (RP2040, Cortex-M0+),
 links = "rivet_bsp_rp2040"
 
 [dependencies]
-rivet = { path = "../rivet", version = "0.1.0", package = "rivet-rtos" }
+rivet = { path = "../rivet", version = "0.2.0", package = "rivet-rtos" }
 embedded-hal = "1.0"
 rp2040-pac = { version = "0.6", default-features = false }
 # USB CDC-ACM console: the Pico has no onboard USB-serial bridge chip
@@ -42,6 +42,6 @@ rp2040-boot2 = "0.3"
 # pulled in for the actual target, matching every other rivet-bsp-*'s own
 # split so `cargo test -p rivet-bsp-rp2040` still runs on host.
 [target.'cfg(target_arch = "arm")'.dependencies]
-rivet-arch-cortex-m0 = { path = "../rivet-arch-cortex-m0", version = "0.1.0", features = ["systick", "nvic"] }
+rivet-arch-cortex-m0 = { path = "../rivet-arch-cortex-m0", version = "0.2.0", features = ["systick", "nvic"] }
 
 [lib]
