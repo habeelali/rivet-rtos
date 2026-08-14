@@ -26,6 +26,12 @@ pub mod irq {
     /// `hw/arm/stellaris.c` device registration source (this session),
     /// not just the datasheet.
     pub const SSI0: u32 = 7;
+    /// I2C0 (the Stellaris I2C Master controller QEMU models on this
+    /// machine, at `0x4002_0000`) — position 24 in the Stellaris
+    /// LM3S6965 exception table, verified directly against QEMU's
+    /// `hw/arm/stellaris.c` device registration source (this session),
+    /// not just the datasheet.
+    pub const I2C0: u32 = 8;
 }
 
 // Everything below is genuinely Cortex-M specific (real asm!/naked_asm!

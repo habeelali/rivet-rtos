@@ -13,4 +13,5 @@ pub mod delay;
 pub mod ns16550;
 pub mod pl022;
 pub mod serial;
+pub mod stellaris_i2c;
 pub mod sw_watchdog;

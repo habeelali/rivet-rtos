@@ -161,6 +161,12 @@ struct TestCase {
     /// Assert the golden output even when the guest never exits (fault
     /// tests under Panic policy halt or reset instead of exiting cleanly).
     assert_golden_on_timeout: bool,
+    /// Extra raw QEMU args appended after the board's own `machine_args`
+    /// (embedded-hal-plan.md Phase E) — e.g. `-device
+    /// at24c-eeprom,address=0x50,rom-size=256` to attach a real I2C
+    /// slave for a driver test. Empty for every test that doesn't need
+    /// one.
+    extra_qemu_args: &'static [&'static str],
 }
 
 fn demo_golden() -> &'static [&'static str] {
@@ -218,6 +224,7 @@ fn smoke_tests(board_name: &str) -> Vec<TestCase> {
                 log_int: false,
                 allow_traps: false,
                 assert_golden_on_timeout: false,
+                extra_qemu_args: &[],
             },
             // plan.md §2.3 acceptance: nested inheritance trace ([B11]),
             // lock_timeout/try_lock, and 1M-cycle contention stress ([B1]).
@@ -232,6 +239,7 @@ fn smoke_tests(board_name: &str) -> Vec<TestCase> {
                 log_int: false,
                 allow_traps: false,
                 assert_golden_on_timeout: false,
+                extra_qemu_args: &[],
             },
             // plan.md §2.4 [B2] acceptance: spawn workers from a running
             // task under -icount (deterministic ticks mid-registration);
@@ -247,6 +255,7 @@ fn smoke_tests(board_name: &str) -> Vec<TestCase> {
                 log_int: false,
                 allow_traps: false,
                 assert_golden_on_timeout: false,
+                extra_qemu_args: &[],
             },
             // ── Phase 3 fault suite ────────────────────────────────────
             // plan.md §3.6: stack overflow → Panic policy dump + exit 0xFA.
@@ -261,6 +270,7 @@ fn smoke_tests(board_name: &str) -> Vec<TestCase> {
                 log_int: false,
                 allow_traps: true, // the fault itself logs a trap
                 assert_golden_on_timeout: false,
+                extra_qemu_args: &[],
             },
             // plan.md §3.4: IsolateTask policy — the system survives a
             // faulting task; its mutex is poisoned.
@@ -275,6 +285,7 @@ fn smoke_tests(board_name: &str) -> Vec<TestCase> {
                 log_int: false,
                 allow_traps: true,
                 assert_golden_on_timeout: false,
+                extra_qemu_args: &[],
             },
             // plan.md §5.2/§5.3: task entry returns → kernel exit trampoline
             // stores the result and wakes the joiner.
@@ -289,6 +300,7 @@ fn smoke_tests(board_name: &str) -> Vec<TestCase> {
                 log_int: false,
                 allow_traps: false,
                 assert_golden_on_timeout: true,
+                extra_qemu_args: &[],
             },
             // plan.md §5.4/§5.5: despawn → slot+stack recycle → respawn with
             // stale-handle detection, plus pause/resume.
@@ -303,6 +315,7 @@ fn smoke_tests(board_name: &str) -> Vec<TestCase> {
                 log_int: false,
                 allow_traps: false,
                 assert_golden_on_timeout: true,
+                extra_qemu_args: &[],
             },
             // plan.md §3.5: software watchdog fires and resets (0x7777 →
             // QEMU reboots; the marker proves the timeout was diagnosed).
@@ -317,6 +330,7 @@ fn smoke_tests(board_name: &str) -> Vec<TestCase> {
                 log_int: false,
                 allow_traps: false,
                 assert_golden_on_timeout: true,
+                extra_qemu_args: &[],
             },
             // plan.md §4.4: fill the registry, typed error on overflow.
             TestCase {
@@ -330,6 +344,7 @@ fn smoke_tests(board_name: &str) -> Vec<TestCase> {
                 log_int: false,
                 allow_traps: false,
                 assert_golden_on_timeout: false,
+                extra_qemu_args: &[],
             },
             // plan.md §2.2 [B6] acceptance: 10 x 100ms sleeps must elapse
             // exactly 1s ± 30ms under -icount (tick re-armed from previous
@@ -346,6 +361,7 @@ fn smoke_tests(board_name: &str) -> Vec<TestCase> {
                 log_int: false,
                 allow_traps: false,
                 assert_golden_on_timeout: false,
+                extra_qemu_args: &[],
             },
             // plan.md Phase 9: soak-test infrastructure proof (see
             // examples/qemu-riscv/src/bin/soak_smoke.rs for scope notes —
@@ -370,6 +386,7 @@ fn smoke_tests(board_name: &str) -> Vec<TestCase> {
                 log_int: false,
                 allow_traps: false,
                 assert_golden_on_timeout: false,
+                extra_qemu_args: &[],
             },
             // plan.md Phase 8: rivet::log!/rivet::report() end-to-end —
             // two concurrent producers through the critical-section-
@@ -391,6 +408,7 @@ fn smoke_tests(board_name: &str) -> Vec<TestCase> {
                 log_int: false,
                 allow_traps: false,
                 assert_golden_on_timeout: false,
+                extra_qemu_args: &[],
             },
             // plan.md Phase 11: drift-corrected periodic wake (measured
             // end-to-end elapsed time against 4 periods) and CPU-budget
@@ -409,6 +427,7 @@ fn smoke_tests(board_name: &str) -> Vec<TestCase> {
                 log_int: false,
                 allow_traps: false,
                 assert_golden_on_timeout: false,
+                extra_qemu_args: &[],
             },
             // plan.md Phase 13: end-to-end IRQ dispatch — a real PLIC-
             // claimed UART TX-empty interrupt reaches a handler registered
@@ -424,6 +443,7 @@ fn smoke_tests(board_name: &str) -> Vec<TestCase> {
                 log_int: false,
                 allow_traps: false,
                 assert_golden_on_timeout: false,
+                extra_qemu_args: &[],
             },
             // embedded-hal-plan.md Phase B: rivet::sync::Signal completing
             // from a genuinely hardware-delivered interrupt (same UART0
@@ -441,6 +461,7 @@ fn smoke_tests(board_name: &str) -> Vec<TestCase> {
                 log_int: false,
                 allow_traps: false,
                 assert_golden_on_timeout: false,
+                extra_qemu_args: &[],
             },
             // plan.md Phase 15: embedded-hal/-async/-nb usable through
             // *generic* trait-bounded code, not just standalone —
@@ -459,6 +480,7 @@ fn smoke_tests(board_name: &str) -> Vec<TestCase> {
                 log_int: false,
                 allow_traps: false,
                 assert_golden_on_timeout: false,
+                extra_qemu_args: &[],
             },
         ],
         "cm3" => vec![
@@ -473,6 +495,7 @@ fn smoke_tests(board_name: &str) -> Vec<TestCase> {
                 log_int: false,
                 allow_traps: false,
                 assert_golden_on_timeout: false,
+                extra_qemu_args: &[],
             },
             // plan.md §2.3 acceptance: nested inheritance trace ([B11]),
             // lock_timeout/try_lock, and 1M-cycle contention stress ([B1]).
@@ -496,6 +519,7 @@ fn smoke_tests(board_name: &str) -> Vec<TestCase> {
                 log_int: false,
                 allow_traps: false,
                 assert_golden_on_timeout: false,
+                extra_qemu_args: &[],
             },
             // plan.md §2.4 [B2] acceptance: spawn workers from a running
             // task under -icount; one spawn past capacity must return None.
@@ -514,6 +538,7 @@ fn smoke_tests(board_name: &str) -> Vec<TestCase> {
                 log_int: false,
                 allow_traps: false,
                 assert_golden_on_timeout: false,
+                extra_qemu_args: &[],
             },
             // ── Phase 3 fault suite ────────────────────────────────────
             // plan.md §3.6: stack overflow → MemManage → Panic dump + halt.
@@ -528,6 +553,7 @@ fn smoke_tests(board_name: &str) -> Vec<TestCase> {
                 log_int: false,
                 allow_traps: true, // the fault itself logs a trap
                 assert_golden_on_timeout: true,
+                extra_qemu_args: &[],
             },
             // plan.md §3.4: IsolateTask policy via the asm MemManage entry.
             TestCase {
@@ -541,6 +567,7 @@ fn smoke_tests(board_name: &str) -> Vec<TestCase> {
                 log_int: false,
                 allow_traps: true,
                 assert_golden_on_timeout: false,
+                extra_qemu_args: &[],
             },
             // plan.md §5.2/§5.3: task exit + join on the Cortex-M3 port.
             TestCase {
@@ -554,6 +581,7 @@ fn smoke_tests(board_name: &str) -> Vec<TestCase> {
                 log_int: false,
                 allow_traps: false,
                 assert_golden_on_timeout: true,
+                extra_qemu_args: &[],
             },
             // plan.md §5.4/§5.5: respawn + pause/resume on the Cortex-M3 port.
             TestCase {
@@ -567,6 +595,7 @@ fn smoke_tests(board_name: &str) -> Vec<TestCase> {
                 log_int: false,
                 allow_traps: false,
                 assert_golden_on_timeout: true,
+                extra_qemu_args: &[],
             },
             // plan.md §3.5: real hardware WDT reset — the banner appearing
             // twice (ordered golden) proves the guest rebooted.
@@ -581,6 +610,7 @@ fn smoke_tests(board_name: &str) -> Vec<TestCase> {
                 log_int: false,
                 allow_traps: false,
                 assert_golden_on_timeout: true,
+                extra_qemu_args: &[],
             },
             // plan.md §4.4: fill the registry, typed error on overflow.
             TestCase {
@@ -594,6 +624,7 @@ fn smoke_tests(board_name: &str) -> Vec<TestCase> {
                 log_int: false,
                 allow_traps: false,
                 assert_golden_on_timeout: false,
+                extra_qemu_args: &[],
             },
             // plan.md §2.2 [B5] acceptance: run past 2^32 µs of kernel
             // time (tick accelerated to 10 µs in the test binary);
@@ -610,6 +641,7 @@ fn smoke_tests(board_name: &str) -> Vec<TestCase> {
                 log_int: false,
                 allow_traps: false,
                 assert_golden_on_timeout: false,
+                extra_qemu_args: &[],
             },
             // plan.md Phase 9/17: soak-test infrastructure proof (see
             // riscv's soak_smoke for the full rationale) — cm3's own
@@ -634,6 +666,7 @@ fn smoke_tests(board_name: &str) -> Vec<TestCase> {
                 log_int: false,
                 allow_traps: false,
                 assert_golden_on_timeout: false,
+                extra_qemu_args: &[],
             },
             // plan.md Phase 8: rivet::log!/rivet::report() end-to-end (see
             // riscv's report_test for the full rationale).
@@ -653,6 +686,7 @@ fn smoke_tests(board_name: &str) -> Vec<TestCase> {
                 log_int: false,
                 allow_traps: false,
                 assert_golden_on_timeout: false,
+                extra_qemu_args: &[],
             },
             // plan.md Phase 11: periods + CPU-budget enforcement (see
             // riscv's deadline_test for the full rationale).
@@ -667,6 +701,7 @@ fn smoke_tests(board_name: &str) -> Vec<TestCase> {
                 log_int: false,
                 allow_traps: false,
                 assert_golden_on_timeout: false,
+                extra_qemu_args: &[],
             },
             // plan.md Phase 13: end-to-end IRQ dispatch (see riscv's
             // irq_test for the full rationale) — NVIC IRQ 5, UART0.
@@ -681,6 +716,7 @@ fn smoke_tests(board_name: &str) -> Vec<TestCase> {
                 log_int: false,
                 allow_traps: false,
                 assert_golden_on_timeout: false,
+                extra_qemu_args: &[],
             },
             // embedded-hal-plan.md Phase B (see riscv's signal_irq_test
             // for the full rationale) — NVIC IRQ 5, UART0.
@@ -695,6 +731,7 @@ fn smoke_tests(board_name: &str) -> Vec<TestCase> {
                 log_int: false,
                 allow_traps: false,
                 assert_golden_on_timeout: false,
+                extra_qemu_args: &[],
             },
             // plan.md Phase 15: embedded-hal/-async/-nb (see riscv's
             // embedded_hal_test for the full rationale).
@@ -709,6 +746,7 @@ fn smoke_tests(board_name: &str) -> Vec<TestCase> {
                 log_int: false,
                 allow_traps: false,
                 assert_golden_on_timeout: false,
+                extra_qemu_args: &[],
             },
             // embedded-hal-plan.md Phase C: rivet_bsp_support::pl022's
             // async SpiBus, completed via a real RXIM interrupt through
@@ -725,6 +763,28 @@ fn smoke_tests(board_name: &str) -> Vec<TestCase> {
                 log_int: false,
                 allow_traps: false,
                 assert_golden_on_timeout: false,
+                extra_qemu_args: &[],
+            },
+            // embedded-hal-plan.md Phase E: rivet_bsp_support::
+            // stellaris_i2c's async I2c, completed via a real interrupt
+            // through Signal, round-tripping a byte against a genuine
+            // QEMU at24c-eeprom device (I2C0 at 0x4002_0000, IRQ 8) —
+            // see that module's own docs for the three real model
+            // quirks (address-NAK raises no interrupt, MIMR can't be
+            // re-masked, repeated START is broken) this driver works
+            // around.
+            TestCase {
+                name: "stellaris_i2c_test",
+                pkg: "qemu-cm3",
+                bin: "stellaris_i2c_test",
+                golden: &[r"I2C_WRITE_OK", r"I2C_ROUNDTRIP_OK", r"I2C_TEST_OK"],
+                exit_code: 0,
+                timeout: Duration::from_secs(20),
+                icount: None,
+                log_int: false,
+                allow_traps: false,
+                assert_golden_on_timeout: false,
+                extra_qemu_args: &["-device", "at24c-eeprom,address=0x50,rom-size=256"],
             },
         ],
         // Third board (plan.md Phase 7): the same Cortex-M3 test bodies as
@@ -744,6 +804,7 @@ fn smoke_tests(board_name: &str) -> Vec<TestCase> {
                 log_int: false,
                 allow_traps: false,
                 assert_golden_on_timeout: false,
+                extra_qemu_args: &[],
             },
             // plan.md Phase 30: same reasoning as `qemu-cm3`'s own
             // identical bump above — MPS2-AN385's Cortex-M3 QEMU model
@@ -760,6 +821,7 @@ fn smoke_tests(board_name: &str) -> Vec<TestCase> {
                 log_int: false,
                 allow_traps: false,
                 assert_golden_on_timeout: false,
+                extra_qemu_args: &[],
             },
             TestCase {
                 name: "stress_spawn",
@@ -772,6 +834,7 @@ fn smoke_tests(board_name: &str) -> Vec<TestCase> {
                 log_int: false,
                 allow_traps: false,
                 assert_golden_on_timeout: false,
+                extra_qemu_args: &[],
             },
             TestCase {
                 name: "fault_overflow",
@@ -784,6 +847,7 @@ fn smoke_tests(board_name: &str) -> Vec<TestCase> {
                 log_int: false,
                 allow_traps: true,
                 assert_golden_on_timeout: true,
+                extra_qemu_args: &[],
             },
             TestCase {
                 name: "fault_isolate",
@@ -796,6 +860,7 @@ fn smoke_tests(board_name: &str) -> Vec<TestCase> {
                 log_int: false,
                 allow_traps: true,
                 assert_golden_on_timeout: false,
+                extra_qemu_args: &[],
             },
             TestCase {
                 name: "join_test",
@@ -808,6 +873,7 @@ fn smoke_tests(board_name: &str) -> Vec<TestCase> {
                 log_int: false,
                 allow_traps: false,
                 assert_golden_on_timeout: true,
+                extra_qemu_args: &[],
             },
             TestCase {
                 name: "respawn_test",
@@ -820,6 +886,7 @@ fn smoke_tests(board_name: &str) -> Vec<TestCase> {
                 log_int: false,
                 allow_traps: false,
                 assert_golden_on_timeout: true,
+                extra_qemu_args: &[],
             },
             TestCase {
                 name: "stress_max_ptasks",
@@ -832,6 +899,7 @@ fn smoke_tests(board_name: &str) -> Vec<TestCase> {
                 log_int: false,
                 allow_traps: false,
                 assert_golden_on_timeout: false,
+                extra_qemu_args: &[],
             },
             // plan.md Phase 8: rivet::log!/rivet::report() end-to-end (see
             // riscv's report_test for the full rationale).
@@ -851,6 +919,7 @@ fn smoke_tests(board_name: &str) -> Vec<TestCase> {
                 log_int: false,
                 allow_traps: false,
                 assert_golden_on_timeout: false,
+                extra_qemu_args: &[],
             },
             // plan.md Phase 11: periods + CPU-budget enforcement (see
             // riscv's deadline_test for the full rationale).
@@ -865,6 +934,7 @@ fn smoke_tests(board_name: &str) -> Vec<TestCase> {
                 log_int: false,
                 allow_traps: false,
                 assert_golden_on_timeout: false,
+                extra_qemu_args: &[],
             },
             // plan.md Phase 13: end-to-end IRQ dispatch (see riscv's
             // irq_test for the full rationale) — NVIC IRQ 1, UART0 TX.
@@ -879,6 +949,7 @@ fn smoke_tests(board_name: &str) -> Vec<TestCase> {
                 log_int: false,
                 allow_traps: false,
                 assert_golden_on_timeout: false,
+                extra_qemu_args: &[],
             },
             // embedded-hal-plan.md Phase B (see riscv's signal_irq_test
             // for the full rationale) — NVIC IRQ 1, UART0 TX.
@@ -893,6 +964,7 @@ fn smoke_tests(board_name: &str) -> Vec<TestCase> {
                 log_int: false,
                 allow_traps: false,
                 assert_golden_on_timeout: false,
+                extra_qemu_args: &[],
             },
             // plan.md Phase 15: embedded-hal/-async/-nb (see riscv's
             // embedded_hal_test for the full rationale).
@@ -907,6 +979,7 @@ fn smoke_tests(board_name: &str) -> Vec<TestCase> {
                 log_int: false,
                 allow_traps: false,
                 assert_golden_on_timeout: false,
+                extra_qemu_args: &[],
             },
             // embedded-hal-plan.md Phase C (see cm3's pl022_test for the
             // full rationale) — the "APB" PL022 instance (0x4002_0000,
@@ -922,6 +995,7 @@ fn smoke_tests(board_name: &str) -> Vec<TestCase> {
                 log_int: false,
                 allow_traps: false,
                 assert_golden_on_timeout: false,
+                extra_qemu_args: &[],
             },
         ],
         other => {
@@ -1078,6 +1152,7 @@ fn base_qemu_args(
     icount: Option<u32>,
     log_int: bool,
     log_file: &std::path::Path,
+    extra: &[&str],
 ) -> Vec<String> {
     let mut args: Vec<String> = vec![];
     args.extend(b.machine_args.iter().map(|s| s.to_string()));
@@ -1104,6 +1179,10 @@ fn base_qemu_args(
     if b.semihosting {
         args.push("-semihosting".into());
     }
+    // embedded-hal-plan.md Phase E: a test-case-specific device attach
+    // (e.g. a real I2C EEPROM slave), appended last so it can't shadow
+    // any of the fixed args above.
+    args.extend(extra.iter().map(|s| s.to_string()));
     args
 }
 
@@ -1119,7 +1198,7 @@ fn capture_test_case(b: &BoardSpec, tc: &TestCase, profile: &str, out_dir: &Path
     let log_file = logs_dir.join(format!("{}-{}.log", b.name, tc.name));
     let _ = std::fs::remove_file(&log_file);
 
-    let args = base_qemu_args(b, &el, tc.icount, tc.log_int, &log_file);
+    let args = base_qemu_args(b, &el, tc.icount, tc.log_int, &log_file, tc.extra_qemu_args);
 
     eprintln!("[xtask] capturing {}/{}", b.name, tc.name);
     let result = run_qemu(b.qemu_binary, &args, tc.timeout, &log_file);
@@ -1171,7 +1250,7 @@ fn run_test_case_impl(
     let log_file = logs_dir.join(format!("{}-{}.log", b.name, tc.name));
     let _ = std::fs::remove_file(&log_file);
 
-    let args = base_qemu_args(b, &el, tc.icount, tc.log_int, &log_file);
+    let args = base_qemu_args(b, &el, tc.icount, tc.log_int, &log_file, tc.extra_qemu_args);
 
     eprintln!(
         "[xtask] running {}/{}: {} (timeout {}s)",
@@ -1262,7 +1341,7 @@ fn run_smp_check(b: &BoardSpec, profile: &str) {
 
     let run_once = |smp: u32| -> String {
         let log_file = logs_dir.join(format!("{}-smp{smp}.log", b.name));
-        let mut args = base_qemu_args(b, &el, tc.icount, tc.log_int, &log_file);
+        let mut args = base_qemu_args(b, &el, tc.icount, tc.log_int, &log_file, tc.extra_qemu_args);
         args.push("-smp".into());
         args.push(smp.to_string());
         let result = run_qemu(b.qemu_binary, &args, tc.timeout, &log_file);
@@ -1318,7 +1397,7 @@ fn run_smp_concurrency_check(b: &BoardSpec, profile: &str) {
         );
         let log_file = logs_dir.join(format!("{}-smp_test-{harts}.log", b.name));
         let _ = std::fs::remove_file(&log_file);
-        let mut args = base_qemu_args(b, &el, None, false, &log_file);
+        let mut args = base_qemu_args(b, &el, None, false, &log_file, &[]);
         args.push("-smp".into());
         args.push(harts.to_string());
         let result = run_qemu(b.qemu_binary, &args, Duration::from_secs(30), &log_file);
