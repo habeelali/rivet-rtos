@@ -124,7 +124,7 @@ impl<const MAX: u8> Semaphore<MAX> {
                 ) {
                     Ok(_) => {
                         self.count.store(1, crate::sync::atomic::Ordering::Release);
-                        waker::mark_ready(crate::task::TaskId::new(
+                        waker::wake_task(crate::task::TaskId::new(
                             prio as u8,
                             bit.trailing_zeros() as u8,
                         ));

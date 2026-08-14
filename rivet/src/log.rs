@@ -129,7 +129,12 @@ static RECEIVER: Once<Receiver<'static, LogFrame, CAPACITY>> = Once::new();
 loom::lazy_static! {
     static ref RECEIVER: Once<Receiver<'static, LogFrame, CAPACITY>> = Once::new();
 }
+#[cfg(not(loom))]
 static DROPPED: AtomicU32 = AtomicU32::new(0);
+#[cfg(loom)]
+loom::lazy_static! {
+    static ref DROPPED: AtomicU32 = AtomicU32::new(0);
+}
 
 /// Called once from [`crate::init`]. Splitting the channel here (rather
 /// than lazily on first use) means the first `log!` call anywhere is

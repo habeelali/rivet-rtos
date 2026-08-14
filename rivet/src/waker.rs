@@ -216,6 +216,39 @@ unsafe fn waker_drop(_data: *const ()) {
 static WAKER_VTABLE: RawWakerVTable =
     RawWakerVTable::new(waker_clone, waker_wake, waker_wake_by_ref, waker_drop);
 
+/// Kick every other hart so an executor idling in `wfi`/`waiti` on a
+/// different core notices new ready work. Exposed separately from
+/// [`wake_task`] so a caller waking several tasks in one batch (e.g.
+/// `timer::poll_timers` scanning every expired deadline inside one
+/// critical section) can broadcast once instead of once per task.
+///
+/// Safe to call from ISR/Handler-mode context — every board's periodic
+/// tick ISR already does, via `timer::poll_timers`.
+pub fn broadcast_reschedule() {
+    let hart = crate::port::arch::hart_id();
+    for other in 0..crate::config::MAX_HARTS {
+        if other != hart {
+            crate::port::arch::request_reschedule_on(other);
+        }
+    }
+}
+
+/// Mark `id` ready and broadcast a reschedule request to every other hart.
+///
+/// Use this — not the lower-level [`mark_ready`] — from any context
+/// *outside* the executor's own poll loop: an ISR, another hart, or a
+/// driver's completion handler. `mark_ready` alone only flips bitmap
+/// flags; on a single-hart build the interrupt that called this is enough
+/// to break the executor out of `wfi`, but on `RIVET_MAX_HARTS > 1` an
+/// executor idling on a *different* hart would never notice (this is the
+/// exact bug `timer::poll_timers`'s own broadcast fixed, found on real
+/// dual-core ESP32-S3 hardware via `smp_test.rs`). Safe to call from ISR
+/// context.
+pub fn wake_task(id: crate::task::TaskId) {
+    mark_ready(id);
+    broadcast_reschedule();
+}
+
 /// Create a `Waker` for the task identified by `id`.
 pub fn task_waker(id: crate::task::TaskId) -> Waker {
     let data = encode_waker_data(id);

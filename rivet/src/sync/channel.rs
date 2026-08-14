@@ -107,7 +107,7 @@ impl<T, const N: usize> Default for Channel<T, N> {
 fn wake_waiter(slot: &crate::sync::atomic::AtomicU32) {
     let w = slot.swap(NO_WAITER, crate::sync::atomic::Ordering::AcqRel);
     if w != NO_WAITER {
-        waker::mark_ready(crate::task::TaskId::from_u16(w as u16));
+        waker::wake_task(crate::task::TaskId::from_u16(w as u16));
     }
 }
 

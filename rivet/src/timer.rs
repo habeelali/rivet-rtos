@@ -152,12 +152,7 @@ pub fn poll_timers(now_us: u64) {
     // no-op (it just re-checks and goes back to idling); a real wake
     // that's never delivered is not.
     if woke_any {
-        let hart = crate::port::arch::hart_id();
-        for other in 0..crate::config::MAX_HARTS {
-            if other != hart {
-                crate::port::arch::request_reschedule_on(other);
-            }
-        }
+        crate::waker::broadcast_reschedule();
     }
     poll_ptask_deadlines(now_us);
 }

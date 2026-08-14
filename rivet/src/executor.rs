@@ -63,20 +63,34 @@ pub fn current_task() -> Option<crate::task::TaskId> {
     }
 }
 
+/// Number of tasks not yet completed (plan.md [B10]): decremented the
+/// first time a task's poll returns `Ready`. Used to skip re-polling
+/// completed tasks and to know when the cooperative tier is idle.
+///
+/// A standalone static, not an `Executor` field: `EXECUTOR` below is a
+/// `static mut` with a `const fn` initializer (required — it has no other
+/// construction point), and loom's atomics are not const-constructible
+/// (same reason `Semaphore`/`Channel`/`Signal` split their `new()` by
+/// `#[cfg(loom)]`). Keeping this counter out of `Executor` lets
+/// `Executor::new()` stay `const` unconditionally instead of needing that
+/// same split plus a non-`static mut`-compatible loom variant of
+/// `EXECUTOR` itself.
+#[cfg(not(loom))]
+static LIVE_TASKS: crate::sync::atomic::AtomicUsize = crate::sync::atomic::AtomicUsize::new(0);
+#[cfg(loom)]
+loom::lazy_static! {
+    static ref LIVE_TASKS: crate::sync::atomic::AtomicUsize = crate::sync::atomic::AtomicUsize::new(0);
+}
+
 /// The global executor singleton.
 pub struct Executor {
     registry: TaskRegistry,
-    /// Number of tasks not yet completed (plan.md [B10]): decremented the
-    /// first time a task's poll returns `Ready`. Used to skip re-polling
-    /// completed tasks and to know when the cooperative tier is idle.
-    live_tasks: crate::sync::atomic::AtomicUsize,
 }
 
 impl Executor {
     pub const fn new() -> Self {
         Self {
             registry: TaskRegistry::new(),
-            live_tasks: crate::sync::atomic::AtomicUsize::new(0),
         }
     }
 
@@ -109,8 +123,7 @@ impl Executor {
             self.registry.tasks[prio][idx] = Some(reg as *const TaskReg);
             counts[prio] += 1;
             self.registry.total += 1;
-            self.live_tasks
-                .fetch_add(1, crate::sync::atomic::Ordering::Relaxed);
+            LIVE_TASKS.fetch_add(1, crate::sync::atomic::Ordering::Relaxed);
         }
 
         self.registry.count_per_priority[..=(crate::task::MAX_PRIORITY as usize)]
@@ -163,8 +176,7 @@ impl Executor {
                 clear_current();
 
                 if result == Poll::Ready(()) {
-                    self.live_tasks
-                        .fetch_sub(1, crate::sync::atomic::Ordering::Relaxed);
+                    LIVE_TASKS.fetch_sub(1, crate::sync::atomic::Ordering::Relaxed);
                 }
             }
 

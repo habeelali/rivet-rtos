@@ -78,7 +78,12 @@ loom::lazy_static! {
     static ref TX_RECEIVER: Once<Receiver<'static, u8, TX_CAPACITY>> = Once::new();
 }
 
+#[cfg(not(loom))]
 static IRQ_TX_ACTIVE: AtomicBool = AtomicBool::new(false);
+#[cfg(loom)]
+loom::lazy_static! {
+    static ref IRQ_TX_ACTIVE: AtomicBool = AtomicBool::new(false);
+}
 
 /// Called once from [`crate::init`], splitting both rings up front so the
 /// first write/read anywhere never pays for it.
@@ -246,7 +251,12 @@ pub fn write_bytes(bytes: &[u8]) {
 /// would block unboundedly). Plain `AtomicBool`, not the crate's usual
 /// nesting-aware `critical::enter`: this lock is only ever held for the
 /// duration of one `port::board::console_write` call, never nested.
+#[cfg(not(loom))]
 static CONSOLE_WRITE_LOCK: AtomicBool = AtomicBool::new(false);
+#[cfg(loom)]
+loom::lazy_static! {
+    static ref CONSOLE_WRITE_LOCK: AtomicBool = AtomicBool::new(false);
+}
 /// How many spin iterations to wait for [`CONSOLE_WRITE_LOCK`] before
 /// giving up and writing unsynchronized. Not calibrated against any
 /// particular board's clock — large enough that a healthy other hart's

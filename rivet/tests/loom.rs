@@ -15,6 +15,9 @@
 //!   closes.
 //! - **channel**: SPSC `try_send`/`try_recv` — every value sent is
 //!   received exactly once, in order, nothing lost or duplicated.
+//! - **signal**: `signal()` (ISR side) vs `wait().poll` (task side) — the
+//!   register-then-recheck idiom must be sufficient: no interleaving may
+//!   leave the waiter both unregistered-by-drop and the latch unset.
 
 #![cfg(loom)]
 
@@ -22,7 +25,7 @@ use core::future::Future;
 use loom::thread;
 
 use rivet::sync::atomic::Ordering;
-use rivet::sync::{Channel, Semaphore};
+use rivet::sync::{Channel, Semaphore, Signal};
 use rivet::waker;
 
 /// Run `f` inside a loom model with kernel state reset first.
@@ -210,6 +213,51 @@ fn channel_spsc_every_value_received_exactly_once() {
             got,
             vec![1, 2, 3],
             "SPSC values lost, duplicated, or reordered"
+        );
+    });
+}
+
+// ── (d) signal: signal() vs wait().poll ────────────────────────────
+
+#[test]
+fn signal_no_lost_wakeup() {
+    model(|| {
+        let sig: loom::sync::Arc<Signal> = loom::sync::Arc::new(Signal::new());
+
+        // Waiter thread: register as (1, 0) and poll wait() once.
+        let sig_w = sig.clone();
+        let w = thread::spawn(move || {
+            rivet::executor::set_current_for_test(1, 0);
+            let waker = rivet::waker::task_waker(rivet::task::TaskId::new(1, 0));
+            let mut cx = core::task::Context::from_waker(&waker);
+            let mut fut = sig_w.wait();
+            let pinned = unsafe { core::pin::Pin::new_unchecked(&mut fut) };
+            pinned.poll(&mut cx).is_ready()
+            // `fut` (and its registration, if any) drops here — exactly
+            // like `Semaphore::acquire()`'s equivalent single-waiter model
+            // above, this is deliberate: it exercises the case where
+            // `signal()` races against a registration that's about to be
+            // (or just was) cancelled.
+        });
+
+        // Signaller thread: fire the signal (ISR-style).
+        let sig_s = sig.clone();
+        let s = thread::spawn(move || {
+            sig_s.signal();
+        });
+
+        let poll_ready = w.join().unwrap();
+        s.join().unwrap();
+
+        // No lost wakeup means exactly one of these must hold:
+        //  - the waiter's own poll already observed Ready, or
+        //  - the waiter is marked ready in the waker bitmap, or
+        //  - the latch is still set (try_take) for the next poll to see —
+        //    covers signal() firing after the waiter's Drop already
+        //    cleared its registration.
+        assert!(
+            poll_ready || waker::has_pending() || sig.try_take(),
+            "lost wakeup: waiter never woken, signal never observed"
         );
     });
 }
