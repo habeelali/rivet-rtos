@@ -15,9 +15,10 @@
 //! - `heartbeat` (prio 5) — toggles the Nucleo's onboard LED (PA5) every
 //!   500ms, `Sleep`-driven; sits *above* the workers so it's never
 //!   starved out despite its long sleeps.
-//! - `tim3_tick`/`tim4_tick` aren't tasks — they're two independent real
-//!   hardware interrupts (TIM3 NVIC IRQ 29 ~10 Hz, TIM4 NVIC IRQ 30
-//!   ~23 Hz), registered through `rivet::irq` like any peripheral driver
+//! - `tim2_tick`/`tim3_tick`/`tim4_tick`/`tim5_tick` aren't tasks — they're
+//!   four independent real hardware interrupts (TIM2 NVIC IRQ 28 ~5 Hz,
+//!   TIM3 NVIC IRQ 29 ~10 Hz, TIM4 NVIC IRQ 30 ~23 Hz, TIM5 NVIC IRQ 50
+//!   ~37 Hz), registered through `rivet::irq` like any peripheral driver
 //!   would be, so `IrqEnter`/`IrqExit` on the trace are genuine ISR
 //!   entries, not synthesized.
 //!
@@ -37,19 +38,32 @@ static UNIT: Unit = Unit;
 
 static MTX: PriorityMutex<u32> = PriorityMutex::new(0);
 
-/// TIM3 global interrupt, STM32F401's fixed NVIC position (RM0368).
+/// TIM2 global interrupt, STM32F401's fixed NVIC position (RM0368) — the
+/// slowest of the four timer sources here.
+const TIM2_IRQ: u32 = 28;
+/// TIM3 global interrupt.
 const TIM3_IRQ: u32 = 29;
 /// TIM4 global interrupt — a second, independent hardware timer at a
 /// different rate, so the trace carries more than one real IRQ source
 /// (the debugger's Interrupts panel is otherwise stuck showing just one
 /// row forever, which understates what `rivet::irq` actually supports).
 const TIM4_IRQ: u32 = 30;
+/// TIM5 global interrupt — the fastest of the four, deliberately close to
+/// the tick rate so the Interrupts panel shows real contention with the
+/// scheduler's own timer tick, not just four lonely rows.
+const TIM5_IRQ: u32 = 50;
 
 /// Assumed board clock (see `rivet-bsp-stm32f401re`'s own module docs:
 /// the reset-state HSI default, not independently re-measured) — sent
 /// once as the stream's `StreamHeader` event so the host UI shows a real
 /// number instead of "unknown."
 const CPU_HZ: u32 = 16_000_000;
+
+fn tim2_handler() {
+    // SAFETY: fixed TIM2 register block; this ISR is the sole owner of it.
+    let tim2 = unsafe { &*stm32f4::stm32f401::TIM2::ptr() };
+    tim2.sr().modify(|_, w| w.uif().clear_bit());
+}
 
 fn tim3_handler() {
     // SAFETY: fixed TIM3 register block; this ISR is the sole owner of
@@ -65,6 +79,12 @@ fn tim4_handler() {
     // SAFETY: fixed TIM4 register block; this ISR is the sole owner of it.
     let tim4 = unsafe { &*stm32f4::stm32f401::TIM4::ptr() };
     tim4.sr().modify(|_, w| w.uif().clear_bit());
+}
+
+fn tim5_handler() {
+    // SAFETY: fixed TIM5 register block; this ISR is the sole owner of it.
+    let tim5 = unsafe { &*stm32f4::stm32f401::TIM5::ptr() };
+    tim5.sr().modify(|_, w| w.uif().clear_bit());
 }
 
 fn heartbeat(_: &'static Unit) -> ! {
@@ -145,6 +165,20 @@ fn main() -> ! {
     // before anything else touches them.
     unsafe {
         let rcc = &*stm32f4::stm32f401::RCC::ptr();
+
+        // TIM2: the slowest of the four, ~5 Hz (16MHz / 1600 = 10kHz tick;
+        // 10kHz / 2000 = 5Hz update) — a lazy, easy-to-eyeball IRQ row.
+        rcc.apb1enr().modify(|_, w| w.tim2en().set_bit());
+        let tim2 = &*stm32f4::stm32f401::TIM2::ptr();
+        tim2.psc().write(|w| w.psc().bits(1599));
+        tim2.arr().write(|w| w.arr().bits(1999));
+        tim2.dier().modify(|_, w| w.uie().set_bit());
+        tim2.cr1().modify(|_, w| w.cen().set_bit());
+
+        rivet::irq::register(TIM2_IRQ, tim2_handler).unwrap();
+        rivet::irq::set_priority(TIM2_IRQ, 0xFF);
+        rivet::irq::enable(TIM2_IRQ);
+
         rcc.apb1enr().modify(|_, w| w.tim3en().set_bit());
         let tim3 = &*stm32f4::stm32f401::TIM3::ptr();
         tim3.psc().write(|w| w.psc().bits(1599));
@@ -170,6 +204,21 @@ fn main() -> ! {
         rivet::irq::register(TIM4_IRQ, tim4_handler).unwrap();
         rivet::irq::set_priority(TIM4_IRQ, 0xFF);
         rivet::irq::enable(TIM4_IRQ);
+
+        // TIM5: the fastest, ~37 Hz (16MHz / 100 = 160kHz tick; 160kHz /
+        // 4324 = 37Hz) — deliberately close enough to the 1kHz kernel tick
+        // and the other three IRQs that the Interrupts panel shows real
+        // contention, not four lonely, never-overlapping rows.
+        rcc.apb1enr().modify(|_, w| w.tim5en().set_bit());
+        let tim5 = &*stm32f4::stm32f401::TIM5::ptr();
+        tim5.psc().write(|w| w.psc().bits(99));
+        tim5.arr().write(|w| w.arr().bits(4323));
+        tim5.dier().modify(|_, w| w.uie().set_bit());
+        tim5.cr1().modify(|_, w| w.cen().set_bit());
+
+        rivet::irq::register(TIM5_IRQ, tim5_handler).unwrap();
+        rivet::irq::set_priority(TIM5_IRQ, 0xFF);
+        rivet::irq::enable(TIM5_IRQ);
     }
 
     static WORKER_A_PERIOD: u32 = 220;
