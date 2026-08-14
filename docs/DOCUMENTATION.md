@@ -82,6 +82,7 @@ allocator in the scheduling or interrupt path.
 | **Software watchdog framework** | Both a hardware-watchdog path (for boards that have one) and a task-level "checkin" watchdog that catches an individual hung task, independent of whether the board has real WDT hardware. |
 | **Portable by design** | The kernel is proven to run unmodified across three genuinely different boards on two architectures (RISC-V and ARM Cortex-M), through a symbol-based port contract. See [§4](#4-architecture-the-layering-model) and [§12](#12-the-port-contract-how-a-board-plugs-in). |
 | **Deep verification discipline** | Host-side unit/integration tests, `loom` permutation testing of the lock-free core, `proptest` model-based scheduler/timer testing, `cargo-fuzz` targets, and a QEMU harness that asserts exit codes, ordered golden output, *and* that the emulator's own trap log is clean unless a fault is explicitly expected. |
+| **`embedded-hal` / `embedded-hal-async` 1.0 support** | Typestate GPIO on 5 boards, async SPI (PL022) and I2C (Stellaris + STM32F4 legacy I2C), and async `digital::Wait`, all live-hardware-verified and built on a new `rivet::sync::Signal` interrupt-completion primitive. See [`driver-authoring.md`](driver-authoring.md). |
 
 ---
 
