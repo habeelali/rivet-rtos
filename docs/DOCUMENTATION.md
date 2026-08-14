@@ -752,6 +752,12 @@ tests/gdb/              GDB-scripted context-switch verification
 tests/golden/           captured golden outputs + a running log of every
                         pre-existing and newly-found bug, fixed or not
 docs/porting.md         step-by-step guide to adding a new board
+docs/driver-authoring.md
+                        practical guide to writing a rivet-bsp-* peripheral
+                        driver: Signal semantics, the fn()-only ISR
+                        constraint, TaskCell sizing gotchas, and the real
+                        hardware quirks (I2C pull-ups, level-latched status
+                        flags) found building the drivers already in-tree
 docs/realtime.md        real-time characterization log: every timing bug
                         found and fixed on real hardware, phase by phase,
                         including the ESP32-S3 dual-hart race (§15)
@@ -951,8 +957,10 @@ Documented here rather than discovered the hard way:
   types. See [§10](#10-logging-and-diagnostics).
 - **`rivet::irq` (registration table, `enable`/`disable`/`set_priority`,
   NVIC-backed on Cortex-M) exists and is exercised on real hardware** (the
-  STM32F401RE board's USART2 console is built entirely on it), but no
-  `embedded-hal` trait implementation exists yet in any BSP crate.
+  STM32F401RE board's USART2 console is built entirely on it), and now also
+  backs `embedded-hal`/`embedded-hal-async` 1.0 trait implementations in the
+  BSP crates — typestate GPIO on 5 boards, async SPI/I2C, and async
+  `digital::Wait` — see [`driver-authoring.md`](driver-authoring.md).
 - **No chaos/fault-injection testing, no Kani formal verification, no
   enforced coverage floor.** All three were evaluated and are documented as
   concrete next steps rather than attempted partially.
@@ -987,27 +995,31 @@ visible rather than quietly rewritten:
   Xtensa, STM32F401RE Cortex-M4), via live JTAG/SWD, not just flash-and-hope.
   Found and fixed a genuine cross-hart race in the process
   (`docs/realtime.md` §15).
+- ✅ **`embedded-hal` 1.0 + `-async`** trait implementations in the BSP
+  crates — a new `rivet::sync::Signal` primitive for interrupt-driven async
+  completion, typestate GPIO on 5 boards, async SPI (PL022) and I2C
+  (Stellaris + STM32F4 legacy I2C), and async `digital::Wait` on
+  stm32f401re, all live-hardware-verified. See
+  [`driver-authoring.md`](driver-authoring.md).
 
 Remaining, in roughly the order the project's own planning ranks them:
 
-1. **`embedded-hal` 1.0 + `-async`** trait implementations in the BSP
-   crates, opening up the existing Rust embedded driver ecosystem.
-2. **Fix the `SchedulingWake` cycle-counter wraparound bug** found during
+1. **Fix the `SchedulingWake` cycle-counter wraparound bug** found during
    the WCET analysis pass (`docs/wcet.md` §9) — a 64-bit monotonic
    timestamp, or explicit wraparound-aware subtraction.
-3. **Move `rivet::console::write_str` on ESP32-S3 off the FIFO-polling
+2. **Move `rivet::console::write_str` on ESP32-S3 off the FIFO-polling
    critical section** (`docs/wcet.md` §6.1) — the interrupt-driven path
    this crate already has for other boards (and that STM32F401RE already
    uses) closes the one normal-operation gap standing between the ESP32-S3
    board and a STM32F401RE-style scoped hard-RT declaration.
-4. **Argument interpolation for `rivet::log!`**, plus the originally-
+3. **Argument interpolation for `rivet::log!`**, plus the originally-
    planned interned-format-string/host-decoder design if the simpler
    current version turns out not to be enough.
-5. **A real multi-hour soak run** (scaling `soak_smoke`'s iteration count
+4. **A real multi-hour soak run** (scaling `soak_smoke`'s iteration count
    and the harness timeout together), randomized tick-jitter and
    GDB-driven fault-injection chaos testing, and an enforced coverage
    floor.
-6. **A provably-fair (FIFO) cross-hart lock** for `critical::enter` on
+5. **A provably-fair (FIFO) cross-hart lock** for `critical::enter` on
    multi-hart boards, closing `docs/wcet.md` §6.2's open bound — needed for
    an ESP32-S3-class hard-RT declaration, not needed on any single-hart
    board.

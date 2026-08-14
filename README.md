@@ -63,7 +63,7 @@ presented as uniformly certain:
 
 ## What's not here yet
 
-- No MPU sandboxing beyond stack-overflow guard bands, no RTT/defmt logging, no `embedded-hal` implementation, no GPIO driver for the RISC-V target.
+- No MPU sandboxing beyond stack-overflow guard bands, no RTT/defmt logging. `embedded-hal`/`embedded-hal-async` 1.0 traits are implemented and live-hardware-verified: typestate GPIO on 5 boards (stm32f401re, rp2040, esp32c6, esp32s3, lm3s6965), async SPI (PL022) and I2C (Stellaris + STM32F4 legacy I2C), and async `digital::Wait` on stm32f401re — see [`docs/driver-authoring.md`](docs/driver-authoring.md). Still gapped: no GPIO driver for `qemu-virt` (QEMU's RISC-V `virt` machine has no GPIO hardware to drive — not a closable gap) or `mps2-an385` (QEMU stubs its GPIO block as an unimplemented no-op device — nothing to verify against).
 - A provably-fair (FIFO) cross-hart lock — needed to close the ESP32-S3's one remaining hard-RT gap (see above); not needed on any single-hart board.
 - ESP32-C3 real-hardware support — architecturally blocked, not just untested: it lacks the RISC-V atomic extension the kernel's lock-free scheduler needs throughout (see `docs/DOCUMENTATION.md` §18).
 - Preemptive tasks are `fn(&'static Arg) -> !` — no return value, no join/await-a-preemptive-task. That's a deliberate simplicity tradeoff for v0.1, not an oversight, but it means a preemptive task can't cleanly signal "I'm done" to anything except through its own side effects (a semaphore, a shared flag).
