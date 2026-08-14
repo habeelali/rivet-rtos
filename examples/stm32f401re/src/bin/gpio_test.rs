@@ -1,5 +1,5 @@
-//! Real-hardware proof of `rivet_bsp_stm32f401re::gpio`'s typestate GPIO
-//! (embedded-hal-plan.md Phase D): drives the Nucleo-64's onboard LD2 LED
+//! Real-hardware proof of `rivet_bsp_stm32f401re::gpio`'s typestate GPIO:
+//! drives the Nucleo-64's onboard LD2 LED
 //! (PA5) both through the inherent API and through a generic
 //! `embedded_hal::digital::{OutputPin, StatefulOutputPin}`-bound
 //! function, reading back `ODR` after each write to confirm the register

@@ -1,5 +1,5 @@
-//! Real-hardware proof of `rivet_bsp_esp32c6::gpio`'s typestate GPIO
-//! (embedded-hal-plan.md Phase D): drives GPIO2 both through the
+//! Real-hardware proof of `rivet_bsp_esp32c6::gpio`'s typestate GPIO:
+//! drives GPIO2 both through the
 //! inherent API and through a generic `embedded_hal::digital::
 //! {OutputPin, StatefulOutputPin}`-bound function, reading back
 //! `GPIO_OUT` after each write to confirm the register genuinely

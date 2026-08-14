@@ -1,6 +1,5 @@
 //! Typestate GPIO for the RP2040 (dual Cortex-M0+), following
-//! `rivet-bsp-lm3s6965::gpio`'s exact pattern (embedded-hal-plan.md
-//! Phase D).
+//! `rivet-bsp-lm3s6965::gpio`'s exact pattern.
 //!
 //! Three registers cooperate per pin on RP2040, unlike the single-block
 //! GPIO peripherals on the other three boards: `IO_BANK0` selects the
@@ -163,7 +162,7 @@ impl<const N: u8> Pin<N, Output> {
     }
 }
 
-// ── embedded-hal 1.0 (embedded-hal-plan.md Phase D) ─────────────────
+// ── embedded-hal 1.0 ─────────────────────────────────────────────────
 //
 // Thin wrappers over the infallible inherent methods above: this GPIO
 // block has no error conditions to report (no bus, no ack, just a

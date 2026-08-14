@@ -1,5 +1,5 @@
-//! STM32F401 I2C1 Master driver (embedded-hal-plan.md Phase E, real
-//! hardware half): `embedded_hal::i2c::I2c` (polling) and
+//! STM32F401 I2C1 Master driver, the real-hardware half of this
+//! workspace's async I2C support: `embedded_hal::i2c::I2c` (polling) and
 //! `embedded_hal_async::i2c::I2c` (completion via real interrupts —
 //! I2C1_EV and I2C1_ER are separate NVIC vectors on this chip, unlike
 //! the single-vector controllers `pl022`/`stellaris_i2c` drive) through

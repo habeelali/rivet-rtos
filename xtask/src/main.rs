@@ -161,11 +161,10 @@ struct TestCase {
     /// Assert the golden output even when the guest never exits (fault
     /// tests under Panic policy halt or reset instead of exiting cleanly).
     assert_golden_on_timeout: bool,
-    /// Extra raw QEMU args appended after the board's own `machine_args`
-    /// (embedded-hal-plan.md Phase E) — e.g. `-device
-    /// at24c-eeprom,address=0x50,rom-size=256` to attach a real I2C
-    /// slave for a driver test. Empty for every test that doesn't need
-    /// one.
+    /// Extra raw QEMU args appended after the board's own `machine_args`,
+    /// e.g. `-device at24c-eeprom,address=0x50,rom-size=256` to attach a
+    /// real I2C slave for a driver test. Empty for every test that
+    /// doesn't need one.
     extra_qemu_args: &'static [&'static str],
 }
 
@@ -445,11 +444,11 @@ fn smoke_tests(board_name: &str) -> Vec<TestCase> {
                 assert_golden_on_timeout: false,
                 extra_qemu_args: &[],
             },
-            // embedded-hal-plan.md Phase B: rivet::sync::Signal completing
-            // from a genuinely hardware-delivered interrupt (same UART0
-            // THRE condition as irq_test above), driven through a real
-            // #[rivet::task] async fn on the cooperative executor — not a
-            // manually polled future, and not a preemptive-task poll loop.
+            // rivet::sync::Signal completing from a genuinely
+            // hardware-delivered interrupt (same UART0 THRE condition as
+            // irq_test above), driven through a real #[rivet::task] async
+            // fn on the cooperative executor, not a manually polled
+            // future, and not a preemptive-task poll loop.
             TestCase {
                 name: "signal_irq_test",
                 pkg: "qemu-riscv",
@@ -718,8 +717,9 @@ fn smoke_tests(board_name: &str) -> Vec<TestCase> {
                 assert_golden_on_timeout: false,
                 extra_qemu_args: &[],
             },
-            // embedded-hal-plan.md Phase B (see riscv's signal_irq_test
-            // for the full rationale) — NVIC IRQ 5, UART0.
+            // rivet::sync::Signal via a real hardware interrupt (see
+            // riscv's signal_irq_test for the full rationale) — NVIC IRQ
+            // 5, UART0.
             TestCase {
                 name: "signal_irq_test",
                 pkg: "qemu-cm3",
@@ -748,10 +748,10 @@ fn smoke_tests(board_name: &str) -> Vec<TestCase> {
                 assert_golden_on_timeout: false,
                 extra_qemu_args: &[],
             },
-            // embedded-hal-plan.md Phase C: rivet_bsp_support::pl022's
-            // async SpiBus, completed via a real RXIM interrupt through
-            // Signal — SSI0 (0x4000_8000, IRQ 7), CR1.LBM loopback so no
-            // external SPI device is needed.
+            // rivet_bsp_support::pl022's async SpiBus, completed via a
+            // real RXIM interrupt through Signal — SSI0 (0x4000_8000,
+            // IRQ 7), CR1.LBM loopback so no external SPI device is
+            // needed.
             TestCase {
                 name: "pl022_test",
                 pkg: "qemu-cm3",
@@ -765,8 +765,8 @@ fn smoke_tests(board_name: &str) -> Vec<TestCase> {
                 assert_golden_on_timeout: false,
                 extra_qemu_args: &[],
             },
-            // embedded-hal-plan.md Phase E: rivet_bsp_support::
-            // stellaris_i2c's async I2c, completed via a real interrupt
+            // rivet_bsp_support::stellaris_i2c's async I2c, completed
+            // via a real interrupt
             // through Signal, round-tripping a byte against a genuine
             // QEMU at24c-eeprom device (I2C0 at 0x4002_0000, IRQ 8) —
             // see that module's own docs for the three real model
@@ -951,8 +951,9 @@ fn smoke_tests(board_name: &str) -> Vec<TestCase> {
                 assert_golden_on_timeout: false,
                 extra_qemu_args: &[],
             },
-            // embedded-hal-plan.md Phase B (see riscv's signal_irq_test
-            // for the full rationale) — NVIC IRQ 1, UART0 TX.
+            // rivet::sync::Signal via a real hardware interrupt (see
+            // riscv's signal_irq_test for the full rationale) — NVIC IRQ
+            // 1, UART0 TX.
             TestCase {
                 name: "signal_irq_test",
                 pkg: "mps2-an385",
@@ -981,8 +982,8 @@ fn smoke_tests(board_name: &str) -> Vec<TestCase> {
                 assert_golden_on_timeout: false,
                 extra_qemu_args: &[],
             },
-            // embedded-hal-plan.md Phase C (see cm3's pl022_test for the
-            // full rationale) — the "APB" PL022 instance (0x4002_0000,
+            // Async SPI over the PL022 driver (see cm3's pl022_test for
+            // the full rationale) — the "APB" PL022 instance (0x4002_0000,
             // IRQ 11), same driver, proving it's genuinely board-agnostic.
             TestCase {
                 name: "pl022_test",
@@ -1179,9 +1180,9 @@ fn base_qemu_args(
     if b.semihosting {
         args.push("-semihosting".into());
     }
-    // embedded-hal-plan.md Phase E: a test-case-specific device attach
-    // (e.g. a real I2C EEPROM slave), appended last so it can't shadow
-    // any of the fixed args above.
+    // A test-case-specific device attach (e.g. a real I2C EEPROM
+    // slave), appended last so it can't shadow any of the fixed args
+    // above.
     args.extend(extra.iter().map(|s| s.to_string()));
     args
 }

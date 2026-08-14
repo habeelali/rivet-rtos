@@ -1,5 +1,5 @@
-//! PL022 SSP/SPI driver (embedded-hal-plan.md Phase C, the reference
-//! async peripheral): `embedded_hal::spi::SpiBus` (polling, safe from a
+//! PL022 SSP/SPI driver, this workspace's reference async peripheral
+//! driver: `embedded_hal::spi::SpiBus` (polling, safe from a
 //! preemptive task) and `embedded_hal_async::spi::SpiBus` (RX-ready
 //! completion via [`rivet::sync::Signal`], driven by a real hardware
 //! interrupt) on the same struct — same "sync trait for the preemptive

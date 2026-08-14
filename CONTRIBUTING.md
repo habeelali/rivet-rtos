@@ -1,7 +1,7 @@
 # Contributing to Rivet RTOS
 
-Thanks for looking at this. Rivet is a small, opinionated project — the
-conventions below aren't bureaucracy, they're what actually kept a
+Thanks for looking at this. Rivet is a small, opinionated project. The
+conventions below aren't bureaucracy; they're what actually kept a
 zero-allocation, multi-architecture kernel correct across three real ISAs
 and two real boards. Read this before your first PR; it'll save you a
 review round-trip.
@@ -9,7 +9,7 @@ review round-trip.
 ## The one rule everything else follows: claims need evidence
 
 Every fix, every "this works," every WCET figure in this repo is backed by
-something concrete — a passing test, a QEMU golden-output diff, a real
+something concrete: a passing test, a QEMU golden-output diff, a real
 hardware trace, or an exact instruction count read from real assembly. Not
 "should work," not "looks right." This project has a documented history of
 plausible-looking fixes that failed on real hardware in ways QEMU couldn't
@@ -17,27 +17,27 @@ show and vice versa (`docs/realtime.md` is the log of exactly that,
 including several rejected fix attempts kept in the record on purpose).
 When you open a PR:
 
-- If you fixed a bug, say **how you confirmed it's fixed** — which test,
+- If you fixed a bug, say **how you confirmed it's fixed**: which test,
   which board, how many runs. "Should be fixed" is not a changelog entry.
 - If you're claiming a timing/latency number, label how you got it:
   measured (real hardware, cite the tool), derived (exact instruction
   count, cite the source lines), architectural (cite the ISA/vendor
   manual), or assumed (say so explicitly). See `docs/wcet.md` for the
   standard this project holds itself to.
-- If a fix only worked in QEMU, or only on one board, say that too — don't
+- If a fix only worked in QEMU, or only on one board, say that too. Don't
   let a partial verification read as a complete one.
 
 ## Before you start
 
-- Read `docs/DOCUMENTATION.md` in full — it's the complete reference:
+- Read `docs/DOCUMENTATION.md` in full. It's the complete reference:
   architecture, the port contract, every feature, configuration, and the
   known-limitations list (§18) so you don't rediscover a documented gap.
 - Skim `docs/realtime.md` and `docs/wcet.md` / `docs/wcet-stm32f401re.md`
   if you're touching anything timing-sensitive (the scheduler,
   `critical::enter`, interrupt entry/exit, the context-switch path on any
-  arch) — real, hard-won findings live there, not just in code comments.
+  arch). Real, hard-won findings live there, not just in code comments.
 - **`plan.md` is a local development log, not part of this repository.**
-  It's `.gitignore`d deliberately — source comments across this codebase
+  It's `.gitignore`d deliberately. Source comments across this codebase
   reference it ("plan.md Phase 19", "plan.md §4.1", etc.) as historical
   context for *why* a decision was made, written by and for the person
   doing that work at the time. A fresh clone won't have it, and that's
@@ -50,10 +50,10 @@ When you open a PR:
 - **`rivet` (the kernel) has zero MMIO and zero `#[cfg(target_arch)]`.**
   If you're adding kernel functionality that needs to touch hardware,
   you're adding a `port::arch`/`port::board` symbol, not an `#[cfg]`
-  branch — see `docs/DOCUMENTATION.md` §12 and §4 for the port contract
+  branch. See `docs/DOCUMENTATION.md` §12 and §4 for the port contract
   and why it's enforced this strictly (`cargo build -p rivet` must never
   touch MMIO, checked in CI).
-- **No comments explaining *what* code does — only *why*, when the why
+- **No comments explaining *what* code does, only *why*, when the why
   isn't obvious from reading it.** A comment that just restates the next
   line in English gets deleted in review. A comment explaining a hidden
   constraint, a workaround for a specific found bug, or a non-obvious
@@ -67,8 +67,8 @@ When you open a PR:
   only at real boundaries (user input, external hardware state).
 - **New board = new `rivet-bsp-*` crate, not a kernel change.** If you find
   yourself needing to modify `rivet`, `rivet-arch-*`, or `rivet-rt` to
-  bring up a board, that's very possibly a real kernel bug worth fixing —
-  but treat it as its own, clearly-justified change, not a board-specific
+  bring up a board, that's very possibly a real kernel bug worth fixing,
+  but treat it as its own, clearly justified change, not a board-specific
   workaround bundled into the port. `docs/porting.md` walks through this
   with three real worked examples.
 
@@ -77,8 +77,8 @@ When you open a PR:
 Match the level of verification to what you changed:
 
 - **Pure kernel logic** (`rivet/src/**`, no arch/board involved): the host
-  test suite must pass — `cargo test -p rivet` (debug, `--release`, and
-  `--profile release-checked` — release-mode-only UB is a real category of
+  test suite must pass, `cargo test -p rivet` (debug, `--release`, and
+  `--profile release-checked`; release-mode-only UB is a real category of
   bug this project has hit). New scheduler/sync-primitive logic should get
   a `loom` test if there's any cross-task/cross-hart interaction, and a
   `proptest` case if there's a property worth stating generally rather
@@ -89,11 +89,11 @@ Match the level of verification to what you changed:
   `cargo xtask boards` lists what's registered.
 - **Anything claiming real-hardware behavior**: actually run it on real
   hardware (ESP32-S3 or STM32F401RE, per what you're changing) and say so
-  in the PR, with what you observed — not "should also work on hardware."
+  in the PR, with what you observed, not "should also work on hardware."
   If you don't have the hardware, say that explicitly rather than
   implying you tested something you didn't.
 - **`cargo clippy --all-targets -- -D warnings`**, scoped per target (see
-  `.github/workflows/ci.yml` — the kernel lints on host, everything
+  `.github/workflows/ci.yml`: the kernel lints on host, everything
   arch/board-specific lints on its own real target, since it contains
   genuine architecture-specific assembly that can't build for host).
 
@@ -103,18 +103,18 @@ locally first is a slower review, not a faster one.
 
 ## Commit and PR style
 
-- Commit messages explain **why**, not just what changed — match the
+- Commit messages explain **why**, not just what changed. Match the
   existing log (`git log --oneline`) rather than generic "fix bug"/"update
   file" messages.
 - One logical change per PR. A bug fix doesn't need an unrelated cleanup
-  riding along with it, even a small one — split it.
+  riding along with it, even a small one; split it.
 - If your change resolves or narrows something in `docs/DOCUMENTATION.md`
   §18 (known limitations) or a `docs/wcet*.md` open item, update that
-  document in the same PR — stale limitations lists are exactly the kind
+  document in the same PR. Stale limitations lists are exactly the kind
   of drift this project tries not to accumulate.
 
 ## Questions
 
-Open an issue, or start the PR description with the question — a PR that's
+Open an issue, or start the PR description with the question. A PR that's
 genuinely "here's my attempt, not sure about X" is welcome and reviewed
 differently from one presented as finished.

@@ -1,6 +1,6 @@
 //! End-to-end proof of `rivet_bsp_support::pl022::Pl022`'s async
-//! `embedded_hal_async::spi::SpiBus` impl (embedded-hal-plan.md Phase C):
-//! an 8-byte transfer looped back internally by the PL022 controller
+//! `embedded_hal_async::spi::SpiBus` impl: an 8-byte transfer looped back
+//! internally by the PL022 controller
 //! (`CR1.LBM` — no external SPI device needed), completed via a real
 //! `RXIM` interrupt through `rivet::sync::Signal`, not polling. Same
 //! driver, same protocol as qemu-cm3's `pl022_test` — proves the driver

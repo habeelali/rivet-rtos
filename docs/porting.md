@@ -1,6 +1,6 @@
 # Porting Rivet to a new board
 
-Rivet is split into four layers (see `plan.md` for the full rationale):
+Rivet is split into four layers:
 
 ```
   app / examples          uses rivet + one rivet-bsp-* ; no MMIO, no boot code
@@ -17,15 +17,15 @@ Rivet is split into four layers (see `plan.md` for the full rationale):
 
 Bringing up a new board means writing a `rivet-bsp-*` crate. You will not touch
 `rivet`, `rivet-arch-*`, or `rivet-rt` unless you hit a genuine kernel bug (see
-"What actually happened when we did this" at the end — it happens, and that's
-fine, it's a kernel fix then, not a board workaround).
+"What actually happened when we did this" at the end. It happens, and that's
+fine; it's a kernel fix then, not a board workaround.
 
 This guide was written *from* adding `rivet-bsp-mps2-an385` as the project's
-third board — every step here is something that was actually done, not
+third board. Every step here is something that was actually done, not
 theorized. Two more real-hardware ports followed the same shape:
-`rivet-bsp-esp32s3` (Xtensa LX7, dual-core — the only board needing a new
+`rivet-bsp-esp32s3` (Xtensa LX7, dual-core, the only board needing a new
 `rivet-arch-*` crate, since Xtensa wasn't covered by the existing RISC-V/
-Cortex-M ports) and `rivet-bsp-stm32f401re` (Cortex-M4, single-core — a pure
+Cortex-M ports) and `rivet-bsp-stm32f401re` (Cortex-M4, single-core, a pure
 BSP-crate port onto the *existing* `rivet-arch-cortex-m`, closer to this
 guide's own worked example). `docs/wcet.md` and `docs/wcet-stm32f401re.md`
 are what real hardware made possible that QEMU alone couldn't: exact,
@@ -44,21 +44,21 @@ cargo check -p rivet-rtos --target <your-target-triple>
 
 If this fails with `no method named 'fetch_or' found for struct 'Atomic<T>'`
 (or similar), your target's ISA doesn't have the atomic extension the
-`core::sync::atomic` RMW operations need (e.g. `riscv32imc-unknown-none-elf` —
-RV32IMC, no `A` extension — fails this exact way; `riscv32imac-unknown-none-elf`,
-with the `A` extension, passes). **This is not fixable from a BSP crate** — it
+`core::sync::atomic` RMW operations need. For example, `riscv32imc-unknown-none-elf`
+(RV32IMC, no `A` extension) fails this exact way, while `riscv32imac-unknown-none-elf`,
+with the `A` extension, passes. **This is not fixable from a BSP crate.** It
 would require the kernel to switch to `portable-atomic`-style software-emulated
 atomics (a critical-section-based RMW fallback), which is a real, cross-cutting
 kernel change, not a porting exercise. Confirmed by trying exactly this for an
-ESP32-C3 BSP during this project's Phase 7: `rivet` fails to compile for
-`riscv32imc-unknown-none-elf` with 36 missing-atomic-method errors. Tracked as
-a known limitation, not attempted further here.
+ESP32-C3 BSP: `rivet` fails to compile for `riscv32imc-unknown-none-elf` with
+36 missing-atomic-method errors. Tracked as a known limitation, not attempted
+further here.
 
 ## Step 1: pick (or write) an arch crate
 
 If your board's CPU is already covered by `rivet-arch-riscv` (any RV32 core
 with the `A` extension) or `rivet-arch-cortex-m` (any Cortex-M3/4/7/33 with an
-MPU), you don't write a new arch crate — skip to Step 2.
+MPU), you don't write a new arch crate; skip to Step 2.
 
 Writing a new arch crate is out of scope for this guide (it means hand-writing
 a context-switch trap/exception entry in assembly, and is a much larger task);
@@ -75,17 +75,17 @@ qemu-system-arm -M <your-machine> -monitor stdio -serial none -display none -S
 ```
 
 This dumps every memory region and peripheral QEMU actually modeled, with
-addresses — exactly what `rivet-bsp-mps2-an385/link-mps2-an385.ld`'s header
+addresses, exactly what `rivet-bsp-mps2-an385/link-mps2-an385.ld`'s header
 comment records for MPS2 AN385. For real hardware, use the datasheet's memory
 map table instead. Either way, **write down the source** (the `info mtree`
 dump, or the datasheet section) in your linker script / BSP crate's doc
-comments — the next person porting a board needs to trust these numbers
+comments. The next person porting a board needs to trust these numbers
 without re-deriving them.
 
 You need, at minimum: a boot/flash region, a RAM region, your console UART's
 base address and register layout, and (if you want a real watchdog) the
 watchdog's base and register layout. Verify peripheral register layouts the
-same way if you're not sure — QEMU's device model source is authoritative;
+same way if you're not sure. QEMU's device model source is authoritative;
 when in doubt, write the simplest possible driver and check for `guest_errors`
 in `-d guest_errors -D qemu.log` output, or just try sending a byte and see if
 anything comes out on the serial console.
@@ -105,7 +105,7 @@ arch crate via `extern "C"`):
 | `.isr_stack`, `__isr_stack_{bottom,top}` | `rivet-arch-riscv` only | RV32 only, 16-byte aligned |
 | `.stack`, `__stack_{bottom,top}` | `rivet-rt` (RISC-V `_start`) | boot stack |
 | `__bss_{start,end}`, `__data_{start,end}`, `__data_load` | `rivet-rt` (`Reset`, Cortex-M) | `.data`'s `AT >` load address must be set for XIP-flash boards |
-| `.vector_table` (Cortex-M only) | `rivet-rt` | at `ORIGIN(FLASH)`; `LONG(Reset)`, `LONG(NMI)`, ..., `LONG(PendSV)`, `LONG(SysTick)` — `PendSV`/`MemManage`/`rivet_svc_handler` are provided by `rivet-arch-cortex-m` (strong symbols, resolved automatically once it's linked in); the rest fall back to `rivet-rt`'s `DefaultHandler` via `PROVIDE(...)` unless your board overrides one |
+| `.vector_table` (Cortex-M only) | `rivet-rt` | at `ORIGIN(FLASH)`; `LONG(Reset)`, `LONG(NMI)`, ..., `LONG(PendSV)`, `LONG(SysTick)`. `PendSV`/`MemManage`/`rivet_svc_handler` are provided by `rivet-arch-cortex-m` (strong symbols, resolved automatically once it's linked in); the rest fall back to `rivet-rt`'s `DefaultHandler` via `PROVIDE(...)` unless your board overrides one |
 | `ENTRY(_start)` (RISC-V) / `ENTRY(Reset)` (Cortex-M) | linker | |
 
 ## Step 4: the BSP crate
@@ -149,11 +149,11 @@ extern "Rust" fn __rivet_board_wdt_check() { /* no-op if you have real HW WDT */
 ```
 
 The exact signatures (and why each exists) are documented in
-`rivet/src/port/board.rs` — read it before implementing; it's the actual
+`rivet/src/port/board.rs`. Read it before implementing; it's the actual
 contract, this table is a summary.
 
 For a Cortex-M board, also provide the `SysTick` exception vector (referenced
-directly by your linker script, not part of the port contract — it's an
+directly by your linker script, not part of the port contract; it's an
 exception vector, not a Group A/B symbol):
 
 ```rust
@@ -163,7 +163,7 @@ pub unsafe extern "C" fn SysTick() {
 }
 ```
 
-### Step 4a: the "Group C" case — does your RISC-V board have a CLINT?
+### Step 4a: the "Group C" case: does your RISC-V board have a CLINT?
 
 If yes (most RV32 "virt"-like platforms do, at a near-universal `0x0200_0000`
 base, though the clock rate varies): enable `rivet-arch-riscv`'s `clint`
@@ -175,7 +175,7 @@ as one-line passthroughs to `rivet_arch_riscv::clint::{now_micros, tick_start}`
 If no (e.g. an ESP32-C3's SYSTIMER): don't enable `clint`; implement
 `__rivet_board_tick_start`/`__rivet_board_now_us` against your own timer
 peripheral, and additionally supply your own
-`#[no_mangle] extern "Rust" fn __rivet_arch_request_reschedule()` — the
+`#[no_mangle] extern "Rust" fn __rivet_arch_request_reschedule()`. The
 symbol-contract mechanism doesn't care which crate defines a Group A symbol,
 only that exactly one does, so your BSP is allowed to override this one when
 the arch crate's stock backend doesn't fit your platform.
@@ -187,13 +187,13 @@ watchdog (see `rivet-bsp-qemu-virt/src/lib.rs` for the ~10-line usage). Be
 honest in your BSP's doc comment that this is not independent of the CPU: a
 tick-driven check cannot catch a hang that stops ticks (interrupts disabled in
 a spin loop). Real hardware watchdog independence is only real if you have
-actual watchdog hardware — implement `__rivet_board_wdt_check` as a no-op in
+actual watchdog hardware; implement `__rivet_board_wdt_check` as a no-op in
 that case (the hardware resets on its own).
 
 ## Step 5: the linker-script build.rs
 
 Cargo's `cargo:rustc-link-arg` is only honored when emitted by the **final
-binary's own** build script — it does not propagate up from a library
+binary's own** build script; it does not propagate up from a library
 dependency's build script. So your BSP crate's `build.rs` publishes the script
 path via `links` + `cargo:KEY=VALUE`:
 
@@ -244,7 +244,7 @@ Add your board to `xtask`'s registry (`xtask/src/main.rs`'s `BOARDS` const)
 and a `smoke_tests` match arm, and you can run the full QEMU test harness
 against it: `cargo xtask test --target yourboard --suite smoke`.
 
-## What actually happened when we did this (MPS2 AN385, Phase 7)
+## What actually happened when we did this (MPS2 AN385)
 
 Two real things came out of adding a third board that are worth knowing before
 you add a fourth:
@@ -252,14 +252,14 @@ you add a fourth:
 1. **A genuine, pre-existing kernel bug surfaced.** `rivet::init()`'s
    cooperative-executor stack (`ASYNC_IDLE_STACK`) was spawned directly from a
    fixed `'static` buffer rather than through the stack pool's own
-   size-aligned carving, and had no alignment guarantee beyond 16 bytes — but
+   size-aligned carving, and had no alignment guarantee beyond 16 bytes, but
    it's still handed to `port::arch::on_switch_to`, which on Cortex-M
    reprograms an MPU region sized to it, and an MPU region's base must be
    aligned to its own size. `lm3s6965evb`'s specific `.bss` layout happened to
    place it on a 4096-byte boundary by luck; MPS2's different set of statics
    didn't, and QEMU logged `DRBAR[7]: ... misaligned to DRSR region size`.
    **This was a one-line fix in `rivet/src/lib.rs`** (`#[repr(align(4096))]`
-   on the static) — a kernel fix, correctly made in the kernel, not a
+   on the static), a kernel fix, correctly made in the kernel, not a
    board-specific workaround. It's expected that testing against a genuinely
    different board finds bugs like this; that's the point of doing it.
 2. **A second, smaller oddity was found and not fully root-caused**: an
@@ -267,13 +267,13 @@ you add a fourth:
    warning, plus an occasional related `DRBAR` line, that doesn't affect
    correctness (every test still passes) but wasn't tracked down to an exact
    cause before time ran out on this pass. See `tests/golden/KNOWN_FAILURES.md`
-   for the full account — recorded honestly rather than silently added to an
+   for the full account, recorded honestly rather than silently added to an
    ignore-list without explanation.
 
 Net result: the git diff for adding this board touched `rivet-bsp-mps2-an385/`
 (new), `examples/mps2-an385/` (new), `xtask/src/main.rs` (new registry entry +
 test cases), and **15 lines of `rivet/src/lib.rs`** for the bug fix above.
 `rivet-arch-cortex-m/` and `rivet-rt/` were untouched, confirming the
-arch/board split itself is in the right place — the one kernel change needed
+arch/board split itself is in the right place. The one kernel change needed
 was a real bug fix that happened to be found this way, not evidence the
 boundary is wrong.

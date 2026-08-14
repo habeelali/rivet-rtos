@@ -1,5 +1,5 @@
-//! Stellaris/LM3S6965 I2C Master driver (embedded-hal-plan.md Phase E):
-//! `embedded_hal::i2c::I2c` (polling) and `embedded_hal_async::i2c::I2c`
+//! Stellaris/LM3S6965 I2C Master driver: `embedded_hal::i2c::I2c`
+//! (polling) and `embedded_hal_async::i2c::I2c`
 //! (completion via a real interrupt through [`rivet::sync::Signal`]) on
 //! the same struct — only `transaction()` is a required method on
 //! either trait, `read`/`write`/`write_read` come free as default

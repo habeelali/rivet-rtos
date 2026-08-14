@@ -1,6 +1,6 @@
 //! End-to-end proof of `rivet_bsp_support::stellaris_i2c::StellarisI2c`'s
-//! async `embedded_hal_async::i2c::I2c` impl (embedded-hal-plan.md
-//! Phase E): writes a byte to a real QEMU `at24c-eeprom` device attached
+//! async `embedded_hal_async::i2c::I2c` impl: writes a byte to a real
+//! QEMU `at24c-eeprom` device attached
 //! at I2C address 0x50 (see `xtask`'s `extra_qemu_args` for this test —
 //! `-device at24c-eeprom,address=0x50,rom-size=256`), then reads it back
 //! through a `write_read` (address-pointer write, then STOP/START —

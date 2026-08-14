@@ -1,12 +1,11 @@
 //! Real-hardware proof of `rivet_bsp_stm32f401re::i2c::Stm32I2c`'s async
-//! `embedded_hal_async::i2c::I2c` impl (embedded-hal-plan.md Phase E):
-//! no I2C slave is wired to this Nucleo's PB8 (SCL)/PB9 (SDA) this
-//! session, so this specifically exercises the **real hardware NAK
-//! path** — a genuine `START` condition, address transmission, and
-//! `AF` (address-ack-failure) interrupt on real silicon, completed via
-//! `Signal::wait`, not the QEMU-model workaround `stellaris_i2c` needs.
-//! A future session with a real I2C sensor on this bus can extend this
-//! to a genuine round-trip.
+//! `embedded_hal_async::i2c::I2c` impl. No I2C slave is wired to this
+//! Nucleo's PB8 (SCL)/PB9 (SDA), so this specifically exercises the
+//! **real hardware NAK path**: a genuine `START` condition, address
+//! transmission, and `AF` (address-ack-failure) interrupt on real
+//! silicon, completed via `Signal::wait`, not the QEMU-model workaround
+//! `stellaris_i2c` needs. A real I2C sensor wired to this bus later can
+//! extend this to a genuine round-trip.
 
 #![no_std]
 #![no_main]
@@ -28,7 +27,7 @@ rivet_bsp_stm32f401re::stm32_i2c_instance!(
 const GPIOB_BASE: u32 = 0x4002_0400;
 const RCC_BASE: u32 = 0x4002_3800;
 
-/// No device responds at this address — the point of this test is
+/// No device responds at this address; the point of this test is
 /// proving the real hardware NAK path.
 const NO_DEVICE_ADDR: u8 = 0x42;
 
@@ -57,7 +56,7 @@ async fn i2c_task() {
         // PUPDR = 01 (pull-up) on both pins: without this, the
         // open-drain I2C lines float with nothing wired to the bus and
         // never reach idle-high, so START generation spins forever
-        // waiting for SB — found live on this exact board this session.
+        // waiting for SB. Found live on this exact board.
         let pupdr = (GPIOB_BASE + 0x0C) as *mut u32;
         let mut pv = core::ptr::read_volatile(pupdr);
         pv = (pv & !(0b1111 << 16)) | (0b01 << 16) | (0b01 << 18);

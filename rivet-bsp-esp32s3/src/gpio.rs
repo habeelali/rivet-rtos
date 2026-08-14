@@ -1,5 +1,5 @@
 //! Typestate GPIO for the ESP32-S3, following `rivet_bsp_esp32c6::gpio`'s
-//! exact pattern (embedded-hal-plan.md Phase D) — same IO_MUX/GPIO
+//! exact pattern, same IO_MUX/GPIO
 //! two-peripheral scheme (`MCU_SEL = PIN_FUNC_GPIO = 1`, `FUN_IE` gates
 //! the input path, `GPIO`'s own OUT/ENABLE/IN registers do the actual
 //! work), confirmed consistent across the ESP32 family by checking both
@@ -161,7 +161,7 @@ impl<const N: u8> Pin<N, Output> {
     }
 }
 
-// ── embedded-hal 1.0 (embedded-hal-plan.md Phase D) ─────────────────
+// ── embedded-hal 1.0 ─────────────────────────────────────────────────
 impl<const N: u8, MODE> embedded_hal::digital::ErrorType for Pin<N, MODE> {
     type Error = core::convert::Infallible;
 }

@@ -1,6 +1,5 @@
 //! Typestate GPIO for the ESP32-C6, following
-//! `rivet-bsp-lm3s6965::gpio`'s exact pattern (embedded-hal-plan.md
-//! Phase D).
+//! `rivet-bsp-lm3s6965::gpio`'s exact pattern.
 //!
 //! Two peripherals cooperate, ESP32-family style: `IO_MUX` selects each
 //! pad's function (`MCU_SEL = 1` is `PIN_FUNC_GPIO` — Function 2, the
@@ -146,7 +145,7 @@ impl<const N: u8> Pin<N, Output> {
     }
 }
 
-// ── embedded-hal 1.0 (embedded-hal-plan.md Phase D) ─────────────────
+// ── embedded-hal 1.0 ─────────────────────────────────────────────────
 impl<const N: u8, MODE> embedded_hal::digital::ErrorType for Pin<N, MODE> {
     type Error = core::convert::Infallible;
 }

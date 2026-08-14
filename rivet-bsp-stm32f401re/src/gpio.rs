@@ -1,6 +1,6 @@
 //! Typestate GPIO for the STM32F401RE (Cortex-M4), following
-//! `rivet-bsp-lm3s6965::gpio`'s exact pattern (embedded-hal-plan.md
-//! Phase D — see that module's doc comment for the typestate rationale).
+//! `rivet-bsp-lm3s6965::gpio`'s exact pattern (see that module's doc
+//! comment for the typestate rationale).
 //!
 //! Two real differences from LM3S6965's GPIO: STM32's AHB1 peripheral
 //! clocks are gated (`RCC.AHB1ENR`) — a port with its clock off silently
@@ -145,7 +145,7 @@ impl<const BASE: usize, const N: u8> Pin<BASE, N, Output> {
     }
 }
 
-// ── embedded-hal 1.0 (embedded-hal-plan.md Phase D) ─────────────────
+// ── embedded-hal 1.0 ─────────────────────────────────────────────────
 //
 // Thin wrappers over the infallible inherent methods above: this GPIO
 // block has no error conditions to report (no bus, no ack, just a

@@ -1,6 +1,6 @@
 //! Real-hardware proof of `rivet_bsp_stm32f401re::wait::ExtiPc13`'s
-//! `embedded_hal_async::digital::Wait` impl (embedded-hal-plan.md Phase
-//! F): self-triggers EXTI13 via `EXTI_SWIER` (see `wait`'s module docs)
+//! `embedded_hal_async::digital::Wait` impl: self-triggers EXTI13 via
+//! `EXTI_SWIER` (see `wait`'s module docs)
 //! so the whole edge -> ISR -> `Signal` -> `Wait` path is proven on
 //! real silicon with no human pressing the B1 button.
 
@@ -58,7 +58,7 @@ async fn wait_task() {
     // fallback) completes the future. A real button press would do the
     // exact same thing through the exact same ISR. Arm-then-trigger
     // ordering, matching `signal_irq_test.rs`'s already-proven pattern
-    // (Phase B, three boards) — this exercises the real
+    // (verified on three boards) — this exercises the real
     // `embedded_hal_async::digital::Wait` machinery (`arm`/`wait_armed`
     // are the same `reset`/`set_triggers`/`sig.wait()` steps
     // `wait_for_rising_edge`'s own body runs), just with the trigger

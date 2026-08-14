@@ -1,13 +1,12 @@
-//! `embedded_hal_async::digital::Wait` on PC13/EXTI15_10 (embedded-hal-
-//! plan.md Phase F) — the Nucleo-64's B1 user button line, chosen
-//! because it is the one edge source on this workspace's boards that
-//! can be driven end-to-end on real hardware with no human involved:
-//! `EXTI_SWIER` (software interrupt event register) lets software pend
-//! the exact same interrupt a real electrical edge would, so this
-//! proves the whole edge -> ISR -> [`Signal`] -> `Wait` path on genuine
-//! silicon without anyone pressing a button. No QEMU board in this
-//! workspace models an externally-driven GPIO edge source headlessly,
-//! which is why this is stm32f401re-only (see embedded-hal-plan.md).
+//! `embedded_hal_async::digital::Wait` on PC13/EXTI15_10: the Nucleo-64's
+//! B1 user button line, chosen because it is the one edge source on this
+//! workspace's boards that can be driven end-to-end on real hardware
+//! with no human involved. `EXTI_SWIER` (software interrupt event
+//! register) lets software pend the exact same interrupt a real
+//! electrical edge would, so this proves the whole edge -> ISR ->
+//! [`Signal`] -> `Wait` path on genuine silicon without anyone pressing
+//! a button. No QEMU board in this workspace models an externally-driven
+//! GPIO edge source headlessly, which is why this is stm32f401re-only.
 //!
 //! `EXTI_SWIER` sets the same pending bit a real edge would and is
 //! independent of `RTSR`/`FTSR` (the trigger-direction selects), so it
@@ -93,10 +92,10 @@ impl ExtiPc13 {
     /// Wait` callers use the trait methods below, which arm and wait as
     /// one atomic-from-the-caller's-perspective step) — lets
     /// `stm32_wait_test.rs` arm *then* trigger, matching the ordering
-    /// `signal_irq_test.rs` already proved on three other boards
-    /// (Phase B), rather than triggering before arming has happened at
-    /// all (which — same as a real edge arriving before `RTSR`/`IMR`
-    /// are configured — is legitimately missed, not a bug).
+    /// `signal_irq_test.rs` already proved on three other boards,
+    /// rather than triggering before arming has happened at all (which,
+    /// same as a real edge arriving before `RTSR`/`IMR` are configured,
+    /// is legitimately missed, not a bug).
     pub fn arm(&self, rising: bool, falling: bool) {
         self.sig.reset();
         self.set_triggers(rising, falling);
