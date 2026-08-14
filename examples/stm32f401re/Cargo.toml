@@ -30,6 +30,7 @@ rivet-bsp-support = { path = "../../rivet-bsp-support" }
 # rivet-bsp-stm32f401re itself uses (see its own Cargo.toml comment for
 # why `default-features = false`).
 stm32f4 = { version = "0.16", default-features = false, features = ["stm32f401"] }
+embedded-hal = "1.0"
 embedded-hal-async = "1.0"
 embedded-hal-nb = "1.0"
 nb = "1.1"

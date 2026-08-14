@@ -24,6 +24,7 @@ rivet-bsp-support = { path = "../../rivet-bsp-support" }
 # against its NS16550) — same version rivet-arch-xtensa/rivet-bsp-esp32s3
 # already depend on.
 esp32s3 = "0.35"
+embedded-hal = "1.0"
 embedded-hal-async = "1.0"
 embedded-hal-nb = "1.0"
 nb = "1.1"

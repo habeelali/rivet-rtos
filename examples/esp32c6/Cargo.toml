@@ -35,6 +35,7 @@ esp32c6 = { version = "0.23", features = ["rt"] }
 # are entirely board-agnostic (built on rivet::preempt/rivet::console),
 # so no C6-specific implementation is needed, just this dependency.
 rivet-bsp-support = { path = "../../rivet-bsp-support" }
+embedded-hal = "1.0"
 embedded-hal-async = "1.0"
 embedded-hal-nb = "1.0"
 nb = "1.1"

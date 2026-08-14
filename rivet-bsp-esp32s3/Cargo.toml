@@ -8,6 +8,7 @@ description = "Rivet RTOS: ESP32-S3 board port (UART0 console, watchdog disable,
 
 [dependencies]
 rivet = { path = "../rivet", version = "0.1.0", package = "rivet-rtos" }
+embedded-hal = "1.0"
 rivet-arch-xtensa = { path = "../rivet-arch-xtensa", version = "0.1.0" }
 rivet-bsp-support = { path = "../rivet-bsp-support", version = "0.1.0" }
 esp32s3 = { version = "0.35", features = ["rt"] }

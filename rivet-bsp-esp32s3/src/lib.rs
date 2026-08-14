@@ -33,6 +33,8 @@
 
 #![no_std]
 
+pub mod gpio;
+
 // esp-idf's second-stage bootloader looks for this descriptor in the
 // flashed image; without it, the bootloader will not recognize the image
 // as a valid application and refuses to boot it. Content doesn't matter

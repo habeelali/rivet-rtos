@@ -45,6 +45,8 @@
 
 #![no_std]
 
+pub mod gpio;
+
 /// Board IRQ number map (RP2040 datasheet §2.3.2's fixed NVIC vector
 /// order — 26 external IRQ lines, fewer than a typical ARMv7-M chip
 /// since ARMv6-M's NVIC only implements what a given chip actually

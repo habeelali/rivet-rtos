@@ -17,6 +17,7 @@ latency-histograms = ["rivet/latency-histograms", "rivet-arch-riscv/latency-hist
 
 [dependencies]
 rivet = { path = "../rivet", version = "0.1.0", package = "rivet-rtos" }
+embedded-hal = "1.0"
 # Deliberately NOT enabling "clint"/"plic": the C6 has neither a SiFive
 # CLINT nor a real SiFive PLIC — it has SYSTIMER (tick) and Espressif's
 # own PLIC_MX + INTERRUPT_CORE0 interrupt-matrix controller (a different

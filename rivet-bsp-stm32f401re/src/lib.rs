@@ -21,6 +21,8 @@
 
 #![no_std]
 
+pub mod gpio;
+
 /// Board IRQ number map (plan.md Phase 13/26 follow-up): which NVIC IRQ
 /// number is which peripheral, per the `stm32f401` PAC's own `Interrupt`
 /// enum (cross-checked, not guessed).

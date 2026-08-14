@@ -12,6 +12,7 @@ links = "rivet_bsp_rp2040"
 
 [dependencies]
 rivet = { path = "../rivet", version = "0.1.0", package = "rivet-rtos" }
+embedded-hal = "1.0"
 rp2040-pac = { version = "0.6", default-features = false }
 # USB CDC-ACM console: the Pico has no onboard USB-serial bridge chip
 # (unlike the Nucleo's ST-LINK), so seeing output over the same cable

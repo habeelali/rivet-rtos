@@ -127,6 +127,8 @@
 
 #![no_std]
 
+pub mod gpio;
+
 // Forces `rivet-arch-riscv`'s object code (its `#[no_mangle]` Group A
 // symbols — context switch, trap entry, PMP) to actually be linked in.
 // Cargo compiles every listed dependency regardless, but the *linker*
