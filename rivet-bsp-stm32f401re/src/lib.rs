@@ -23,6 +23,7 @@
 
 pub mod gpio;
 pub mod i2c;
+pub mod wait;
 
 /// Board IRQ number map (plan.md Phase 13/26 follow-up): which NVIC IRQ
 /// number is which peripheral, per the `stm32f401` PAC's own `Interrupt`
@@ -34,6 +35,9 @@ pub mod irq {
     pub const I2C1_EV: u32 = 31;
     /// I2C1 error interrupt (`AF`/`BERR`/`ARLO`/`OVR`) — position 32.
     pub const I2C1_ER: u32 = 32;
+    /// EXTI lines 10-15 share one vector — position 40. This board only
+    /// arms line 13 (PC13, the B1 user button — see the `wait` module).
+    pub const EXTI15_10: u32 = 40;
 }
 
 // Everything below is genuinely Cortex-M specific (real asm!/naked_asm!
