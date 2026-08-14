@@ -20,6 +20,12 @@ pub mod gpio;
 /// i.e. IRQ 0-4; UART0 is position 21, IRQ 5).
 pub mod irq {
     pub const UART0: u32 = 5;
+    /// SSI0 (the PL022 SPI controller QEMU models on this machine, at
+    /// `0x4000_8000`) — position 23 in the Stellaris LM3S6965 exception
+    /// table (IRQ = position - 16), verified directly against QEMU's
+    /// `hw/arm/stellaris.c` device registration source (this session),
+    /// not just the datasheet.
+    pub const SSI0: u32 = 7;
 }
 
 // Everything below is genuinely Cortex-M specific (real asm!/naked_asm!

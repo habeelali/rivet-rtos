@@ -28,6 +28,12 @@ use core::sync::atomic::{AtomicU32, Ordering};
 pub mod irq {
     pub const UART0_RX: u32 = 0;
     pub const UART0_TX: u32 = 1;
+    /// The "APB" PL022 SPI controller QEMU models on this machine, at
+    /// `0x4002_0000` (one of several PL022 instances — mps2-an385 also
+    /// has an LCD PL022 sharing this IRQ, plus Shield0/1 PL022s on IRQ
+    /// 24) — verified directly against QEMU's `hw/arm/mps2.c` device
+    /// registration source (this session), not just the datasheet.
+    pub const SPI0: u32 = 11;
 }
 
 /// MPS2 default system clock on QEMU (SYSCLK from the board's SCC,

@@ -8,6 +8,7 @@ description = "Rivet RTOS: shared helpers for rivet-bsp-* crates (software watch
 
 [dependencies]
 rivet = { path = "../rivet", version = "0.1.0", package = "rivet-rtos" }
+embedded-hal = "1.0"
 embedded-hal-async = "1.0"
 embedded-hal-nb = "1.0"
 nb = "1.1"

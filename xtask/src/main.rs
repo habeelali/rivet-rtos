@@ -710,6 +710,22 @@ fn smoke_tests(board_name: &str) -> Vec<TestCase> {
                 allow_traps: false,
                 assert_golden_on_timeout: false,
             },
+            // embedded-hal-plan.md Phase C: rivet_bsp_support::pl022's
+            // async SpiBus, completed via a real RXIM interrupt through
+            // Signal — SSI0 (0x4000_8000, IRQ 7), CR1.LBM loopback so no
+            // external SPI device is needed.
+            TestCase {
+                name: "pl022_test",
+                pkg: "qemu-cm3",
+                bin: "pl022_test",
+                golden: &[r"SPI_LOOPBACK_OK", r"PL022_TEST_OK"],
+                exit_code: 0,
+                timeout: Duration::from_secs(20),
+                icount: None,
+                log_int: false,
+                allow_traps: false,
+                assert_golden_on_timeout: false,
+            },
         ],
         // Third board (plan.md Phase 7): the same Cortex-M3 test bodies as
         // `cm3` (bin sources are shared verbatim, just re-linked against
@@ -885,6 +901,21 @@ fn smoke_tests(board_name: &str) -> Vec<TestCase> {
                 pkg: "mps2-an385",
                 bin: "embedded_hal_test",
                 golden: &[r"DELAY_OK", r"HELLO_NB", r"SERIAL_OK", r"EMBEDDED_HAL_TEST_OK"],
+                exit_code: 0,
+                timeout: Duration::from_secs(20),
+                icount: None,
+                log_int: false,
+                allow_traps: false,
+                assert_golden_on_timeout: false,
+            },
+            // embedded-hal-plan.md Phase C (see cm3's pl022_test for the
+            // full rationale) — the "APB" PL022 instance (0x4002_0000,
+            // IRQ 11), same driver, proving it's genuinely board-agnostic.
+            TestCase {
+                name: "pl022_test",
+                pkg: "mps2-an385",
+                bin: "pl022_test",
+                golden: &[r"SPI_LOOPBACK_OK", r"PL022_TEST_OK"],
                 exit_code: 0,
                 timeout: Duration::from_secs(20),
                 icount: None,
