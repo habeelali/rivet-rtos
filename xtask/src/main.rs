@@ -425,6 +425,23 @@ fn smoke_tests(board_name: &str) -> Vec<TestCase> {
                 allow_traps: false,
                 assert_golden_on_timeout: false,
             },
+            // embedded-hal-plan.md Phase B: rivet::sync::Signal completing
+            // from a genuinely hardware-delivered interrupt (same UART0
+            // THRE condition as irq_test above), driven through a real
+            // #[rivet::task] async fn on the cooperative executor — not a
+            // manually polled future, and not a preemptive-task poll loop.
+            TestCase {
+                name: "signal_irq_test",
+                pkg: "qemu-riscv",
+                bin: "signal_irq_test",
+                golden: &[r"SIGNAL_FIRED", r"SIGNAL_IRQ_OK"],
+                exit_code: 0,
+                timeout: Duration::from_secs(20),
+                icount: None,
+                log_int: false,
+                allow_traps: false,
+                assert_golden_on_timeout: false,
+            },
             // plan.md Phase 15: embedded-hal/-async/-nb usable through
             // *generic* trait-bounded code, not just standalone —
             // RivetDelay (embedded-hal-async::delay::DelayNs) genuinely
@@ -665,6 +682,20 @@ fn smoke_tests(board_name: &str) -> Vec<TestCase> {
                 allow_traps: false,
                 assert_golden_on_timeout: false,
             },
+            // embedded-hal-plan.md Phase B (see riscv's signal_irq_test
+            // for the full rationale) — NVIC IRQ 5, UART0.
+            TestCase {
+                name: "signal_irq_test",
+                pkg: "qemu-cm3",
+                bin: "signal_irq_test",
+                golden: &[r"SIGNAL_FIRED", r"SIGNAL_IRQ_OK"],
+                exit_code: 0,
+                timeout: Duration::from_secs(20),
+                icount: None,
+                log_int: false,
+                allow_traps: false,
+                assert_golden_on_timeout: false,
+            },
             // plan.md Phase 15: embedded-hal/-async/-nb (see riscv's
             // embedded_hal_test for the full rationale).
             TestCase {
@@ -826,6 +857,20 @@ fn smoke_tests(board_name: &str) -> Vec<TestCase> {
                 pkg: "mps2-an385",
                 bin: "irq_test",
                 golden: &[r"IRQ_FIRED", r"IRQ_TEST_OK"],
+                exit_code: 0,
+                timeout: Duration::from_secs(20),
+                icount: None,
+                log_int: false,
+                allow_traps: false,
+                assert_golden_on_timeout: false,
+            },
+            // embedded-hal-plan.md Phase B (see riscv's signal_irq_test
+            // for the full rationale) — NVIC IRQ 1, UART0 TX.
+            TestCase {
+                name: "signal_irq_test",
+                pkg: "mps2-an385",
+                bin: "signal_irq_test",
+                golden: &[r"SIGNAL_FIRED", r"SIGNAL_IRQ_OK"],
                 exit_code: 0,
                 timeout: Duration::from_secs(20),
                 icount: None,
