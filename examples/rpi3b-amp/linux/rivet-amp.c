@@ -4,6 +4,7 @@
 //   rivet-amp load <image>          copy the image in and release the core
 //   rivet-amp console               drain rivet's text console ring
 //   rivet-amp trace <file>          drain the PulseTrace ring to a file
+//   rivet-amp send <command>        send a command and ring the doorbell
 //
 // Build:  cc -O2 -o rivet-amp rivet-amp.c
 // Run as root.
@@ -40,6 +41,15 @@
 // the middle of a frame corrupts it.
 #define CONSOLE_OFF  0x00000000UL
 #define TRACE_OFF    0x00100000UL
+// The reverse direction: produced here, consumed by rivet.
+#define CMD_OFF      0x00180000UL
+
+// Per-core mailboxes in the ARM-local block. Writing one raises an
+// interrupt on the target core, which is the only interrupt on this SoC
+// that can be aimed at a specific core; peripheral IRQs go wherever the
+// single global routing register points.
+#define ARM_LOCAL    0x40000000UL
+#define MBOX_SET     0x80UL
 #define RING_MAGIC   0x52565443U    // "RVTC"
 #define OFF_MAGIC    0
 #define OFF_CAP      8
@@ -57,6 +67,14 @@
 // unaligned and vector stores and will take an alignment fault, which
 // surfaces as SIGBUS. So the copies here are explicit aligned stores, and
 // the fault is caught rather than killing the process with no clue where.
+
+// Ordering barrier. Guarded so this file still compiles on the host for
+// syntax checking; it is only ever *run* on the Pi.
+#ifdef __aarch64__
+#define BARRIER() __asm__ __volatile__("dsb sy" ::: "memory")
+#else
+#define BARRIER() __asm__ __volatile__("" ::: "memory")
+#endif
 
 static sigjmp_buf fault_env;
 static volatile int fault_armed;
@@ -310,15 +328,60 @@ static int cmd_trace(const char *path) {
     return drain(TRACE_OFF, out);
 }
 
+// Append a command and ring rivet's doorbell.
+//
+// The write has to be visible before the interrupt, or rivet wakes to an
+// empty ring: hence the barrier between them. Both mappings are uncached,
+// so no cache maintenance is needed on top of that.
+static int cmd_send(const char *text) {
+    int fd = open("/dev/mem", O_RDWR | O_SYNC);
+    if (fd < 0) { perror("/dev/mem"); return 1; }
+
+    unsigned char *ring = map_phys(fd, SHMEM_BASE + CMD_OFF, 0x10000, 1);
+    if (!ring) { perror("mmap command ring"); close(fd); return 1; }
+    volatile uint32_t *magic = (volatile uint32_t *)(ring + OFF_MAGIC);
+    volatile uint32_t *cap   = (volatile uint32_t *)(ring + OFF_CAP);
+    volatile uint64_t *wp    = (volatile uint64_t *)(ring + OFF_WRITE);
+    if (*magic != RING_MAGIC) {
+        fprintf(stderr, "command ring not initialised: is rivet running?\n");
+        close(fd);
+        return 1;
+    }
+    uint32_t capacity = *cap;
+
+    uint64_t w = *wp;
+    for (const char *p = text; *p; p++) ring[OFF_DATA + (w++ % capacity)] = (unsigned char)*p;
+    ring[OFF_DATA + (w++ % capacity)] = '\n';   // one command per line
+    BARRIER();
+    *wp = w;
+    BARRIER();
+
+    // Ring the doorbell for core 3, mailbox 0.
+    unsigned char *local = map_phys(fd, ARM_LOCAL, 0x1000, 1);
+    if (!local) { perror("mmap ARM-local block"); close(fd); return 1; }
+    volatile uint32_t *set = (volatile uint32_t *)(local + MBOX_SET + RIVET_CORE * 16);
+    *set = 1;
+    BARRIER();
+
+    printf("sent \"%s\" and rang core %d\n", text, RIVET_CORE);
+    close(fd);
+    return 0;
+}
+
 int main(int argc, char **argv) {
     install_fault_handler();
     if (argc < 2) {
-        fprintf(stderr, "usage: %s probe | load <image> | console | trace <file>\n",
+        fprintf(stderr,
+                "usage: %s probe | load <image> | console | trace <file> | send <cmd>\n",
                 argv[0]);
         return 2;
     }
     if (!strcmp(argv[1], "probe"))   return cmd_probe();
     if (!strcmp(argv[1], "console")) return cmd_console();
+    if (!strcmp(argv[1], "send")) {
+        if (argc < 3) { fprintf(stderr, "send needs a command\n"); return 2; }
+        return cmd_send(argv[2]);
+    }
     if (!strcmp(argv[1], "trace")) {
         if (argc < 3) { fprintf(stderr, "trace needs an output path\n"); return 2; }
         return cmd_trace(argv[2]);

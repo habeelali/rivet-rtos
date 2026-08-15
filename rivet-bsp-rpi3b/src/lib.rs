@@ -31,6 +31,7 @@ pub mod gpio;
 pub mod i2c;
 #[cfg(feature = "kernel")]
 pub mod kernel;
+pub mod mailbox;
 pub mod mmu;
 pub mod shmem;
 pub mod smp;

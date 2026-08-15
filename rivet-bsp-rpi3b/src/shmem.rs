@@ -13,9 +13,15 @@
 //! in the same window keeps both readable.
 //!
 //! ```text
-//! SHARED_BASE + 0x000000   console   64 KiB of text
-//! SHARED_BASE + 0x100000   trace    256 KiB of PulseTrace frames
+//! SHARED_BASE + 0x000000   console   64 KiB of text, rivet -> Linux
+//! SHARED_BASE + 0x100000   trace    256 KiB of frames, rivet -> Linux
+//! SHARED_BASE + 0x180000   command   64 KiB of bytes, Linux -> rivet
 //! ```
+//!
+//! The command ring runs the other way, which is what makes this a
+//! channel rather than a reporting pipe. Its producer is Linux and its
+//! consumer is rivet, so rivet reads it and moves the read index; the
+//! roles are simply mirrored, and the same header serves both.
 //!
 //! The whole window is mapped Device on this side, matching how Linux
 //! hands out `/dev/mem` mappings of non-RAM regions. That agreement is
@@ -69,6 +75,8 @@ pub const CONSOLE: Ring = Ring::new(SHARED_BASE, 64 * 1024);
 /// more bytes than logging does, and dropping frames loses events rather
 /// than lines.
 pub const TRACE: Ring = Ring::new(SHARED_BASE + 0x0010_0000, 256 * 1024);
+/// Commands from Linux. Produced there, consumed here.
+pub const COMMAND: Ring = Ring::new(SHARED_BASE + 0x0018_0000, 64 * 1024);
 
 impl Ring {
     pub const fn new(base: usize, capacity: usize) -> Self {
@@ -113,6 +121,43 @@ impl Ring {
         }
     }
 
+    /// Take up to `buf.len()` bytes, returning how many were copied.
+    ///
+    /// The consumer side, for a ring whose producer is the other
+    /// operating system. Advancing the read index is what frees the
+    /// space, so it happens only after the bytes are safely copied out.
+    ///
+    /// # Safety
+    /// The window must be mapped and the producer must have run
+    /// [`init`](Self::init).
+    pub unsafe fn read_bytes(&self, buf: &mut [u8]) -> usize {
+        // SAFETY: the window is mapped Device.
+        unsafe {
+            if read_volatile((self.base + OFF_MAGIC) as *const u32) != MAGIC {
+                return 0;
+            }
+            let w = read_volatile((self.base + OFF_WRITE) as *const u64);
+            let mut r = read_volatile((self.base + OFF_READ) as *const u64);
+            // A reader more than a bufferful behind has genuinely lost
+            // bytes; skip to the oldest that still exist rather than
+            // reading a torn mixture of old and new.
+            if w.wrapping_sub(r) > self.capacity as u64 {
+                r = w - self.capacity as u64;
+            }
+            let mut n = 0;
+            while r < w && n < buf.len() {
+                buf[n] = read_volatile(
+                    (self.base + OFF_DATA + (r as usize % self.capacity)) as *const u8,
+                );
+                r += 1;
+                n += 1;
+            }
+            core::arch::asm!("dsb sy", options(nostack, preserves_flags));
+            write_volatile((self.base + OFF_READ) as *mut u64, r);
+            n
+        }
+    }
+
     /// How many bytes the reader is behind by.
     pub fn pending(&self) -> u64 {
         // SAFETY: plain reads of a mapped Device window.
@@ -133,6 +178,7 @@ pub unsafe fn init() {
     unsafe {
         CONSOLE.init();
         TRACE.init();
+        COMMAND.init();
     }
 }
 

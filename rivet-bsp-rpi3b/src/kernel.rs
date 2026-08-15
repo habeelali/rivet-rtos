@@ -215,6 +215,29 @@ fn on_timer_tick() {
 
 // ── Interrupts ────────────────────────────────────────────────────
 
+/// Fired when Linux rings this core's mailbox doorbell.
+///
+/// A `Signal` rather than a callback, so a task can `.await` it and the
+/// core sits in `WFI` between commands instead of polling the shared
+/// window.
+pub static DOORBELL: rivet::sync::Signal = rivet::sync::Signal::new();
+
+/// Count of doorbells taken, for tests that want to prove one arrived.
+static DOORBELL_COUNT: AtomicU32 = AtomicU32::new(0);
+
+pub fn doorbell_count() -> u32 {
+    DOORBELL_COUNT.load(Ordering::Relaxed)
+}
+
+/// Let Linux interrupt this core through mailbox 0.
+///
+/// # Safety
+/// Call once, from the core that will service the doorbell.
+pub unsafe fn enable_doorbell() {
+    // SAFETY: forwarded from this function's contract.
+    unsafe { crate::mailbox::enable_on_this_core(crate::mailbox::DOORBELL) };
+}
+
 /// Acknowledge and service whatever raised the current interrupt.
 ///
 /// Scheduling is not done here: `rivet-arch-aarch64` runs the scheduler on
@@ -226,6 +249,15 @@ extern "Rust" fn __rivet_board_on_irq() {
 
     if source & TIMER_IRQ_CNTPNSIRQ != 0 {
         on_timer_tick();
+    }
+
+    if source & crate::mailbox::IRQ_SOURCE_MBOX0 != 0 {
+        // Clearing the mailbox is what drops the interrupt line; skip it
+        // and this handler re-enters forever.
+        // SAFETY: servicing this core's own mailbox.
+        unsafe { crate::mailbox::take(crate::mailbox::DOORBELL) };
+        DOORBELL_COUNT.fetch_add(1, Ordering::Relaxed);
+        DOORBELL.signal();
     }
 
     // Peripheral interrupts arrive through the legacy controller, which

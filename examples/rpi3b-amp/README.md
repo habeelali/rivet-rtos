@@ -259,6 +259,53 @@ apart, sync words spanning the whole file with no gaps. The text console
 reported the trace ring staying near empty throughout, which is the
 reader keeping up rather than the producer stalling.
 
+## Commanding rivet from Linux
+
+The rings above only report; the command ring runs the other way and
+makes this a channel. Linux writes a line into it and rings rivet's
+mailbox doorbell:
+
+```bash
+sudo rivet-amp send ping
+sudo rivet-amp send "period 50"
+sudo rivet-amp send stats
+```
+
+The doorbell is the part worth having. A ring alone only supports
+polling, which on a real-time core is wrong twice over: it burns the core
+while idle and still adds latency when busy. The ARM-local mailboxes are
+per-core and raise an interrupt on the target, which makes them the only
+interrupt source on this SoC that can be aimed at one core; peripheral
+IRQs all go wherever the single global routing register points. So rivet
+sits in `WFI` until Linux asks for something.
+
+Measured: the doorbell count matched the command count exactly, so no
+spurious or missed interrupts.
+
+## Pinning the clock
+
+BCM2837 has one ARM clock domain for the whole cluster and Linux owns the
+cpufreq driver, so by default the real-time core's speed is decided by
+what the other three are doing. `force_turbo=1` in `config.txt` pins it,
+and a `performance` governor unit does the same from the Linux side.
+Verified: with it set, forcing the `powersave` governor and waiting
+fifteen seconds leaves the clock at 1.2 GHz.
+
+It is worth doing for latency, not just throughput. Frequency transitions
+stall the core while the PLL relocks, and those transitions turned out to
+be the dominant source of worst-case interrupt latency:
+
+| | before pinning | after pinning |
+|---|---|---|
+| IRQ latency, max | 989 ns | **52 ns** |
+| tick handler, max | 1979 ns | **572 ns** |
+| Signal wake, max | 2447 ns | **989 ns** |
+
+52 ns is one tick of the 19.2 MHz counter, so with the clock pinned the
+worst observed interrupt latency over 3001 samples equals the best: the
+measurement floor. `force_turbo=1` alone does not set the OTP warranty
+bit; only combining it with `over_voltage` does, and this does not.
+
 ## Jumpers, for the two tests that need wires
 
 Everything above runs on a bare board. Two checks have a stronger form
