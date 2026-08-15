@@ -14,9 +14,13 @@ Three binaries:
 - `mmucheck` — installs an identity map, enables the MMU and both caches,
   and re-runs the atomics that `faultcheck` shows aborting without it.
 
-Status: both milestones are confirmed on hardware. Atomics work with the
-MMU enabled, which is what the kernel needs, so the next step is a real
-`rivet-arch-aarch64` crate implementing the `__rivet_arch_*` symbols.
+The kernel itself lives in `examples/rpi3b-kernel`, a separate package so
+that these three keep linking neither it nor the arch crate, which is
+what makes them tests of the bare hardware rather than of rivet.
+
+Status: confirmed on hardware up to and including the kernel running,
+scheduling and preempting. What remains is releasing the other three
+cores, and then the Linux-alongside arrangement.
 
 ## Build and run under QEMU
 
@@ -121,6 +125,8 @@ board printed them, and because QEMU disagrees with two of them.
 | Atomic RMW with MMU on | works | `fetch_add` and `compare_exchange` both correct, once RAM is Normal Inner-Shareable |
 | `SCTLR_EL1` after enable | `0x30d01805` | M, C and I set over the `0x30d00800` the EL2 drop leaves |
 | `TCR_EL1` / `MAIR_EL1` | `0x200803520` / `0xff` | Identical to QEMU, so the table format is right on both |
+| Kernel tick accuracy | 500025 us for a 500 ms sleep | 0.005% off, against 500530 under QEMU: the architected timer is crystal-derived here and emulated there |
+| Preemptive scheduling | two workers, 48 iterations each | Equal progress at equal priority, so tasks really are being suspended and resumed around each other |
 
 Both UARTs reach GPIO14/15, so either can be the console. The PL011
 remains the better choice for the reasons above.
