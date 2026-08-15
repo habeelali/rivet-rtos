@@ -132,6 +132,54 @@ extern "Rust" fn __rivet_board_tick_start(hz: u32) {
     write_sysreg!("cntp_ctl_el0", 1u64);
 }
 
+/// Interrupt-latency and handler-cost statistics, in architected timer
+/// ticks (52.08 ns each at 19.2 MHz).
+///
+/// The latency measured is genuine: the comparator value that just fired
+/// is the exact hardware instant of expiry, so subtracting it from the
+/// counter read at the top of the handler covers exception entry, the
+/// full register save and the board's dispatch, with nothing estimated.
+static IRQ_LAT_MIN: AtomicU64 = AtomicU64::new(u64::MAX);
+static IRQ_LAT_MAX: AtomicU64 = AtomicU64::new(0);
+static IRQ_LAT_SUM: AtomicU64 = AtomicU64::new(0);
+static IRQ_LAT_CNT: AtomicU64 = AtomicU64::new(0);
+static TICK_COST_MAX: AtomicU64 = AtomicU64::new(0);
+static TICK_COST_SUM: AtomicU64 = AtomicU64::new(0);
+
+/// `(min, max, sum, count)` of interrupt latency, and `(max, sum)` of
+/// time spent inside the tick handler, both in timer ticks.
+pub fn irq_stats() -> (u64, u64, u64, u64, u64, u64) {
+    (
+        IRQ_LAT_MIN.load(Ordering::Relaxed),
+        IRQ_LAT_MAX.load(Ordering::Relaxed),
+        IRQ_LAT_SUM.load(Ordering::Relaxed),
+        IRQ_LAT_CNT.load(Ordering::Relaxed),
+        TICK_COST_MAX.load(Ordering::Relaxed),
+        TICK_COST_SUM.load(Ordering::Relaxed),
+    )
+}
+
+/// Discard everything gathered so far, so a measurement window excludes
+/// start-up.
+pub fn reset_irq_stats() {
+    IRQ_LAT_MIN.store(u64::MAX, Ordering::Relaxed);
+    IRQ_LAT_MAX.store(0, Ordering::Relaxed);
+    IRQ_LAT_SUM.store(0, Ordering::Relaxed);
+    IRQ_LAT_CNT.store(0, Ordering::Relaxed);
+    TICK_COST_MAX.store(0, Ordering::Relaxed);
+    TICK_COST_SUM.store(0, Ordering::Relaxed);
+}
+
+fn record_min(cell: &AtomicU64, v: u64) {
+    let mut cur = cell.load(Ordering::Relaxed);
+    while v < cur {
+        match cell.compare_exchange_weak(cur, v, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => break,
+            Err(actual) => cur = actual,
+        }
+    }
+}
+
 /// Called from the interrupt path when the generic timer has expired.
 fn on_timer_tick() {
     // Advance the absolute comparator rather than reloading a countdown.
@@ -146,10 +194,23 @@ fn on_timer_tick() {
     // grid.
     let interval = TICK_INTERVAL.load(Ordering::Acquire);
     let cval = read_sysreg!("cntp_cval_el0");
+    let entry = read_sysreg!("cntpct_el0");
     write_sysreg!("cntp_cval_el0", cval + interval);
+
+    // `cval` is the instant the comparator matched, so this is the real
+    // hardware-to-handler latency rather than an estimate.
+    let lat = entry.wrapping_sub(cval);
+    IRQ_LAT_MAX.fetch_max(lat, Ordering::Relaxed);
+    record_min(&IRQ_LAT_MIN, lat);
+    IRQ_LAT_SUM.fetch_add(lat, Ordering::Relaxed);
+    IRQ_LAT_CNT.fetch_add(1, Ordering::Relaxed);
 
     rivet::watchdog::on_tick();
     rivet::timer::poll_timers(__rivet_board_now_us());
+
+    let cost = read_sysreg!("cntpct_el0").wrapping_sub(entry);
+    TICK_COST_MAX.fetch_max(cost, Ordering::Relaxed);
+    TICK_COST_SUM.fetch_add(cost, Ordering::Relaxed);
 }
 
 // ── Interrupts ────────────────────────────────────────────────────

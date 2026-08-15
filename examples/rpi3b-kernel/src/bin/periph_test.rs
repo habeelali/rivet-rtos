@@ -153,25 +153,48 @@ fn test_pl011() -> bool {
 
 // ── GPIO ──────────────────────────────────────────────────────────
 
-fn test_gpio() -> bool {
-    // SAFETY: nothing else is using these pins on a bare board.
-    let mut out = unsafe { gpio::Pin::output(GPIO_OUT) };
-    let inp = unsafe { gpio::Pin::input(GPIO_IN) };
-    // A pull-down so an unjumpered input reads a defined low rather than
-    // floating, which is what makes the "no jumper" case detectable
-    // instead of random.
+/// Header GPIOs that are free to poke at: nothing on the board and
+/// nothing Linux is using claims them. Deliberately excludes 0/1 (HAT ID
+/// EEPROM), 2/3 (I2C), 7-11 (SPI) and 14/15 (the UART).
+const SCAN_PINS: [u8; 16] = [4, 5, 6, 12, 13, 16, 17, 18, 19, 20, 21, 22, 24, 25, 26, 27];
+
+/// Is `pin` electrically tied to the output `out` is driving?
+///
+/// Checked against both pull directions. A connected pin follows what is
+/// being driven in both cases; a floating one follows its own pull and
+/// therefore disagrees with the driver exactly once. Testing only one
+/// direction would call a pin with a matching pull "connected".
+fn follows(out: &mut gpio::Pin<gpio::Output>, pin: u8) -> bool {
+    // SAFETY: nothing else on a bare board is using these pins.
+    let inp = unsafe { gpio::Pin::input(pin) };
+
     // SAFETY: we own the pin.
-    unsafe { gpio::set_pull(GPIO_IN, gpio::pull::DOWN) };
+    unsafe { gpio::set_pull(pin, gpio::pull::DOWN) };
+    out.set_high();
+    rivet_bsp_rpi3b::delay(5000);
+    let high_ok = inp.is_high();
+
+    // SAFETY: as above.
+    unsafe { gpio::set_pull(pin, gpio::pull::UP) };
+    out.set_low();
+    rivet_bsp_rpi3b::delay(5000);
+    let low_ok = !inp.is_high();
+
+    // SAFETY: leave it as we found it.
+    unsafe { gpio::set_pull(pin, gpio::pull::NONE) };
+    high_ok && low_ok
+}
+
+fn test_gpio() -> bool {
+    // SAFETY: nothing else is using this pin on a bare board.
+    let mut out = unsafe { gpio::Pin::output(GPIO_OUT) };
 
     out.set_high();
     rivet_bsp_rpi3b::delay(2000);
     let self_high = out.level();
-    let cross_high = inp.is_high();
-
     out.set_low();
     rivet_bsp_rpi3b::delay(2000);
     let self_low = !out.level();
-    let cross_low = !inp.is_high();
 
     let self_ok = self_high && self_low;
     if self_ok {
@@ -180,11 +203,41 @@ fn test_gpio() -> bool {
         line("  FAIL GPIO output did not read back");
     }
 
-    if cross_high && cross_low {
-        line("  ok   GPIO23 drove GPIO24 (jumper present)");
-    } else {
-        line("  note GPIO24 did not follow GPIO23: no jumper, as expected bare");
+    if follows(&mut out, GPIO_IN) {
+        rivet::console::write_str("  ok   GPIO");
+        print_dec(GPIO_OUT as usize);
+        rivet::console::write_str(" drove GPIO");
+        print_dec(GPIO_IN as usize);
+        line(" (jumper present, both pull directions)");
+        out.set_low();
+        return self_ok;
     }
+
+    // Not the expected pin. Rather than just say so, find out what the
+    // wire is actually connected to: a jumper on the wrong header pins
+    // looks identical to no jumper at all from one measurement.
+    rivet::console::write_str("  note GPIO");
+    print_dec(GPIO_IN as usize);
+    line(" did not follow; scanning the header for the other end");
+
+    let mut hits = 0;
+    for p in SCAN_PINS {
+        if p == GPIO_IN {
+            continue;
+        }
+        if follows(&mut out, p) {
+            hits += 1;
+            rivet::console::write_str("  ..   GPIO");
+            print_dec(GPIO_OUT as usize);
+            rivet::console::write_str(" is tied to GPIO");
+            print_dec(p as usize);
+            rivet::console::write_str("\n");
+        }
+    }
+    if hits == 0 {
+        line("  note nothing on the header follows it: no jumper fitted");
+    }
+    out.set_low();
     self_ok
 }
 
