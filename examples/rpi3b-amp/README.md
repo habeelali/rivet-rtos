@@ -151,38 +151,62 @@ by more than half a tick.
 
 Measured on a Pi 3B with rivet on core 3 and Linux on 0-2:
 
-| Linux state | typical jitter | outliers |
+| Linux state | typical jitter | slipped wakeups |
 |---|---|---|
-| idle | 1 us | one ~999 us slip roughly every 12 s |
-| all three cores spinning, plus `dd` memory traffic | 2-3 us | same rate |
+| idle | 1 us | 1 in 57 s |
+| all three cores spinning, plus `dd` memory traffic | 2-3 us | unchanged |
 
-That is the claim holding up: saturating every core Linux owns, and the
-shared memory system with it, moves the typical figure by about two
-microseconds. Nothing Linux schedules can preempt a core it does not own.
+Saturating every core Linux owns, and the shared memory system with it,
+moves the typical figure by about two microseconds. Nothing Linux
+schedules can preempt a core it does not own.
 
-The outlier is more interesting and is **not yet explained**. It is
-almost exactly one 1 kHz tick, it appears about every twelve seconds,
-and it happens at the same rate whether Linux is idle or saturated,
-which argues against interference and for something internal.
+### Chasing the outlier
 
-The leading hypothesis is a mismatch between two clocks. Deadlines are
-kept in `now_us` time, which comes from the 1 MHz System Timer, while
-wakeups happen on the architected timer's tick. If those two drift
-against each other even slightly, a deadline will periodically fall the
-wrong side of a tick boundary and the wakeup lands one tick out. A drift
-of about one part in twelve thousand would produce exactly this period.
-Driving both from the same source would settle it. Until someone
-measures that, it is a hypothesis and not a finding.
-
-Worth noting the earlier version of this measurement reported a flat
-`worst_jitter_us=999` forever, which looked like terrible jitter and was
-in fact the first wakeup aligning onto the tick grid, captured by a
-lifetime maximum and never displaced. Hence the warm-up period and the
+The first version of this reported a flat `worst=999` forever, which was
+not jitter at all: the very first wakeup aligns onto the tick grid and
+carries up to a full tick of phase error, and a lifetime maximum with no
+warm-up captured that and never let go. Hence the warm-up period and the
 per-window figure.
 
-Note also that the ceiling here is memory-system interference, not
-scheduling: DRAM and L2 are shared no matter who owns which core. The
-2-3 us under load is that effect, and it is small.
+With that fixed, a real outlier appeared: a single-tick slip roughly
+every twelve seconds, at the same rate whether Linux was idle or loaded.
+
+The obvious suspect was clock mismatch, since deadlines are kept in
+`now_us` time (the 1 MHz System Timer) while wakeups land on architected
+timer ticks. `linux/clockdrift.c` measures that directly, and it is
+**2.5 ppm**, which predicts one slip every 395 seconds. Far too small.
+Hypothesis wrong.
+
+The actual cause was in the tick itself. Re-arming with
+`CNTP_TVAL_EL0 = interval` sets the next expiry relative to *the moment
+of the write*, so every single tick silently absorbed the exception
+entry, the register save and an MMIO read. A small constant, added
+forever, walking the tick grid away from real time. Advancing the
+absolute comparator `CNTP_CVAL_EL0` instead cannot drift: a late handler
+gives one late tick, not a permanently skewed grid.
+
+That took slips from one per twelve seconds to one in fifty-seven. The
+remainder is consistent with the residual 2.5 ppm, though with a single
+observation the rate is not really characterised.
+
+## Rivet cannot reach Linux's memory
+
+The identity map covers only what this image owns. Read back out of
+rivet's own translation tables, from Linux, while it was running:
+
+```
+0x000000000000-0x00001fffff  Normal      spin table, for releasing cores
+0x000000200000-0x002fffffff  unmapped    Linux
+0x000030000000-0x0030ffffff  Normal      rivet
+0x000031000000-0x00311fffff  Device      shared ring
+0x000031200000-0x003effffff  unmapped
+0x00003f000000-0x003fffffff  Device      peripherals
+```
+
+Zero blocks covering Linux's RAM are mapped. A stray pointer in rivet now
+takes a translation fault with the address in `FAR_EL1`, rather than
+silently corrupting another operating system to be discovered much later
+somewhere else entirely.
 
 ## What is not done yet
 

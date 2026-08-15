@@ -124,17 +124,29 @@ extern "Rust" fn __rivet_board_tick_start(hz: u32) {
         write_volatile(core_timer_irqcntl() as *mut u32, TIMER_IRQ_CNTPNSIRQ);
     }
 
-    // Arm the first expiry, then enable the timer with its output
-    // unmasked. CNTP_CTL_EL0: bit 0 enable, bit 1 mask.
-    write_sysreg!("cntp_tval_el0", interval);
+    // Arm the first expiry against the absolute comparator rather than a
+    // countdown, then enable the timer. CNTP_CTL_EL0: bit 0 enable,
+    // bit 1 mask.
+    let now = read_sysreg!("cntpct_el0");
+    write_sysreg!("cntp_cval_el0", now + interval);
     write_sysreg!("cntp_ctl_el0", 1u64);
 }
 
 /// Called from the interrupt path when the generic timer has expired.
 fn on_timer_tick() {
-    // Re-arm before doing any work, so the period does not stretch by
-    // however long the tick handler takes.
-    write_sysreg!("cntp_tval_el0", TICK_INTERVAL.load(Ordering::Acquire));
+    // Advance the absolute comparator rather than reloading a countdown.
+    //
+    // Writing CNTP_TVAL_EL0 sets the deadline relative to *now*, meaning
+    // the moment the handler gets around to it, so every tick quietly
+    // absorbs the exception entry, the register save and the MMIO read
+    // above it. That is a small constant, but it is a constant added
+    // every single tick, and it makes the tick grid walk away from real
+    // time forever. Advancing CVAL by a fixed interval cannot drift: a
+    // late handler produces one late tick, not a permanently skewed
+    // grid.
+    let interval = TICK_INTERVAL.load(Ordering::Acquire);
+    let cval = read_sysreg!("cntp_cval_el0");
+    write_sysreg!("cntp_cval_el0", cval + interval);
 
     rivet::watchdog::on_tick();
     rivet::timer::poll_timers(__rivet_board_now_us());

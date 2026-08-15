@@ -8,16 +8,24 @@
 //! described as Normal Inner-Shareable Write-Back memory, which is what
 //! the tables below do.
 //!
-//! The map is deliberately flat and coarse. Virtual equals physical
-//! everywhere, so enabling translation does not move the program,
-//! the stack or the peripherals out from under the code doing the
-//! enabling:
+//! Virtual equals physical throughout, so enabling translation does not
+//! move the program, the stack or the peripherals out from under the code
+//! doing the enabling. What is *not* mapped matters as much as what is:
 //!
 //! ```text
-//! 0x0000_0000 .. 0x3F00_0000   RAM         Normal, Inner-Shareable, WB
+//! 0x0000_0000 .. 0x0020_0000   spin table  Normal, for releasing cores
+//! the linked window              (16 MiB)  Normal, Inner-Shareable, WB
+//! 0x3100_0000 .. 0x3120_0000   shared      Device-nGnRnE, XN
 //! 0x3F00_0000 .. 0x4000_0000   peripherals Device-nGnRnE, XN
 //! 0x4000_0000 .. 0x8000_0000   ARM-local   Device-nGnRnE, XN
+//! everything else in RAM                   unmapped, faults
 //! ```
+//!
+//! Leaving the rest of RAM invalid is deliberate. Running alongside
+//! another operating system, a mapping of all memory means a stray
+//! pointer here corrupts that system silently, to be discovered much
+//! later and somewhere else entirely. Unmapped, the same pointer takes a
+//! translation fault with the address in `FAR_EL1`.
 //!
 //! Two 4 KiB tables cover that: one level-1 table whose four entries each
 //! span 1 GiB, and one level-2 table splitting the first gigabyte into
@@ -82,6 +90,17 @@ const RAM_END: usize = PERIPHERAL_BASE;
 pub const SHARED_BASE: usize = crate::shmem::SHARED_BASE;
 const SHARED_LEN: usize = BLOCK_2M;
 
+/// The RAM window this image was linked into, from the linker script.
+mod layout {
+    include!(concat!(env!("OUT_DIR"), "/layout.rs"));
+}
+
+/// The first 2 MiB, kept mapped for the firmware's spin table.
+///
+/// Releasing another core means writing its mailbox down at `0xd8`, and
+/// that happens after translation is on.
+const LOW_BLOCK_END: usize = BLOCK_2M;
+
 /// Build the translation tables and turn on the MMU, the data cache and
 /// the instruction cache at EL1.
 ///
@@ -128,22 +147,37 @@ pub unsafe fn build_tables() {
     let l1 = addr_of_mut!(L1) as *mut u64;
     let l2 = addr_of_mut!(L2) as *mut u64;
 
-    // Level 2: the first gigabyte, in 2 MiB blocks. RAM up to the
-    // peripheral base is Normal; the rest of the gigabyte is the
-    // peripheral window.
+    // Level 2: the first gigabyte, in 2 MiB blocks.
+    // Map only what this image owns, and leave the rest of RAM invalid.
+    //
+    // Mapping all of RAM as Normal was simpler, but it also meant a stray
+    // pointer could quietly scribble over another operating system's
+    // memory and be discovered later as unexplained corruption over
+    // there. Everything outside the window below now takes a translation
+    // fault instead, which the exception handler reports with the
+    // offending address in FAR.
+    let owned = layout::OWNED_BASE..layout::OWNED_BASE + layout::OWNED_LEN;
     let mut addr = 0usize;
     for i in 0..512 {
-        let shared = (SHARED_BASE..SHARED_BASE + SHARED_LEN).contains(&addr);
-        let attrs = if shared {
+        let block = addr..addr + BLOCK_2M;
+        let attrs = if (SHARED_BASE..SHARED_BASE + SHARED_LEN).contains(&addr) {
             // Shared with another OS: Device, so both sides agree on
             // visibility without cache maintenance. Executable never.
-            VALID | AF | AP_RW_EL1 | ATTR_DEVICE | XN
-        } else if addr < RAM_END {
-            VALID | AF | SH_INNER | AP_RW_EL1 | ATTR_NORMAL
+            Some(VALID | AF | AP_RW_EL1 | ATTR_DEVICE | XN)
+        } else if addr >= RAM_END {
+            // Peripherals.
+            Some(VALID | AF | AP_RW_EL1 | ATTR_DEVICE | XN)
+        } else if addr < LOW_BLOCK_END || (block.start < owned.end && owned.start < block.end) {
+            // The spin table, and the window this image was linked into.
+            Some(VALID | AF | SH_INNER | AP_RW_EL1 | ATTR_NORMAL)
         } else {
-            VALID | AF | AP_RW_EL1 | ATTR_DEVICE | XN
+            // Someone else's memory, or nothing at all.
+            None
         };
-        l2.add(i).write_volatile(addr as u64 | attrs);
+        l2.add(i).write_volatile(match attrs {
+            Some(a) => addr as u64 | a,
+            None => 0,
+        });
         addr += BLOCK_2M;
     }
 
