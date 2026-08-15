@@ -27,6 +27,7 @@
 use core::ptr::{read_volatile, write_volatile};
 
 pub mod boot;
+pub mod mmu;
 pub use boot::drop_to_el1;
 
 /// Physical addresses of the peripherals this crate touches.

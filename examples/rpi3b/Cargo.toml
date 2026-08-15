@@ -20,6 +20,12 @@ path = "src/bin/faultcheck.rs"
 test = false
 bench = false
 
+[[bin]]
+name = "mmucheck"
+path = "src/bin/mmucheck.rs"
+test = false
+bench = false
+
 # No `rivet` dependency on purpose: the kernel's atomic read-modify-write
 # operations fault on this SoC until the MMU is configured. See
 # rivet-bsp-rpi3b's crate docs.
