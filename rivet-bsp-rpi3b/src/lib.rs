@@ -59,7 +59,9 @@ pub const AMP: bool = cfg!(feature = "amp");
 pub unsafe fn board_bringup() {
     // SAFETY: forwarded from this function's contract.
     unsafe {
-        #[cfg(feature = "amp")]
+        // Both the AMP console and the trace stream live in the shared
+        // window, so bring the rings up if either is in play.
+        #[cfg(any(feature = "amp", feature = "trace"))]
         shmem::init();
 
         drop_to_el1();

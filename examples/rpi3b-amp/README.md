@@ -240,6 +240,38 @@ That generalises to every global BCM2837 resource, `GPU_INTERRUPTS_ROUTING`
 and `core_freq` included. Per-core facilities are fine, which is exactly
 why the tick works.
 
+## Live tracing
+
+Built with `--features trace`, the kernel emits PulseTrace frames from
+the scheduler, fault and IRQ paths on its own. They go to a second ring
+in the shared window, never the console: the wire format is framed
+binary and a log line landing mid-frame corrupts it.
+
+```bash
+sudo rivet-amp load trace_demo_amp.img
+sudo rivet-amp trace /tmp/rivet.ptrace     # binary frames
+sudo rivet-amp console                     # text, at the same time
+```
+
+Captured from core 3 while Linux ran on the others, sixteen seconds of a
+two-task workload produced 175344 bytes: 5485 frames, uniformly 32 bytes
+apart, sync words spanning the whole file with no gaps. The text console
+reported the trace ring staying near empty throughout, which is the
+reader keeping up rather than the producer stalling.
+
+## Jumpers, for the two tests that need wires
+
+Everything above runs on a bare board. Two checks have a stronger form
+that needs a wire, and report the weaker one until it is there:
+
+| Wire | Header pins | Turns into |
+|---|---|---|
+| GPIO23 to GPIO24 | 16 to 18 | one pin proven to drive another, rather than a pin reading back its own level |
+| MOSI to MISO | 19 to 21 | a real SPI0 loopback, rather than a transfer that completes into a floating input |
+
+Nothing else changes: `periph_test` detects both and says which case it
+measured.
+
 ## What is not done yet
 
 - Peripheral interrupts still go wherever `GPU_INTERRUPTS_ROUTING` at

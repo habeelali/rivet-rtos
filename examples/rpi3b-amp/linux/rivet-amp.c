@@ -2,7 +2,8 @@
 //
 //   rivet-amp probe                 report whether this machine is set up
 //   rivet-amp load <image>          copy the image in and release the core
-//   rivet-amp console               drain rivet's shared-memory ring
+//   rivet-amp console               drain rivet's text console ring
+//   rivet-amp trace <file>          drain the PulseTrace ring to a file
 //
 // Build:  cc -O2 -o rivet-amp rivet-amp.c
 // Run as root.
@@ -34,6 +35,11 @@
 // Must match rivet_bsp_rpi3b::shmem.
 #define SHMEM_BASE   0x31000000UL
 #define SHMEM_LEN    0x00200000UL
+// Two rings in the window: text for a human, and PulseTrace's framed
+// binary. They cannot share a transport, because a log line landing in
+// the middle of a frame corrupts it.
+#define CONSOLE_OFF  0x00000000UL
+#define TRACE_OFF    0x00100000UL
 #define RING_MAGIC   0x52565443U    // "RVTC"
 #define OFF_MAGIC    0
 #define OFF_CAP      8
@@ -206,10 +212,15 @@ static int cmd_load(const char *path) {
 
     // Clear the ring header so `console` does not replay a previous run's
     // output as if it were new.
-    unsigned char *ring = map_phys(fd, SHMEM_BASE, 0x1000, 1);
-    if (ring) {
-        zero_device(ring, 64);
-        msync(ring, 64, MS_SYNC);
+    // Clear both ring headers, so a drain does not replay a previous
+    // run's output as if it were new.
+    for (unsigned long off = 0; off <= TRACE_OFF; off += TRACE_OFF) {
+        unsigned char *ring = map_phys(fd, SHMEM_BASE + off, 0x1000, 1);
+        if (ring) {
+            zero_device(ring, 64);
+            msync(ring, 64, MS_SYNC);
+        }
+        if (TRACE_OFF == 0) break;
     }
 
     // Release the core. The mailbox write has to reach memory rather than
@@ -242,10 +253,13 @@ static int cmd_load(const char *path) {
     return 0;
 }
 
-static int cmd_console(void) {
+// Drain one ring. `out` NULL means stdout as text; otherwise the bytes
+// are written to that file verbatim, which is what the binary trace
+// stream needs.
+static int drain(unsigned long off, FILE *out) {
     int fd = open("/dev/mem", O_RDWR | O_SYNC);
     if (fd < 0) { perror("/dev/mem"); return 1; }
-    unsigned char *ring = map_phys(fd, SHMEM_BASE, SHMEM_LEN, 1);
+    unsigned char *ring = map_phys(fd, SHMEM_BASE + off, SHMEM_LEN - off, 1);
     if (!ring) { perror("mmap shared window"); close(fd); return 1; }
 
     volatile uint32_t *magic = (volatile uint32_t *)(ring + OFF_MAGIC);
@@ -253,11 +267,12 @@ static int cmd_console(void) {
     volatile uint64_t *wp    = (volatile uint64_t *)(ring + OFF_WRITE);
     volatile uint64_t *rp    = (volatile uint64_t *)(ring + OFF_READ);
 
-    fprintf(stderr, "waiting for the ring at %#lx...\n", SHMEM_BASE);
+    fprintf(stderr, "waiting for the ring at %#lx...\n", SHMEM_BASE + off);
     while (*magic != RING_MAGIC) usleep(20000);
     uint32_t capacity = *cap;
     fprintf(stderr, "ring live, capacity %u bytes. Ctrl-C to stop.\n", capacity);
 
+    unsigned long long total = 0;
     for (;;) {
         uint64_t w = *wp, r = *rp;
         if (w == r) { usleep(10000); continue; }
@@ -269,22 +284,45 @@ static int cmd_console(void) {
             r = w - capacity;
         }
         while (r < w) {
-            putchar(ring[OFF_DATA + (r % capacity)]);
+            int c = ring[OFF_DATA + (r % capacity)];
+            if (out) fputc(c, out); else putchar(c);
             r++;
+            total++;
         }
-        fflush(stdout);
+        if (out) {
+            fflush(out);
+            fprintf(stderr, "\r%llu bytes", total);
+        } else {
+            fflush(stdout);
+        }
         *rp = r;
     }
+}
+
+static int cmd_console(void) {
+    return drain(CONSOLE_OFF, NULL);
+}
+
+static int cmd_trace(const char *path) {
+    FILE *out = fopen(path, "wb");
+    if (!out) { perror("open trace output"); return 1; }
+    fprintf(stderr, "writing PulseTrace frames to %s, Ctrl-C to stop\n", path);
+    return drain(TRACE_OFF, out);
 }
 
 int main(int argc, char **argv) {
     install_fault_handler();
     if (argc < 2) {
-        fprintf(stderr, "usage: %s probe | load <image> | console\n", argv[0]);
+        fprintf(stderr, "usage: %s probe | load <image> | console | trace <file>\n",
+                argv[0]);
         return 2;
     }
     if (!strcmp(argv[1], "probe"))   return cmd_probe();
     if (!strcmp(argv[1], "console")) return cmd_console();
+    if (!strcmp(argv[1], "trace")) {
+        if (argc < 3) { fprintf(stderr, "trace needs an output path\n"); return 2; }
+        return cmd_trace(argv[2]);
+    }
     if (!strcmp(argv[1], "load")) {
         if (argc < 3) { fprintf(stderr, "load needs an image path\n"); return 2; }
         return cmd_load(argv[2]);

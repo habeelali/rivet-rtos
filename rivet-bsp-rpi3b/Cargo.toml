@@ -28,6 +28,10 @@ kernel = ["dep:rivet"]
 # core that arrives is the one we were handed and the serial line belongs
 # to the other side. Diagnostics go to the shared-memory ring instead.
 amp = []
+# PulseTrace live tracing: forwards to rivet's own `trace` feature and
+# implements the board-side __rivet_board_trace_write it needs. Frames go
+# to their own ring in the shared window, never the console.
+trace = ["rivet/trace"]
 
 [dependencies]
 rivet = { path = "../rivet", version = "0.2.0", package = "rivet-rtos", optional = true }

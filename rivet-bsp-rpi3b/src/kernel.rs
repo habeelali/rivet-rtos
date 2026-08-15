@@ -286,6 +286,28 @@ extern "Rust" fn __rivet_board_console_write(ptr: *const u8, len: usize) {
 #[no_mangle]
 extern "Rust" fn __rivet_board_console_kick_tx() {}
 
+// ── Trace transport ───────────────────────────────────────────────
+
+/// PulseTrace frames go to their own ring, never the console.
+///
+/// The wire format is framed and checksummed binary, so a log line
+/// landing in the middle of it corrupts a frame. Sharing one transport
+/// between the two would make both unreadable, which is why the shared
+/// window carries a second ring rather than one.
+///
+/// The UART is not an option here even standalone: on this board it is
+/// either the console or, alongside Linux, not ours at all.
+#[cfg(feature = "trace")]
+#[no_mangle]
+extern "Rust" fn __rivet_board_trace_write(ptr: *const u8, len: usize) {
+    // SAFETY: the kernel passes a valid pointer/length pair from a live
+    // byte slice.
+    let bytes = unsafe { core::slice::from_raw_parts(ptr, len) };
+    // SAFETY: the trace ring is brought up by `board_bringup` before any
+    // task can run and therefore before anything can emit a frame.
+    unsafe { crate::shmem::TRACE.write_bytes(bytes) };
+}
+
 // ── Reset, exit, watchdog ─────────────────────────────────────────
 
 #[no_mangle]
