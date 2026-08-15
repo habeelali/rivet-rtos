@@ -1,0 +1,27 @@
+[package]
+name = "rpi3b-bringup"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+# Both binaries are #![no_std] #![no_main]: there is no libtest for this
+# target, so the test and bench harnesses have to be turned off or
+# `--all-targets` fails to build them.
+[[bin]]
+name = "bringup"
+path = "src/bin/bringup.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "faultcheck"
+path = "src/bin/faultcheck.rs"
+test = false
+bench = false
+
+# No `rivet` dependency on purpose: the kernel's atomic read-modify-write
+# operations fault on this SoC until the MMU is configured. See
+# rivet-bsp-rpi3b's crate docs.
+[dependencies]
+rivet-bsp-rpi3b = { path = "../../rivet-bsp-rpi3b" }

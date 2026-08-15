@@ -1,0 +1,82 @@
+/* Raspberry Pi 3 Model B (BCM2837, Cortex-A53), bare-metal AArch64.
+ *
+ * Unlike every other board here there is no bootloader stage, no DFU
+ * protocol and no vector table at a fixed reset address. The VideoCore
+ * firmware reads kernel8.img off the FAT partition, copies it verbatim
+ * into RAM and branches to its first byte, so `.text.boot` is KEEP-ed
+ * and placed first: byte 0 of the flat image *is* the entry point.
+ * ENTRY() below only affects the ELF, which exists for gdb/objdump —
+ * the firmware never sees it.
+ */
+OUTPUT_ARCH(aarch64)
+ENTRY(_start)
+
+MEMORY
+{
+  /* config.txt pins kernel_address=0x80000. LENGTH is the window this
+   * image is allowed to occupy, not the board's full 1 GiB: nothing
+   * here allocates, so keeping it small makes an overrun a link error
+   * instead of a silent stomp on whatever else lands in RAM. */
+  RAM (rwx) : ORIGIN = 0x80000, LENGTH = 16M
+}
+
+SECTIONS
+{
+  .text : ALIGN(8) {
+    /* Must be the first byte of the image — the firmware branches
+     * straight here with no header of any kind. */
+    KEEP(*(.text.boot))
+    *(.text .text.*)
+  } > RAM
+
+  /* VBAR_ELx ignores the low 11 bits of whatever is written to it, so
+   * the exception vector table has to be 2 KiB aligned or the CPU will
+   * silently vector somewhere else entirely. */
+  .vectors : ALIGN(2048) {
+    KEEP(*(.text.vectors))
+  } > RAM
+
+  .rodata : ALIGN(8) { *(.rodata .rodata.*) } > RAM
+
+  .data : ALIGN(8) {
+    __data_start = .;
+    *(.data .data.*)
+    . = ALIGN(8);
+    __data_end = .;
+  } > RAM
+
+  /* The whole image is loaded straight into RAM, so there is no separate
+   * load address to copy `.data` from — same situation as
+   * rivet-bsp-qemu-virt, and the self-copy this implies is a no-op. */
+  __data_load = __data_start;
+
+  /* 16-byte aligned at both ends: the boot code zeroes this with
+   * `stp xzr, xzr, [x0], #16`, which needs a whole number of pairs. */
+  .bss (NOLOAD) : ALIGN(16) {
+    __bss_start = .;
+    *(.bss .bss.*)
+    *(COMMON)
+    . = ALIGN(16);
+    __bss_end = .;
+  } > RAM
+
+  .stack (NOLOAD) : ALIGN(4096) {
+    __stack_bottom = .;
+    . += 64K;
+    __stack_top = .;
+  } > RAM
+
+  _end = .;
+
+  /* Under panic=abort the unwind tables are dead weight, and leaving
+   * them to orphan-section placement would stretch the objcopy'd flat
+   * binary across a huge address span — the same failure mode
+   * link-stm32f401re.ld documents for .ARM.exidx on Cortex-M, where a
+   * 24 KB firmware came out as a 400 MB image. */
+  /DISCARD/ : {
+    *(.eh_frame) *(.eh_frame_hdr)
+    *(.note .note.*)
+    *(.comment)
+    *(.ARM.exidx*) *(.ARM.extab*)
+  }
+}

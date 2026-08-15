@@ -1,0 +1,27 @@
+[package]
+name = "rivet-bsp-rpi3b"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Rivet RTOS board support: Raspberry Pi 3 Model B (BCM2837, Cortex-A53), real hardware"
+# Experimental AArch64 bring-up. Not published while the port is still a
+# UART-only milestone with no kernel integration (see src/lib.rs).
+publish = false
+# Lets this crate's build.rs publish its linker script path to direct
+# dependents as DEP_RIVET_BSP_RPI3B_LINKER_SCRIPT (see build.rs).
+links = "rivet_bsp_rpi3b"
+
+[features]
+default = ["panic-handler"]
+# Provide a default #[panic_handler] that reports over the PL011. Binaries
+# can disable this and supply their own, same as rivet-rt's flag of the
+# same name.
+panic-handler = []
+
+# Deliberately no `rivet` dependency yet — see the crate docs in
+# src/lib.rs for why the kernel cannot run on this SoC until the MMU is
+# configured.
+[dependencies]
+
+[lib]

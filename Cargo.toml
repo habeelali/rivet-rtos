@@ -12,6 +12,7 @@ members = [
     "rivet-bsp-esp32c6",
     "rivet-bsp-stm32f401re",
     "rivet-bsp-rp2040",
+    "rivet-bsp-rpi3b",
     "rivet-rt",
     "examples/qemu-cm3",
     "examples/qemu-riscv",
@@ -19,6 +20,7 @@ members = [
     "examples/esp32c6",
     "examples/stm32f401re",
     "examples/rp2040",
+    "examples/rpi3b",
     "xtask",
 ]
 resolver = "2"
