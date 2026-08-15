@@ -70,6 +70,49 @@ cargo build --release
 rust-objcopy -O binary ../../target/aarch64-unknown-none/release/amp_demo rivet-amp.img
 ```
 
+## Provisioning a card from scratch
+
+`linux/provision.sh` applies every change this arrangement needs to a
+freshly imaged Pi OS Lite card, from the machine with the card reader:
+
+```bash
+./linux/provision.sh /media/you/bootfs /media/you/rootfs rivet.img
+```
+
+It is idempotent and backs up everything it replaces as `.stock`. Prefer
+it over hand-editing, because several of the steps are decisions rather
+than settings and the script records why. `linux/mkimage.sh` then clones
+the finished card into one distributable `.img`.
+
+Boot it and rivet starts by itself:
+
+```bash
+journalctl -b -u rivet -u rivet-console   # what the RTOS said, at boot
+sudo rivet-amp send ping                  # talk to it
+```
+
+## Memory: reserved-memory, not mem=
+
+The carve-out is a `/reserved-memory` node marked `no-map`, which Linux
+confirms at boot:
+
+```
+OF: reserved mem: 0x30000000..0x311fffff (18432 KiB) nomap non-reusable rivet@30000000
+```
+
+`no-map` means Linux creates no mapping for that range at all, which is a
+stronger statement than not allocating from it. It also replaced an
+earlier `mem=768M`, which worked but made Linux ignore *everything* above
+the line: switching to the node handed 157 MiB back (748 MiB to 909 MiB
+of usable RAM) for no loss of protection.
+
+Worth being exact about what that protects against. Linux will not touch
+the region in normal operation, and no process can reach it through
+ordinary allocation. Root with `/dev/mem` still can, and always will,
+because that is precisely how the loader writes the image in. That hole
+cannot be closed without giving up the loader, so it is stated rather
+than papered over.
+
 ## Configure the boot partition
 
 `cmdline.txt` gains two options, on the single line it already has:

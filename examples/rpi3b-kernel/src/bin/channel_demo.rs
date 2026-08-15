@@ -172,17 +172,16 @@ fn supervisor(_: &'static ()) -> ! {
     w("[rivet] doorbell armed, waiting for commands from Linux\n");
     w("[rivet] try: sudo rivet-amp send ping\n");
 
-    let start = rivet::port::board::now_us();
+    // Runs until told to stop. No inactivity timeout: this is the image
+    // systemd starts at boot, and a service that exits because nobody
+    // spoke to it for two minutes is not a service. It is also why this
+    // demo is hardware-only and not in the QEMU suite, since it needs
+    // Linux on the other cores to drive it at all.
     loop {
         rivet::preempt::sleep_ms(500);
         if QUIT.load(Ordering::Relaxed) {
             w("\nCHANNEL_DEMO_OK\n");
             rivet::exit_success();
-        }
-        // Do not sit here forever if nobody is driving it.
-        if rivet::port::board::now_us() - start > 120_000_000 {
-            w("\nCHANNEL_DEMO_TIMEOUT: no quit received in 120 s\n");
-            rivet::exit_failure(1);
         }
     }
 }
