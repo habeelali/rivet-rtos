@@ -22,6 +22,18 @@ path = "src/bin/core3_demo.rs"
 test = false
 bench = false
 
+[[bin]]
+name = "kernel_features"
+path = "src/bin/kernel_features.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "periph_test"
+path = "src/bin/periph_test.rs"
+test = false
+bench = false
+
 [dependencies]
 rivet = { path = "../../rivet", package = "rivet-rtos" }
 rivet-arch-aarch64 = { path = "../../rivet-arch-aarch64" }

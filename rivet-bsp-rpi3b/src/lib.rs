@@ -27,12 +27,48 @@
 use core::ptr::{read_volatile, write_volatile};
 
 pub mod boot;
+pub mod gpio;
+pub mod i2c;
 #[cfg(feature = "kernel")]
 pub mod kernel;
 pub mod mmu;
 pub mod shmem;
 pub mod smp;
+pub mod spi;
 pub use boot::drop_to_el1;
+
+/// True when this crate was built to run alongside another operating
+/// system. Lets a demo skip whatever that other system owns without
+/// needing its own copy of the feature flag.
+pub const AMP: bool = cfg!(feature = "amp");
+
+/// The standard bring-up every rivet image on this board needs, in the
+/// right order for however it was built.
+///
+/// Alone on the machine that is just the EL1 drop and the identity map.
+/// Alongside another OS it also brings up the shared ring first, because
+/// that is the only way anything can be reported, and redirects the
+/// kernel console into it afterwards so the UART is left to its owner.
+///
+/// Having one entry point for this is what lets the same demo source
+/// build for both, rather than each package carrying a near-copy that
+/// drifts.
+///
+/// # Safety
+/// Call once, early, from EL2, on a valid stack.
+pub unsafe fn board_bringup() {
+    // SAFETY: forwarded from this function's contract.
+    unsafe {
+        #[cfg(feature = "amp")]
+        shmem::init();
+
+        drop_to_el1();
+        mmu::enable_el1();
+
+        #[cfg(all(feature = "amp", feature = "kernel"))]
+        kernel::use_shared_console();
+    }
+}
 
 /// Physical addresses of the peripherals this crate touches.
 pub mod mmio {
@@ -250,6 +286,37 @@ impl Pl011 {
     /// reports idle.
     pub unsafe fn flush(&self) {
         while read_volatile((PL011_BASE + PL011_FR) as *const u32) & PL011_FR_BUSY != 0 {}
+    }
+
+    /// Turn on the PL011's internal loopback, which ties the transmitter
+    /// to the receiver inside the block with no pins involved.
+    ///
+    /// The only self-test on this board that needs no wiring: SPI has no
+    /// equivalent bit and I2C has no loopback at all.
+    ///
+    /// # Safety
+    /// Reconfigures the UART, so anything mid-transmission is disrupted.
+    pub unsafe fn set_loopback(&self, on: bool) {
+        let cr = (PL011_BASE + PL011_CR) as *mut u32;
+        // SAFETY: read-modify-write of the control register.
+        unsafe {
+            let v = read_volatile(cr);
+            write_volatile(cr, if on { v | (1 << 7) } else { v & !(1 << 7) });
+        }
+    }
+
+    /// Read a byte if one is waiting.
+    ///
+    /// # Safety
+    /// Reads PL011 registers directly.
+    pub unsafe fn try_read(&self) -> Option<u8> {
+        // SAFETY: plain register reads.
+        unsafe {
+            if read_volatile((PL011_BASE + PL011_FR) as *const u32) & PL011_FR_RXFE != 0 {
+                return None;
+            }
+            Some(read_volatile((PL011_BASE + PL011_DR) as *const u32) as u8)
+        }
     }
 }
 

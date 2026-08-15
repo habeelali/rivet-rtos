@@ -31,5 +31,6 @@ amp = []
 
 [dependencies]
 rivet = { path = "../rivet", version = "0.2.0", package = "rivet-rtos", optional = true }
+embedded-hal = "1.0"
 
 [lib]

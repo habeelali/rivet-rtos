@@ -327,8 +327,13 @@ extern "Rust" fn __rivet_board_exit(code: u32) -> ! {
     }
 }
 
-/// PM watchdog countdown, in units of roughly 16 microseconds.
-const WDOG_TICKS_PER_US: u32 = 1;
+/// The PM watchdog counts at 65536 Hz, so one tick is about 15.26 us.
+/// Treating microseconds as ticks, which an earlier version did, asks for
+/// a timeout 65536 times shorter than intended.
+const WDOG_TICKS_PER_SEC: u64 = 65536;
+/// The counter is 20 bits, so the longest period it can express is a
+/// little over 16 seconds.
+const WDOG_MAX_TICKS: u64 = 0x000F_FFFF;
 
 #[no_mangle]
 extern "Rust" fn __rivet_board_wdt_init(period_us: u32) {
@@ -355,9 +360,10 @@ static WDT_PERIOD_US: AtomicU32 = AtomicU32::new(0);
 
 fn arm_watchdog(period_us: u32) {
     WDT_PERIOD_US.store(period_us, Ordering::Release);
-    // The counter is 20 bits wide, so the longest period it can express is
-    // about 16 seconds; saturate rather than wrap into a much shorter one.
-    let ticks = period_us.saturating_mul(WDOG_TICKS_PER_US).min(0x000F_FFFF);
+    // Saturate rather than wrap: wrapping a too-long period turns a
+    // generous timeout into a very short one, which resets the board
+    // instead of protecting it.
+    let ticks = ((period_us as u64 * WDOG_TICKS_PER_SEC) / 1_000_000).min(WDOG_MAX_TICKS) as u32;
     // SAFETY: password-protected PM register writes, as in `reset`.
     unsafe {
         write_volatile((PM_BASE + PM_WDOG) as *mut u32, PM_PASSWORD | ticks);

@@ -16,6 +16,21 @@ path = "src/bin/amp_demo.rs"
 test = false
 bench = false
 
+# The same sources as the standalone package, built for AMP instead:
+# a different load address, the `amp` entry point, and the shared-memory
+# console. `board_bringup` is what lets one file serve both.
+[[bin]]
+name = "kernel_features_amp"
+path = "../rpi3b-kernel/src/bin/kernel_features.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "periph_test_amp"
+path = "../rpi3b-kernel/src/bin/periph_test.rs"
+test = false
+bench = false
+
 [dependencies]
 rivet = { path = "../../rivet", package = "rivet-rtos" }
 rivet-arch-aarch64 = { path = "../../rivet-arch-aarch64" }
