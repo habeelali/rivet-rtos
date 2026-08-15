@@ -43,6 +43,11 @@ pub use boot::drop_to_el1;
 /// needing its own copy of the feature flag.
 pub const AMP: bool = cfg!(feature = "amp");
 
+/// True when the trace transport is compiled in. Lets a demo tell "no
+/// frames because tracing is off" apart from "no frames because
+/// something is broken", which are very different results.
+pub const TRACE_ENABLED: bool = cfg!(feature = "trace");
+
 /// The standard bring-up every rivet image on this board needs, in the
 /// right order for however it was built.
 ///
