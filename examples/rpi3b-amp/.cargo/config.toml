@@ -1,0 +1,14 @@
+[build]
+target = "aarch64-unknown-none"
+
+[env]
+# Above whatever Linux is told to manage with `mem=`, so the two never
+# contend for the same physical pages. Must match the address the loader
+# copies this image to, and the reserved-memory arithmetic in the README.
+RIVET_RPI3B_LOAD_ADDR = "0x30000000"
+RIVET_RPI3B_RAM_LEN = "16M"
+
+[target.aarch64-unknown-none]
+rustflags = [
+    "-C", "target-cpu=cortex-a53",
+]

@@ -67,6 +67,21 @@ const BLOCK_1G: usize = 1024 * 1024 * 1024;
 /// Everything from here up is peripherals rather than RAM.
 const RAM_END: usize = PERIPHERAL_BASE;
 
+/// A 2 MiB window of RAM mapped Device rather than Normal, for memory
+/// shared with another operating system.
+///
+/// Mapping it non-cacheable is not an optimisation choice, it is what
+/// makes the sharing work. Linux hands out `/dev/mem` mappings of
+/// non-RAM regions as uncached, so if this side wrote through a
+/// write-back cache the two would simply not see each other. Matching
+/// Device on both sides removes the question. It also removes any need
+/// for cache maintenance in the console fast path.
+///
+/// Must stay 2 MiB aligned, since that is the block size the level-2
+/// table uses.
+pub const SHARED_BASE: usize = crate::shmem::SHARED_BASE;
+const SHARED_LEN: usize = BLOCK_2M;
+
 /// Build the translation tables and turn on the MMU, the data cache and
 /// the instruction cache at EL1.
 ///
@@ -118,7 +133,12 @@ pub unsafe fn build_tables() {
     // peripheral window.
     let mut addr = 0usize;
     for i in 0..512 {
-        let attrs = if addr < RAM_END {
+        let shared = (SHARED_BASE..SHARED_BASE + SHARED_LEN).contains(&addr);
+        let attrs = if shared {
+            // Shared with another OS: Device, so both sides agree on
+            // visibility without cache maintenance. Executable never.
+            VALID | AF | AP_RW_EL1 | ATTR_DEVICE | XN
+        } else if addr < RAM_END {
             VALID | AF | SH_INNER | AP_RW_EL1 | ATTR_NORMAL
         } else {
             VALID | AF | AP_RW_EL1 | ATTR_DEVICE | XN

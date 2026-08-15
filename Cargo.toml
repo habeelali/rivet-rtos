@@ -23,6 +23,7 @@ members = [
     "examples/rp2040",
     "examples/rpi3b",
     "examples/rpi3b-kernel",
+    "examples/rpi3b-amp",
     "xtask",
 ]
 resolver = "2"

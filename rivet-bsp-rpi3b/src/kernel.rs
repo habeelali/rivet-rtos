@@ -224,9 +224,32 @@ const BAUD: u32 = 115_200;
 
 #[no_mangle]
 extern "Rust" fn __rivet_board_init() {
+    // Leave the UART alone when another OS owns it. `Pl011::init`
+    // re-muxes GPIO14/15, which would pull the serial console out from
+    // under Linux mid-sentence.
+    if CONSOLE_TO_SHMEM.load(Ordering::Acquire) != 0 {
+        return;
+    }
     // SAFETY: called once, before any task runs, and this core is the
     // only thing touching the UART or GPIO14/15.
     unsafe { Pl011.init(UART_CLK_HZ, BAUD) };
+}
+
+/// Where kernel console output goes.
+///
+/// Defaults to the UART. Running alongside another OS that owns the
+/// serial line, [`use_shared_console`] redirects it into the ring in
+/// shared memory instead, since there is only one UART on the header.
+static CONSOLE_TO_SHMEM: AtomicU32 = AtomicU32::new(0);
+
+/// Send kernel console output to the shared-memory ring rather than the
+/// UART, for when another OS owns the serial line.
+///
+/// # Safety
+/// The shared window must be mapped, and [`crate::shmem::init`] must
+/// have run.
+pub unsafe fn use_shared_console() {
+    CONSOLE_TO_SHMEM.store(1, Ordering::Release);
 }
 
 #[no_mangle]
@@ -234,6 +257,12 @@ extern "Rust" fn __rivet_board_console_write(ptr: *const u8, len: usize) {
     // SAFETY: the kernel passes a valid pointer/length pair from a live
     // byte slice.
     let bytes = unsafe { core::slice::from_raw_parts(ptr, len) };
+    if CONSOLE_TO_SHMEM.load(Ordering::Acquire) != 0 {
+        // SAFETY: the redirect is only armed once the window is mapped
+        // and the ring initialised.
+        unsafe { crate::shmem::write_bytes(bytes) };
+        return;
+    }
     for &b in bytes {
         // SAFETY: blocking write to a UART brought up in `__rivet_board_init`.
         unsafe { Pl011.put_byte(b) };

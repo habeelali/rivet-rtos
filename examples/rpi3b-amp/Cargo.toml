@@ -1,0 +1,22 @@
+[package]
+name = "rpi3b-amp"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+# Its own package because it is built differently, not just differently
+# configured: a load address well clear of Linux's kernel, and the `amp`
+# feature changing the entry point. Cargo unifies features per package,
+# so sharing one with the standalone demos would apply that entry to them
+# too.
+[[bin]]
+name = "amp_demo"
+path = "src/bin/amp_demo.rs"
+test = false
+bench = false
+
+[dependencies]
+rivet = { path = "../../rivet", package = "rivet-rtos" }
+rivet-arch-aarch64 = { path = "../../rivet-arch-aarch64" }
+rivet-bsp-rpi3b = { path = "../../rivet-bsp-rpi3b", features = ["kernel", "amp"] }

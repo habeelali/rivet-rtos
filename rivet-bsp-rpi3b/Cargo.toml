@@ -23,6 +23,11 @@ panic-handler = []
 # binaries, which deliberately predate the kernel running on this board,
 # link nothing they do not need.
 kernel = ["dep:rivet"]
+# Build for running alongside another operating system: the entry point
+# drops the core guard and the boot-time UART checkpoints, because the
+# core that arrives is the one we were handed and the serial line belongs
+# to the other side. Diagnostics go to the shared-memory ring instead.
+amp = []
 
 [dependencies]
 rivet = { path = "../rivet", version = "0.2.0", package = "rivet-rtos", optional = true }

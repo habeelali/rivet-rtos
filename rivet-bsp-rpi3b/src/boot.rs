@@ -20,12 +20,15 @@
 //! D         exception vectors installed
 //! ```
 
-use core::arch::global_asm;
 use core::fmt::Write;
 
+#[cfg(not(feature = "amp"))]
 use crate::Pl011;
 
-global_asm!(
+// Entry when rivet owns the machine, loaded by the firmware at
+// `kernel_address` with every other core still parked.
+#[cfg(not(feature = "amp"))]
+core::arch::global_asm!(
     r#"
 .section .text.boot, "ax"
 .global _start
@@ -123,6 +126,56 @@ _start:
 .Lhalt:
     wfe
     b       .Lhalt
+"#
+);
+
+// Entry when another operating system owns the machine.
+//
+// Reached by whichever core the other OS released, so there is no core
+// guard: the core that arrives is the one rivet was handed. There are no
+// checkpoint characters either, because the UART belongs to the other
+// side and poking it would cut into its console mid-line. Diagnostics go
+// to the shared-memory ring instead, once the caller sets it up.
+#[cfg(feature = "amp")]
+core::arch::global_asm!(
+    r#"
+.section .text.boot, "ax"
+.global _start
+_start:
+    mov     x19, x0
+
+    // This core's own stack. Cores released by another OS arrive with SP
+    // undefined, exactly like one released from the spin table.
+    ldr     x0, =__stack_top
+    mov     sp, x0
+
+    // Zero .bss. Both ends are 16-byte aligned by the linker script.
+    ldr     x0, =__bss_start
+    ldr     x1, =__bss_end
+.Lamp_bss:
+    cmp     x0, x1
+    b.hs    .Lamp_bss_done
+    stp     xzr, xzr, [x0], #16
+    b       .Lamp_bss
+.Lamp_bss_done:
+
+    msr     cptr_el2, xzr               // let EL2 use FP/SIMD
+    isb
+    adr     x0, _vectors                // fault reporting before anything can fault
+    msr     vbar_el2, x0
+    isb
+
+    mov     x0, x19
+    bl      rust_main
+.Lamp_halt:
+    wfe
+    b       .Lamp_halt
+"#
+);
+
+core::arch::global_asm!(
+    r#"
+.section .text.boot, "ax"
 
 // Emit one byte on the PL011 using only registers, so this works before
 // the stack, .bss or any static data are usable. The literal-pool load
@@ -266,6 +319,41 @@ extern "C" {
     pub fn drop_to_el1();
 }
 
+/// Where boot-time diagnostics go.
+///
+/// The UART when rivet owns the machine. When another OS does, that line
+/// is its console, so this writes into the shared-memory ring instead
+/// rather than cutting into someone else's output.
+pub struct Diag;
+
+#[cfg(not(feature = "amp"))]
+impl core::fmt::Write for Diag {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        Pl011.write_str(s)
+    }
+}
+
+#[cfg(feature = "amp")]
+impl core::fmt::Write for Diag {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        // SAFETY: the AMP entry maps the shared window before anything
+        // can fault or panic.
+        unsafe { crate::shmem::write_bytes(s.as_bytes()) };
+        Ok(())
+    }
+}
+
+impl Diag {
+    /// Drain whatever the sink needs draining. A no-op for the ring.
+    fn flush(&self) {
+        #[cfg(not(feature = "amp"))]
+        // SAFETY: waiting for the transmitter to go idle.
+        unsafe {
+            Pl011.flush()
+        };
+    }
+}
+
 /// Called from the exception vectors with the faulting EL's state.
 ///
 /// Reports rather than recovers: the caller halts afterwards. Turning a
@@ -273,7 +361,7 @@ extern "C" {
 #[no_mangle]
 pub extern "C" fn rust_fault_handler(esr: u64, elr: u64, far: u64, spsr: u64) {
     let ec = (esr >> 26) & 0x3f;
-    let mut uart = Pl011;
+    let mut uart = Diag;
     let _ = write!(
         uart,
         "\n*** EXCEPTION ***\n\
@@ -297,8 +385,7 @@ pub extern "C" fn rust_fault_handler(esr: u64, elr: u64, far: u64, spsr: u64) {
              \x20    kernel cannot run here until an identity map exists.\n"
         );
     }
-    // SAFETY: draining the transmitter before the caller halts.
-    unsafe { uart.flush() };
+    uart.flush();
 }
 
 /// Default panic handler, reporting over the PL011.
@@ -308,10 +395,9 @@ pub extern "C" fn rust_fault_handler(esr: u64, elr: u64, far: u64, spsr: u64) {
 #[cfg(feature = "panic-handler")]
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
-    let mut uart = Pl011;
+    let mut uart = Diag;
     let _ = write!(uart, "\n*** PANIC: {info}\n");
-    // SAFETY: draining the transmitter before halting.
-    unsafe { uart.flush() };
+    uart.flush();
     loop {
         // SAFETY: WFE is side-effect free.
         unsafe { core::arch::asm!("wfe", options(nomem, nostack)) };
