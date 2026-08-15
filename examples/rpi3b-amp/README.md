@@ -94,7 +94,33 @@ sudo ./rivet-amp console             # watch rivet's output
 `probe` reports each prerequisite separately rather than failing as a
 unit, because they fail for different reasons and want different fixes.
 
-## The one genuinely uncertain step
+## The spin table maps, so plain userspace is enough
+
+This was the open question, and it is settled: on Pi OS Lite with kernel
+6.18.34, `/dev/mem` maps all three regions.
+
+```
+map reserved 0x30000000 : OK
+map shared   0x31000000 : OK
+map spintable 0xd8      : OK
+```
+
+The reserved and shared windows map because `mem=768M` keeps them out of
+Linux's memory map entirely. The spin table maps for a different reason,
+visible in `/proc/iomem`:
+
+```
+00000000-2fffffff : System RAM
+  00000000-00000fff : reserved
+```
+
+The first page is carved out as `reserved` inside System RAM, so
+`STRICT_DEVMEM` does not treat it as ordinary memory. Neither fallback
+below is needed. They are kept because a different kernel build could
+easily decide otherwise, and because the armstub route stays the better
+design for anything permanent.
+
+## The fallbacks, if a kernel ever refuses
 
 Mapping the spin table. `mem=768M` keeps the reserved region out of
 Linux's memory map, so `CONFIG_STRICT_DEVMEM` permits mapping it. The spin
