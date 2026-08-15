@@ -35,16 +35,34 @@ _start:
     // x1..x3 = 0, and SP *undefined*.
     mov     x19, x0                     // keep the DTB pointer for the banner
 
-    // Only core 0 runs the bring-up. Real firmware parks cores 1-3 on
-    // the spin table and never sends them here, but QEMU's raspi3b
-    // releases all four straight to the entry point, so this guard is
-    // load-bearing under emulation and free on hardware.
+    // Only core 0 runs the bring-up. Both the real firmware and QEMU park
+    // cores 1-3 on the spin table before they ever reach this image, so
+    // in practice nothing else arrives here: the witness array below
+    // reads all zeroes on both. Kept anyway, because a stray core landing
+    // on the boot path would otherwise race core 0 through .bss zeroing
+    // with no sign of why.
     mrs     x0, mpidr_el1
     and     x0, x0, #3
     cbz     x0, .Lcore0
+
+    // Secondary cores implement the same spin-table protocol the firmware
+    // uses, so a release works identically whether this core was parked
+    // by the firmware or arrived here under emulation.
 .Lpark:
+    // Check in, so the releasing core can report which cores ever ran
+    // this code. Written on every wake, which keeps it from being lost to
+    // core 0's .bss zeroing happening concurrently at boot.
+    adrp    x2, RIVET_SMP_WITNESS
+    add     x2, x2, :lo12:RIVET_SMP_WITNESS
+    mov     x3, #1
+    str     x3, [x2, x0, lsl #3]
+    dsb     sy
     wfe
-    b       .Lpark
+    // Spin table at 0xd8, one 64-bit slot per core.
+    mov     x2, #0xd8
+    ldr     x1, [x2, x0, lsl #3]
+    cbz     x1, .Lpark
+    br      x1
 .Lcore0:
 
     // The stack comes first, because everything below is a real call and

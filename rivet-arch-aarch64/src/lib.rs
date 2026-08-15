@@ -374,9 +374,22 @@ extern "Rust" fn __rivet_arch_request_reschedule_on(hart: usize) {
     }
 }
 
+/// Always zero, deliberately, and not the physical core number.
+///
+/// The kernel uses this to index per-hart scheduler state sized by
+/// `RIVET_MAX_HARTS`, so it has to be a dense index into the set of cores
+/// rivet is actually scheduling on, not an identifier for the silicon.
+/// This port runs the kernel on exactly one core, which may well be core
+/// 3 with the others parked or owned by another OS entirely; from the
+/// scheduler's point of view that core is hart 0. Returning `MPIDR` here
+/// would index a one-element array out of bounds the moment the kernel
+/// ran anywhere but core 0.
+///
+/// `rivet_bsp_rpi3b::smp::current_core` reports the physical number for
+/// diagnostics.
 #[no_mangle]
 extern "Rust" fn __rivet_arch_hart_id() -> usize {
-    (read_sysreg!("mpidr_el1") & 0b11) as usize
+    0
 }
 
 #[no_mangle]

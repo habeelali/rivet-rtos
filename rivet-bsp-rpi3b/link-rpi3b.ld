@@ -85,6 +85,17 @@ SECTIONS
     __stack_top = .;
   } > RAM
 
+  /* One 64 KiB stack per core, for cores released from the spin table.
+   * A released core arrives with SP undefined and has to give itself one
+   * before it can run anything compiled. Indexed by core number, so slot
+   * 0 goes unused and the arithmetic in rivet_secondary_entry stays a
+   * plain shift. */
+  .core_stacks (NOLOAD) : ALIGN(4096) {
+    __core_stacks_bottom = .;
+    . += 64K * 4;
+    __core_stacks_top = .;
+  } > RAM
+
   _end = .;
 
   /* Under panic=abort the unwind tables are dead weight, and leaving

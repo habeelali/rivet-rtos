@@ -34,8 +34,20 @@ const DISABLE_IRQS_2: usize = 0x20;
 
 /// Per-core timers and mailboxes. Outside the peripheral window.
 const ARM_LOCAL_BASE: usize = 0x4000_0000;
-const CORE0_TIMER_IRQCNTL: usize = 0x40;
-const CORE0_IRQ_SOURCE: usize = 0x60;
+/// Timer interrupt control and pending-source registers are banked per
+/// core, four bytes apart. Reaching for the core 0 instances from
+/// whichever core happens to be running is the obvious mistake here, and
+/// it presents as a tick that simply never fires.
+const CORE_TIMER_IRQCNTL_BASE: usize = 0x40;
+const CORE_IRQ_SOURCE_BASE: usize = 0x60;
+
+fn core_timer_irqcntl() -> usize {
+    ARM_LOCAL_BASE + CORE_TIMER_IRQCNTL_BASE + crate::smp::current_core() * 4
+}
+
+fn core_irq_source() -> usize {
+    ARM_LOCAL_BASE + CORE_IRQ_SOURCE_BASE + crate::smp::current_core() * 4
+}
 /// Non-secure physical timer, routed as IRQ rather than FIQ.
 const TIMER_IRQ_CNTPNSIRQ: u32 = 1 << 1;
 
@@ -104,13 +116,12 @@ extern "Rust" fn __rivet_board_tick_start(hz: u32) {
     TICK_INTERVAL.store(interval, Ordering::Release);
     TICK_PERIOD_US.store(1_000_000 / hz, Ordering::Release);
 
-    // Route the non-secure physical timer to this core as an IRQ.
-    // SAFETY: MMIO write to the ARM-local interrupt-control register.
+    // Route the non-secure physical timer to *this* core as an IRQ. The
+    // kernel may well be running on a core the firmware never booted.
+    // SAFETY: MMIO write to this core's ARM-local interrupt-control
+    // register.
     unsafe {
-        write_volatile(
-            (ARM_LOCAL_BASE + CORE0_TIMER_IRQCNTL) as *mut u32,
-            TIMER_IRQ_CNTPNSIRQ,
-        );
+        write_volatile(core_timer_irqcntl() as *mut u32, TIMER_IRQ_CNTPNSIRQ);
     }
 
     // Arm the first expiry, then enable the timer with its output
@@ -138,7 +149,7 @@ fn on_timer_tick() {
 #[no_mangle]
 extern "Rust" fn __rivet_board_on_irq() {
     // SAFETY: MMIO read of this core's pending-source register.
-    let source = unsafe { read_volatile((ARM_LOCAL_BASE + CORE0_IRQ_SOURCE) as *const u32) };
+    let source = unsafe { read_volatile(core_irq_source() as *const u32) };
 
     if source & TIMER_IRQ_CNTPNSIRQ != 0 {
         on_timer_tick();

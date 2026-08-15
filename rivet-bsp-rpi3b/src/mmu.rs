@@ -78,6 +78,38 @@ const RAM_END: usize = PERIPHERAL_BASE;
 /// `MAIR_EL1`, `TCR_EL1`, `TTBR0_EL1` and `SCTLR_EL1`, so nothing else
 /// may be relying on the current translation regime.
 pub unsafe fn enable_el1() {
+    // SAFETY: same contract as this function.
+    unsafe {
+        build_tables();
+        enable_el1_prebuilt();
+    }
+}
+
+/// Turn on translation using tables another core already built.
+///
+/// Separate from [`enable_el1`] so that a secondary core can join an
+/// existing address space rather than rewriting it underneath the core
+/// that made it. The values would be identical either way, but writing
+/// them from a core with caches off while another has them on is exactly
+/// the kind of thing worth not doing.
+///
+/// # Safety
+/// [`build_tables`] must already have run, and the caller must be at EL1
+/// with the MMU off.
+pub unsafe fn enable_el1_prebuilt() {
+    let l1 = addr_of_mut!(L1) as *mut u64;
+    // SAFETY: forwarded from this function's own contract.
+    unsafe { program_and_enable(l1) }
+}
+
+/// Populate the translation tables without enabling anything.
+///
+/// Idempotent: every entry is a pure function of the constants above, so
+/// running it twice writes the same bytes.
+///
+/// # Safety
+/// Must not run while another core is walking these tables.
+pub unsafe fn build_tables() {
     let l1 = addr_of_mut!(L1) as *mut u64;
     let l2 = addr_of_mut!(L2) as *mut u64;
 
@@ -107,7 +139,14 @@ pub unsafe fn enable_el1() {
         .write_volatile(BLOCK_1G as u64 | VALID | AF | AP_RW_EL1 | ATTR_DEVICE | XN);
     l1.add(2).write_volatile(0);
     l1.add(3).write_volatile(0);
+}
 
+/// Point the translation registers at `l1` and switch translation on.
+///
+/// # Safety
+/// `l1` must be a populated level-1 table; the caller must be at EL1 with
+/// the MMU off.
+unsafe fn program_and_enable(l1: *mut u64) {
     // 4 KiB granule, 32-bit virtual address space. T0SZ=32 makes the
     // level-1 table the starting level with exactly the four entries
     // written above. TTBR1 walks are disabled: there is no high half.

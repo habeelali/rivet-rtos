@@ -30,6 +30,7 @@ pub mod boot;
 #[cfg(feature = "kernel")]
 pub mod kernel;
 pub mod mmu;
+pub mod smp;
 pub use boot::drop_to_el1;
 
 /// Physical addresses of the peripherals this crate touches.
