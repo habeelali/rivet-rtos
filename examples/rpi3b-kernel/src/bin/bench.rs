@@ -42,6 +42,53 @@ pub extern "C" fn rust_main(_dtb: u64) -> ! {
     unsafe { rivet_main() }
 }
 
+/// Run a periodic task at `period_us` and report both metrics.
+fn measure_period(period_us: u64, label: &str) {
+    let mut next = rivet::port::board::now_us() + period_us;
+    let mut last = rivet::port::board::now_us();
+    let (mut gmin, mut gmax, mut gsum) = (u64::MAX, 0u64, 0u64);
+    let (mut lmax, mut lsum) = (0u64, 0u64);
+    let mut gap_outliers = 0u64;
+
+    for i in 0..520u64 {
+        let deadline = next;
+        rivet::preempt::sleep_until(deadline);
+        let now = rivet::port::board::now_us();
+        let gap = now - last;
+        last = now;
+        next += period_us;
+        if i < 20 {
+            continue; // discard the grid-alignment transient
+        }
+        // How far past its own deadline the wakeup actually landed.
+        let late = now.saturating_sub(deadline);
+        lmax = lmax.max(late);
+        lsum += late;
+        // How far the gap from the previous wakeup was from nominal.
+        let gerr = gap.abs_diff(period_us);
+        gmin = gmin.min(gerr);
+        gmax = gmax.max(gerr);
+        gsum += gerr;
+        if gerr > 500 {
+            gap_outliers += 1;
+        }
+    }
+
+    w("  ");
+    w(label);
+    w("\n    gap error      mean ");
+    print_dec(gsum / 500);
+    w(" us  max ");
+    print_dec(gmax);
+    w(" us  over-half-tick ");
+    print_dec(gap_outliers);
+    w("/500\n    deadline late  mean ");
+    print_dec(lsum / 500);
+    w(" us  max ");
+    print_dec(lmax);
+    w(" us\n");
+}
+
 fn cntpct() -> u64 {
     let v: u64;
     // SAFETY: reading the counter has no side effects. The ISB keeps the
@@ -277,45 +324,24 @@ fn bench(_: &'static ()) -> ! {
     }
     w("\n");
 
-    // 6. Periodic jitter: the figure that actually matters.
-    w("periodic task, 10 ms period, 500 wakeups\n");
-    let period_us: u64 = 10_000;
-    let mut next = rivet::port::board::now_us() + period_us;
-    let mut last = rivet::port::board::now_us();
-    let mut jmin = u64::MAX;
-    let mut jmax = 0u64;
-    let mut jsum = 0u64;
-    let mut late = 0u64;
-    for i in 0..520u64 {
-        rivet::preempt::sleep_until(next);
-        let now = rivet::port::board::now_us();
-        let gap = now - last;
-        last = now;
-        next += period_us;
-        if i < 20 {
-            continue; // discard the grid alignment transient
-        }
-        let err = gap.abs_diff(period_us);
-        if err < jmin {
-            jmin = err;
-        }
-        if err > jmax {
-            jmax = err;
-        }
-        jsum += err;
-        if err > 500 {
-            late += 1;
-        }
-    }
-    w("  deviation from nominal  min ");
-    print_dec(jmin);
-    w(" us   mean ");
-    print_dec(jsum / 500);
-    w(" us   max ");
-    print_dec(jmax);
-    w(" us\n  wakeups off by >0.5 ms  ");
-    print_dec(late);
-    w(" of 500\n");
+    // 6. Periodic behaviour, measured two ways and at two periods.
+    //
+    // The gap between consecutive wakeups is the obvious metric and the
+    // misleading one. Wakeups are quantised to the tick, so a deadline
+    // sitting exactly on a tick boundary can be caught by either the
+    // tick before or the tick after, and consecutive gaps then differ by
+    // a whole tick period even though nothing is wrong.
+    //
+    // Lateness against the absolute deadline is the honest metric: the
+    // deadlines are computed as `next += period`, so they never drift,
+    // and lateness is bounded by one tick by construction.
+    //
+    // Running 10 ms against 10.5 ms separates the two. Ten milliseconds
+    // is an exact multiple of the 1 kHz tick, so every deadline lands on
+    // a boundary; 10.5 ms lands halfway between ticks and never does.
+    w("periodic task, 500 wakeups each\n");
+    measure_period(10_000, "10.0 ms (exact multiple of the tick)");
+    measure_period(10_500, "10.5 ms (offset half a tick)");
 
     w("\nBENCH_OK\n");
     rivet::exit_success();

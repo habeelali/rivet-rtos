@@ -7,6 +7,12 @@ target = "aarch64-unknown-none"
 # copies this image to, and the reserved-memory arithmetic in the README.
 RIVET_RPI3B_LOAD_ADDR = "0x30000000"
 RIVET_RPI3B_RAM_LEN = "16M"
+# Wakeups are quantised to the tick, so the tick period is the floor on
+# how precisely a deadline can be met. At the 1 kHz default that floor is
+# 1000 us, which dominates every other latency in the system by three
+# orders of magnitude. 10 kHz costs about 0.5% of the core (the handler
+# measures ~520 ns) and takes the floor to 100 us.
+RIVET_TICK_HZ = "10000"
 
 [target.aarch64-unknown-none]
 rustflags = [

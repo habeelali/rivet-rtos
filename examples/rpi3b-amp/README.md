@@ -349,6 +349,49 @@ worst observed interrupt latency over 3001 samples equals the best: the
 measurement floor. `force_turbo=1` alone does not set the OTP warranty
 bit; only combining it with `over_voltage` does, and this does not.
 
+## The 1 ms outlier, explained
+
+A periodic task showed an occasional ~1 ms deviation, one or two per five
+hundred wakeups, which survived both the comparator fix and pinning the
+clock. It turned out not to be a defect at all, and the way it was chased
+is worth recording because the first hypothesis was wrong.
+
+The guess was that a 10 ms period is an exact multiple of the 1 kHz tick,
+so every deadline lands on a grid boundary where noise decides which tick
+catches it. Testing an off-grid period should then have removed the
+outliers. It did the opposite: at 10.5 ms the gap error became a
+*constant* 500 us, because deadlines alternate either side of the grid
+and consecutive gaps alternate 10.0 and 11.0 ms.
+
+What the experiment did show is that the metric was wrong. Gap between
+wakeups is the difference of two quantisation errors, so it swings by a
+whole tick while nothing is actually late. Lateness against the absolute
+deadline is the honest measure, and at both periods its maximum was
+almost exactly one tick:
+
+| tick rate | max lateness | mean lateness | tick cost |
+|---|---|---|---|
+| 1 kHz | 1001 us | 332 us | 0.05% |
+| 10 kHz | 100 us | 36 us | 0.5% |
+| 100 kHz | 10 us | 5 us | 5% |
+
+The bound tracks the tick period exactly, an order of magnitude at a
+time, which is the signature of quantisation and of nothing else.
+`sleep_until` wakes at the first tick at or after the deadline, so
+lateness is uniform in `[0, tick)` by construction. Deadlines are
+absolute (`next += period`), so nothing drifts: a late wakeup is followed
+by an early one and the long-run rate is exact.
+
+So the fix is a configuration choice, not a patch. The AMP build now runs
+a 10 kHz tick, which costs about half a percent of the core (the handler
+measures 520 ns) and takes the worst-case deadline from 1000 us to 100
+us. 100 kHz is available and works, at 5% of the core.
+
+Below that, the floor stops being the tick and becomes interrupt latency,
+around 1 us. Getting there needs a different design: programming the
+comparator for the next deadline rather than polling deadlines on a fixed
+grid.
+
 ## Jumpers, for the two tests that need wires
 
 Everything above runs on a bare board. Two checks have a stronger form
