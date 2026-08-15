@@ -196,6 +196,39 @@ fn bench(_: &'static ()) -> ! {
     print_dec(PINGPONG * 2);
     w(" switches\n\n");
 
+    // 3b. Pure compute, to find out what clock this core is actually
+    // running at.
+    //
+    // Every other figure here is dominated by exception entry and
+    // register saves, and by CNTPCT reads that cross into the 19.2 MHz
+    // counter domain and cost a fixed amount of real time rather than a
+    // fixed number of CPU cycles. So they barely move when the CPU clock
+    // changes, which makes them useless for answering "how fast is this
+    // core going". A tight integer loop is not: it is pure CPU work and
+    // scales inversely with the clock.
+    //
+    // BCM2837 has one clock domain for the whole cluster and Linux owns
+    // the cpufreq driver, so whatever its governor picks applies here
+    // too, with rivet having no say.
+    const ITERS: u64 = 2_000_000;
+    let t0 = cntpct();
+    let mut acc: u64 = 1;
+    for i in 0..ITERS {
+        acc = acc.wrapping_mul(6364136223846793005).wrapping_add(i);
+        core::hint::black_box(&acc);
+    }
+    let elapsed = cntpct() - t0;
+    core::hint::black_box(acc);
+    let ns = ticks_to_ns(elapsed);
+    w("core speed\n  ");
+    print_dec(ITERS);
+    w(" iteration loop     ");
+    print_dec(ns / 1000);
+    w(" us\n  implied ns per iteration ");
+    // Scaled by 1000 so a fractional figure survives integer division.
+    print_dec(ns * 1000 / ITERS);
+    w(" /1000\n\n");
+
     // 4. Interrupt latency, gathered by the board's tick handler.
     kernel::reset_irq_stats();
     rivet::preempt::sleep_ms(3000);
