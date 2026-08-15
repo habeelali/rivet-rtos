@@ -5,12 +5,18 @@ This is the first milestone of a new port: prove the toolchain, the boot
 path and the serial console on real silicon. There is no kernel here yet,
 and no Linux.
 
-Two binaries:
+Three binaries:
 
-- `bringup` — the milestone image. Reports the state the firmware handed
-  over, brings up both UARTs, drops to EL1, then heartbeats.
-- `faultcheck` — provokes the fault that gates the rest of the port, and
-  proves the exception vectors work.
+- `bringup` — reports the state the firmware handed over, brings up both
+  UARTs, drops to EL1, then heartbeats.
+- `faultcheck` — provokes the fault that gated the port, and proves the
+  exception vectors work.
+- `mmucheck` — installs an identity map, enables the MMU and both caches,
+  and re-runs the atomics that `faultcheck` shows aborting without it.
+
+Status: both milestones are confirmed on hardware. Atomics work with the
+MMU enabled, which is what the kernel needs, so the next step is a real
+`rivet-arch-aarch64` crate implementing the `__rivet_arch_*` symbols.
 
 ## Build and run under QEMU
 
@@ -112,6 +118,9 @@ board printed them, and because QEMU disagrees with two of them.
 | DTB pointer | `0x2eff7400` | `x0` on entry, near the top of the 948 MB the firmware leaves the ARM |
 | PL011 divisors left by firmware | IBRD 26, FBRD 3 | Identical to what this driver computes, which confirms `init_uart_clock` really is 48 MHz |
 | Atomic RMW with MMU off | aborts, ESR `0x96000035` | EC 0x25, DFSC 0x35. **QEMU permits it instead.** |
+| Atomic RMW with MMU on | works | `fetch_add` and `compare_exchange` both correct, once RAM is Normal Inner-Shareable |
+| `SCTLR_EL1` after enable | `0x30d01805` | M, C and I set over the `0x30d00800` the EL2 drop leaves |
+| `TCR_EL1` / `MAIR_EL1` | `0x200803520` / `0xff` | Identical to QEMU, so the table format is right on both |
 
 Both UARTs reach GPIO14/15, so either can be the console. The PL011
 remains the better choice for the reasons above.
