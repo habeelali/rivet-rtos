@@ -18,9 +18,10 @@ The kernel itself lives in `examples/rpi3b-kernel`, a separate package so
 that these three keep linking neither it nor the arch crate, which is
 what makes them tests of the bare hardware rather than of rivet.
 
-Status: confirmed on hardware up to and including the kernel running,
-scheduling and preempting. What remains is releasing the other three
-cores, and then the Linux-alongside arrangement.
+Status: confirmed on hardware up to and including the kernel running on a
+core released from the spin table while the others stay parked. What
+remains is the Linux-alongside arrangement, where those other cores run
+an OS instead of idling.
 
 ## Build and run under QEMU
 
@@ -125,8 +126,11 @@ board printed them, and because QEMU disagrees with two of them.
 | Atomic RMW with MMU on | works | `fetch_add` and `compare_exchange` both correct, once RAM is Normal Inner-Shareable |
 | `SCTLR_EL1` after enable | `0x30d01805` | M, C and I set over the `0x30d00800` the EL2 drop leaves |
 | `TCR_EL1` / `MAIR_EL1` | `0x200803520` / `0xff` | Identical to QEMU, so the table format is right on both |
-| Kernel tick accuracy | 500025 us for a 500 ms sleep | 0.005% off, against 500530 under QEMU: the architected timer is crystal-derived here and emulated there |
+| Kernel tick accuracy | 500025 us for a 500 ms sleep | Within one 1 kHz tick. The architected timer is crystal-derived here and synthesised under QEMU |
 | Preemptive scheduling | two workers, 48 iterations each | Equal progress at equal priority, so tasks really are being suspended and resumed around each other |
+| Spin-table release with caches on | works | Core 0 with its D-cache enabled released core 3 after cleaning the mailbox to PoC. Untestable under QEMU, which does not model inter-core cache visibility |
+| Kernel on a released core | `CORE3_DEMO_OK` | Rivet ran on physical core 3 with 0-2 parked, joining the address space core 0 built (same `TTBR0_EL1`) |
+| Secondary-core startup | witness `[0, 0, 0, 0]` | Neither the firmware nor QEMU lets cores 1-3 reach this image; both park them on the spin table first |
 
 Both UARTs reach GPIO14/15, so either can be the console. The PL011
 remains the better choice for the reasons above.
