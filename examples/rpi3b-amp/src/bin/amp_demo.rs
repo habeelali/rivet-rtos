@@ -134,26 +134,47 @@ fn park() -> ! {
 use core::sync::atomic::{AtomicU32, Ordering};
 
 static TICKS: AtomicU32 = AtomicU32::new(0);
-/// Worst gap seen between successive wakeups, in microseconds.
+/// Worst deviation from the nominal period since warm-up, in microseconds.
 static WORST_US: AtomicU32 = AtomicU32::new(0);
+/// Worst deviation within the current reporting window.
+static WINDOW_US: AtomicU32 = AtomicU32::new(0);
+/// Wakeups that landed more than half a tick from nominal.
+static LATE: AtomicU32 = AtomicU32::new(0);
+
+const PERIOD_US: u64 = 10_000;
+/// Iterations to discard before measuring.
+///
+/// The first wakeup has to align onto the tick grid, so it carries up to
+/// one full tick period of phase error that says nothing about how
+/// steadily the task runs afterwards. Folding that into a lifetime
+/// maximum pins the figure at ~1000 us forever and hides the real
+/// behaviour, which is exactly what the first version of this did.
+const WARMUP: u32 = 20;
 
 /// A periodic task, which is the whole point of the arrangement: it wants
 /// to wake on time regardless of what Linux is doing on the other cores.
 fn periodic(_: &'static ()) -> ! {
-    let period_us: u64 = 10_000;
-    let mut next = rivet::port::board::now_us() + period_us;
+    let mut next = rivet::port::board::now_us() + PERIOD_US;
     let mut last = rivet::port::board::now_us();
+    let mut n: u32 = 0;
     loop {
         rivet::preempt::sleep_until(next);
         let now = rivet::port::board::now_us();
         let gap = now - last;
         last = now;
-        next += period_us;
+        next += PERIOD_US;
+        n += 1;
 
-        // Jitter against the nominal period. Linux hammering the other
-        // three cores should not move this.
-        let err = gap.abs_diff(period_us) as u32;
-        WORST_US.fetch_max(err, Ordering::Relaxed);
+        if n > WARMUP {
+            let err = gap.abs_diff(PERIOD_US) as u32;
+            WORST_US.fetch_max(err, Ordering::Relaxed);
+            WINDOW_US.fetch_max(err, Ordering::Relaxed);
+            // Half a tick is the point past which the wakeup missed its
+            // grid slot rather than merely landing on it imprecisely.
+            if err > 500 {
+                LATE.fetch_add(1, Ordering::Relaxed);
+            }
+        }
         TICKS.fetch_add(1, Ordering::Relaxed);
     }
 }
@@ -164,13 +185,19 @@ fn reporter(_: &'static ()) -> ! {
         rivet::preempt::sleep_ms(1000);
         round += 1;
         let t = TICKS.load(Ordering::Relaxed);
-        let w = WORST_US.load(Ordering::Relaxed);
+        let worst = WORST_US.load(Ordering::Relaxed);
+        let window = WINDOW_US.swap(0, Ordering::Relaxed);
+        let late = LATE.load(Ordering::Relaxed);
         rivet::console::write_str("[rivet] t=");
         print_dec(round as usize);
         rivet::console::write_str("s wakeups=");
         print_dec(t as usize);
-        rivet::console::write_str(" worst_jitter_us=");
-        print_dec(w as usize);
+        rivet::console::write_str(" jitter_us last1s=");
+        print_dec(window as usize);
+        rivet::console::write_str(" worst=");
+        print_dec(worst as usize);
+        rivet::console::write_str(" late=");
+        print_dec(late as usize);
         rivet::console::write_str("\n");
     }
 }

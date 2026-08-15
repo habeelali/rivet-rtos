@@ -143,24 +143,46 @@ normally removes the loader, the `/dev/mem` question and the release
 timing all at once. It is more work, and a wrong stub means the board does
 not boot at all until the card is rewritten.
 
-## What the demo measures
+## What the demo measures, and what it measured
 
-Once running, rivet reports every second:
+A task waking every 10 ms, reporting the worst deviation in the last
+second, the worst since warm-up, and how many wakeups missed their slot
+by more than half a tick.
 
-```
-[rivet] t=5s wakeups=500 worst_jitter_us=<n>
-```
+Measured on a Pi 3B with rivet on core 3 and Linux on 0-2:
 
-A task waking every 10 ms, with the worst deviation it has seen. That
-number is the actual claim being made: it should stay flat regardless of
-what Linux is doing on the other three cores, because nothing Linux
-schedules can preempt a core it does not own.
+| Linux state | typical jitter | outliers |
+|---|---|---|
+| idle | 1 us | one ~999 us slip roughly every 12 s |
+| all three cores spinning, plus `dd` memory traffic | 2-3 us | same rate |
 
-Worth being honest about the ceiling. Core isolation removes scheduler and
-interrupt interference, not memory-system interference: DRAM and the L2 are
-shared, so heavy traffic from the Linux cores can still show up as jitter.
-Measuring that is the point of printing the worst case rather than an
-average.
+That is the claim holding up: saturating every core Linux owns, and the
+shared memory system with it, moves the typical figure by about two
+microseconds. Nothing Linux schedules can preempt a core it does not own.
+
+The outlier is more interesting and is **not yet explained**. It is
+almost exactly one 1 kHz tick, it appears about every twelve seconds,
+and it happens at the same rate whether Linux is idle or saturated,
+which argues against interference and for something internal.
+
+The leading hypothesis is a mismatch between two clocks. Deadlines are
+kept in `now_us` time, which comes from the 1 MHz System Timer, while
+wakeups happen on the architected timer's tick. If those two drift
+against each other even slightly, a deadline will periodically fall the
+wrong side of a tick boundary and the wakeup lands one tick out. A drift
+of about one part in twelve thousand would produce exactly this period.
+Driving both from the same source would settle it. Until someone
+measures that, it is a hypothesis and not a finding.
+
+Worth noting the earlier version of this measurement reported a flat
+`worst_jitter_us=999` forever, which looked like terrible jitter and was
+in fact the first wakeup aligning onto the tick grid, captured by a
+lifetime maximum and never displaced. Hence the warm-up period and the
+per-window figure.
+
+Note also that the ceiling here is memory-system interference, not
+scheduling: DRAM and L2 are shared no matter who owns which core. The
+2-3 us under load is that effect, and it is small.
 
 ## What is not done yet
 
