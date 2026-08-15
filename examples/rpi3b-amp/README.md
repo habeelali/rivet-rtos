@@ -18,6 +18,38 @@ thing that changes is who does the releasing.
 | ring at `0x3100_0000` | Shared console, mapped Device on the rivet side to match Linux's uncached `/dev/mem` view |
 | spin table at `0xf0` | Core 3's mailbox. Write the entry address, `SEV`, and it goes |
 
+## Confirmed against a real Linux boot
+
+From a Pi OS boot (kernel 6.12.75, arm64) with the options above:
+
+```
+Memory limited to 768MB
+Reserved memory: created CMA memory pool at 0x1e000000, size 256 MiB
+OF: reserved mem: 0x1e000000..0x2dffffff  map reusable linux,cma
+NUMA: Faking a node at [mem 0x00000000-0x2fffffff]
+SMP: Total of 3 processors activated.
+Root IRQ handler: bcm2836_arm_irqchip_handle_irq
+arch_timer: cp15 timer(s) running at 19.20MHz (phys)
+vc_mem.mem_base=0x3ec00000
+simple-framebuffer: framebuffer at 0x3eaa9000
+```
+
+Which pins the layout:
+
+| Range | Owner |
+|---|---|
+| `0x0000_0000`-`0x2fff_ffff` | Linux, CMA included |
+| `0x3000_0000`-`0x3eaa_8fff` | free. Rivet's image and shared ring sit at the bottom of this |
+| `0x3eaa_9000`+ | framebuffer, then VideoCore from `0x3ec0_0000` |
+
+So the reserved region is genuinely clear at both ends: CMA stops at
+`0x2dff_ffff`, well below rivet, and the framebuffer starts far above it.
+
+Two things worth knowing. CMA takes 256 MiB out of the 768, leaving Linux
+about 453 MiB actually usable, so `cma=64M` is worth adding if Linux needs
+the room. And Linux brings up exactly three CPUs and never touches the
+fourth, which is the whole premise holding.
+
 ## The console problem
 
 There is one UART on the header once `disable-bt` has moved Bluetooth
