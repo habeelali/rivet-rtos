@@ -32,6 +32,7 @@ const C_CLEAR: u32 = 1 << 4;
 const C_ST: u32 = 1 << 7;
 const C_I2CEN: u32 = 1 << 15;
 
+const S_TA: u32 = 1 << 0;
 const S_DONE: u32 = 1 << 1;
 const S_TXD: u32 = 1 << 4;
 const S_RXD: u32 = 1 << 5;
@@ -51,6 +52,10 @@ pub enum Error {
     /// The controller never reported completion.
     Timeout,
 }
+
+/// Bound on every wait, so a wedged bus returns an error rather than
+/// hanging a core whose job is meeting deadlines.
+const SPIN_LIMIT: u32 = 1_000_000;
 
 pub struct I2c1;
 
@@ -74,6 +79,37 @@ impl I2c1 {
         }
     }
 
+    /// Put the controller back in a known state before a transfer.
+    ///
+    /// Waiting for the bus to go idle is the part that matters. A NAK
+    /// returns as soon as `ERR` is seen, which is while the controller is
+    /// still winding the transfer up, so its `DONE` arrives a moment
+    /// later. Clearing sticky status at the start of the *next* transfer
+    /// happens before that stray `DONE` lands, and the next wait then
+    /// sees it and reports instant success.
+    ///
+    /// On a bare bus that produced a perfect alternating pattern, every
+    /// other address looking like a device, which is how it was found.
+    ///
+    /// # Safety
+    /// Requires [`init`](Self::init) first.
+    unsafe fn prepare(&self) {
+        // SAFETY: registers of an initialised controller.
+        unsafe {
+            let mut spins = 0u32;
+            while read_volatile((BSC1_BASE + S) as *const u32) & S_TA != 0 {
+                spins += 1;
+                if spins > SPIN_LIMIT {
+                    break;
+                }
+            }
+            // Drop ST and empty the FIFO, then clear the sticky bits now
+            // that nothing further can set them.
+            write_volatile((BSC1_BASE + C) as *mut u32, C_I2CEN | C_CLEAR);
+            write_volatile((BSC1_BASE + S) as *mut u32, S_DONE | S_ERR | S_CLKT);
+        }
+    }
+
     /// Read `buf.len()` bytes from `addr`.
     ///
     /// # Safety
@@ -81,9 +117,9 @@ impl I2c1 {
     pub unsafe fn read(&self, addr: u8, buf: &mut [u8]) -> Result<(), Error> {
         // SAFETY: the controller is initialised and these are its registers.
         unsafe {
+            self.prepare();
             write_volatile((BSC1_BASE + A) as *mut u32, addr as u32);
             write_volatile((BSC1_BASE + DLEN) as *mut u32, buf.len() as u32);
-            write_volatile((BSC1_BASE + S) as *mut u32, S_DONE | S_ERR | S_CLKT);
             write_volatile(
                 (BSC1_BASE + C) as *mut u32,
                 C_I2CEN | C_ST | C_CLEAR | C_READ,
@@ -113,7 +149,7 @@ impl I2c1 {
                     return Ok(());
                 }
                 spins += 1;
-                if spins > 1_000_000 {
+                if spins > SPIN_LIMIT {
                     return Err(Error::Timeout);
                 }
             }
@@ -127,9 +163,9 @@ impl I2c1 {
     pub unsafe fn write(&self, addr: u8, bytes: &[u8]) -> Result<(), Error> {
         // SAFETY: as above.
         unsafe {
+            self.prepare();
             write_volatile((BSC1_BASE + A) as *mut u32, addr as u32);
             write_volatile((BSC1_BASE + DLEN) as *mut u32, bytes.len() as u32);
-            write_volatile((BSC1_BASE + S) as *mut u32, S_DONE | S_ERR | S_CLKT);
             write_volatile((BSC1_BASE + C) as *mut u32, C_I2CEN | C_ST | C_CLEAR);
 
             let mut sent = 0;
@@ -153,7 +189,7 @@ impl I2c1 {
                     return Ok(());
                 }
                 spins += 1;
-                if spins > 1_000_000 {
+                if spins > SPIN_LIMIT {
                     return Err(Error::Timeout);
                 }
             }

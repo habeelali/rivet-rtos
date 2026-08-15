@@ -68,6 +68,21 @@ fn line(s: &str) {
     rivet::console::write_str("\n");
 }
 
+fn print_dec(mut v: usize) {
+    let mut buf = [0u8; 20];
+    let mut i = buf.len();
+    loop {
+        i -= 1;
+        buf[i] = b'0' + (v % 10) as u8;
+        v /= 10;
+        if v == 0 {
+            break;
+        }
+    }
+    // SAFETY: every byte written is an ASCII digit.
+    rivet::console::write_str(unsafe { core::str::from_utf8_unchecked(&buf[i..]) });
+}
+
 fn print_hex8(v: u8) {
     const D: &[u8; 16] = b"0123456789abcdef";
     let buf = [D[(v >> 4) as usize], D[(v & 0xf) as usize]];
@@ -220,12 +235,26 @@ fn test_i2c() -> bool {
         // SAFETY: the controller was just initialised.
         if unsafe { bus.probe(addr) } {
             found += 1;
-            rivet::console::write_str("  ..   device responded at 0x");
-            print_hex8(addr);
-            rivet::console::write_str("\n");
+            // Only name the first few: if the count runs away, the list
+            // is noise and the count is the interesting part.
+            if found <= 8 {
+                rivet::console::write_str("  ..   device responded at 0x");
+                print_hex8(addr);
+                rivet::console::write_str("\n");
+            }
         } else {
             errors += 1;
         }
+    }
+
+    // More than a handful of replies on one bus is not a bus full of
+    // devices, it is a driver reporting success it did not earn. Saying
+    // so beats printing a list that looks like a discovery.
+    if found > 8 {
+        rivet::console::write_str("  FAIL I2C1 scan: ");
+        print_dec(found);
+        line(" of 112 addresses replied, which is not plausible");
+        return false;
     }
 
     // Every address NAKing is the expected outcome on a bare board, and

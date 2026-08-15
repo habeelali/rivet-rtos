@@ -208,6 +208,38 @@ takes a translation fault with the address in `FAR_EL1`, rather than
 silently corrupting another operating system to be discovered much later
 somewhere else entirely.
 
+## Kernel features and peripherals, on core 3 alongside Linux
+
+Measured on the board, with Linux running on cores 0-2:
+
+```
+==== rivet rpi3b kernel features ====
+  skip watchdog: system-wide and owned by Linux in this build
+  ok   Channel round-tripped five values
+  ok   Signal woke an async task from the preemptive tier
+  ok   Semaphore acquired, held and released
+  ok   async task ran and slept through the executor
+  ok   preemptive sleep_ms kept its deadline
+KERNEL_FEATURES_OK
+
+==== rivet rpi3b peripherals ====
+  skip PL011 loopback: the UART belongs to Linux in this build
+  ok   GPIO output read back its own driven level
+  note GPIO24 did not follow GPIO23: no jumper, as expected bare
+  note SPI0 transfer completed, read back 00000000 (no jumper)
+  ok   I2C1 scanned 112 addresses, all NAKed (nothing on the bus)
+PERIPH_TEST_OK
+```
+
+Two things cannot be exercised while sharing the machine, and both are
+skipped rather than faked. The UART is Linux's console. The watchdog is
+worse than shared: it is a single system-wide countdown that resets the
+whole SoC, systemd claims it at boot, and arming it from here took the
+board down mid-run about two seconds after the test stopped feeding it.
+That generalises to every global BCM2837 resource, `GPU_INTERRUPTS_ROUTING`
+and `core_freq` included. Per-core facilities are fine, which is exactly
+why the tick works.
+
 ## What is not done yet
 
 - Peripheral interrupts still go wherever `GPU_INTERRUPTS_ROUTING` at
