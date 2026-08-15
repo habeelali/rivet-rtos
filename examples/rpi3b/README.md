@@ -96,6 +96,26 @@ The banner also reports `CurrentEL`, `MPIDR_EL1`, `CNTFRQ_EL0` and
 `SCTLR_EL2`, so one boot confirms on real silicon the entry state that is
 otherwise taken on trust from the firmware's ARM stub.
 
+## Confirmed on hardware
+
+Measured on a Pi 3B, `boardrev a02082`, booting the image this directory
+builds. Recorded because several of these were assumptions until the
+board printed them, and because QEMU disagrees with two of them.
+
+| | Value | Note |
+|---|---|---|
+| Entry EL | `CurrentEL` = 2 | EL2h, as the firmware's ARM stub sets up |
+| `SCTLR_EL2` | `0x30c50830` | RES1 bits only: MMU, caches and alignment checking all off. QEMU reports `0x0`. |
+| `CNTFRQ_EL0` | 19200000 Hz | QEMU reports 62500000, so never hardcode this |
+| Load address | `0x80000` | `kernel_address` honoured; firmware logs the same |
+| `MPIDR_EL1` | `0x80000000` | core 0, bit 31 RES1 |
+| DTB pointer | `0x2eff7400` | `x0` on entry, near the top of the 948 MB the firmware leaves the ARM |
+| PL011 divisors left by firmware | IBRD 26, FBRD 3 | Identical to what this driver computes, which confirms `init_uart_clock` really is 48 MHz |
+| Atomic RMW with MMU off | aborts, ESR `0x96000035` | EC 0x25, DFSC 0x35. **QEMU permits it instead.** |
+
+Both UARTs reach GPIO14/15, so either can be the console. The PL011
+remains the better choice for the reasons above.
+
 ## Why there is no JTAG here
 
 `enable_jtag_gpio=1` does work, and is applied by the firmware before any

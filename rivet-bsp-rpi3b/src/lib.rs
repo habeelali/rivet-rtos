@@ -89,8 +89,13 @@ pub mod mmio {
     pub const AUX_MU_CNTL: usize = 0x60;
     pub const AUX_MU_BAUD: usize = 0x68;
 
-    /// Mini UART line status: transmit holding register empty.
+    /// Mini UART line status: the transmit FIFO has room for a byte.
+    /// This does *not* mean the transmitter has drained.
     pub const AUX_MU_LSR_TX_EMPTY: u32 = 1 << 5;
+    /// Mini UART line status: transmitter idle, meaning the FIFO and the
+    /// shift register have both emptied. This is the one to wait on
+    /// before halting or re-muxing the pins.
+    pub const AUX_MU_LSR_TX_IDLE: u32 = 1 << 6;
 }
 
 use mmio::*;
@@ -309,12 +314,18 @@ impl MiniUart {
         write_volatile((AUX_BASE + AUX_MU_IO) as *mut u32, b as u32);
     }
 
-    /// Block until the transmit holding register has drained.
+    /// Block until the transmitter has fully drained.
+    ///
+    /// Waits on the idle bit rather than the empty bit. The latter only
+    /// reports that the holding register can take another byte, so
+    /// returning on it and then re-muxing the pins truncates whatever is
+    /// still in the 8-deep FIFO: observed on hardware as a line cut off
+    /// mid-word when handing the pins back to the PL011.
     ///
     /// # Safety
-    /// Reads an AUX register directly, and spins until it reports empty.
+    /// Reads an AUX register directly, and spins until it reports idle.
     pub unsafe fn flush(&self) {
-        while read_volatile((AUX_BASE + AUX_MU_LSR) as *const u32) & AUX_MU_LSR_TX_EMPTY == 0 {}
+        while read_volatile((AUX_BASE + AUX_MU_LSR) as *const u32) & AUX_MU_LSR_TX_IDLE == 0 {}
     }
 }
 

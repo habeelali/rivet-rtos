@@ -1,29 +1,13 @@
 #![no_std]
 #![no_main]
-//! Deliberately provokes the fault that gates this whole port, so its
-//! signature is known and recognisable before it ever turns up by
-//! accident on hardware.
+//! Provokes the fault that gates this whole port, and doubles as a check
+//! on the exception vectors.
 //!
 //! With the MMU off, AArch64 treats all memory as Device-nGnRnE, which
 //! has no exclusive monitor. The load/store-exclusive pair that LLVM
 //! emits for `AtomicUsize::fetch_add` therefore takes a synchronous data
-//! abort rather than working: EC 0x25 (data abort, same EL) with data
-//! fault status code 0x35, "unsupported exclusive or atomic access".
-//!
-//! That is the reason the kernel cannot be linked into this board yet,
-//! and the reason enabling the MMU is the next milestone rather than a
-//! later optimisation.
-//!
-//! QEMU does not reproduce this. Its `raspi3b` model permits LDXR/STXR
-//! against Device memory and the `fetch_add` below simply succeeds, so
-//! this particular expectation can only be settled on real silicon,
-//! alongside GPIO muxing and everything else in the firmware path that
-//! emulation never runs. The binary therefore reports whichever way it
-//! goes rather than assuming, and then executes a `BRK` regardless, so
-//! that the exception vectors and the fault decoder are proven even on
-//! the run where the atomic survives.
-//!
-//! On hardware, expect the atomic to abort:
+//! abort rather than working. **Confirmed on a Pi 3B**, exactly as the
+//! architecture predicts:
 //!
 //! ```text
 //! *** EXCEPTION ***
@@ -31,7 +15,17 @@
 //!   -> unsupported exclusive/atomic access: ...
 //! ```
 //!
-//! Under QEMU, expect "NO FAULT" followed by the `BRK` dump (EC=0x3c).
+//! That is why the kernel cannot be linked into this board yet, and why
+//! enabling the MMU is the next milestone rather than a later
+//! optimisation.
+//!
+//! QEMU does not reproduce it. Its `raspi3b` model permits the exclusive
+//! access and `fetch_add` simply succeeds, which is why this had to be
+//! settled on real silicon alongside GPIO muxing and everything else in
+//! the firmware path emulation never runs. The binary reports whichever
+//! way it goes rather than assuming, and executes a `BRK` afterwards so
+//! the vectors and the decoder are proven on the runs where the atomic
+//! survives. Under QEMU, expect "NO FAULT" then the `BRK` dump (EC=0x3c).
 
 use core::fmt::Write;
 use core::sync::atomic::{AtomicUsize, Ordering};
