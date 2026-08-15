@@ -38,6 +38,15 @@ SECTIONS
 
   .rodata : ALIGN(8) { *(.rodata .rodata.*) } > RAM
 
+  /* Task registry: the executor discovers tasks by walking this section.
+   * Must stay ahead of the NOLOAD sections below so the flat image stays
+   * contiguous. */
+  .rivet_tasks : ALIGN(8) {
+    __rivet_tasks_start = .;
+    KEEP(*(.rivet_tasks));
+    __rivet_tasks_end = .;
+  } > RAM
+
   .data : ALIGN(8) {
     __data_start = .;
     *(.data .data.*)
@@ -58,6 +67,16 @@ SECTIONS
     *(COMMON)
     . = ALIGN(16);
     __bss_end = .;
+  } > RAM
+
+  /* Preemptive task stacks: one contiguous, 16 KiB-aligned pool, the same
+   * shape every other board uses so the stack allocator's layout maths is
+   * unchanged here. Generous because this board has a gigabyte of RAM and
+   * AArch64 frames are twice the width of the 32-bit ports'. */
+  .task_stacks (NOLOAD) : ALIGN(16384) {
+    __task_stacks_start = .;
+    . += 256K;
+    __task_stacks_end = .;
   } > RAM
 
   .stack (NOLOAD) : ALIGN(4096) {

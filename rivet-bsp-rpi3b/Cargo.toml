@@ -18,10 +18,13 @@ default = ["panic-handler"]
 # can disable this and supply their own, same as rivet-rt's flag of the
 # same name.
 panic-handler = []
+# Implement Group B of the port contract (the __rivet_board_* symbols) and
+# pull in the kernel to do it. Off by default so the standalone bring-up
+# binaries, which deliberately predate the kernel running on this board,
+# link nothing they do not need.
+kernel = ["dep:rivet"]
 
-# Deliberately no `rivet` dependency yet — see the crate docs in
-# src/lib.rs for why the kernel cannot run on this SoC until the MMU is
-# configured.
 [dependencies]
+rivet = { path = "../rivet", version = "0.2.0", package = "rivet-rtos", optional = true }
 
 [lib]

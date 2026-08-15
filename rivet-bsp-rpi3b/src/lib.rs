@@ -27,6 +27,8 @@
 use core::ptr::{read_volatile, write_volatile};
 
 pub mod boot;
+#[cfg(feature = "kernel")]
+pub mod kernel;
 pub mod mmu;
 pub use boot::drop_to_el1;
 

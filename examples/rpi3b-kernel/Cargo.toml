@@ -1,0 +1,22 @@
+[package]
+name = "rpi3b-kernel"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+# Separate package from examples/rpi3b on purpose. Those binaries predate
+# the kernel running on this board and deliberately link neither it nor
+# the arch crate, which is what makes them valid tests of the bare
+# hardware. Keeping them in another package keeps that separation from
+# depending on Cargo's feature unification.
+[[bin]]
+name = "kernel_demo"
+path = "src/bin/kernel_demo.rs"
+test = false
+bench = false
+
+[dependencies]
+rivet = { path = "../../rivet", package = "rivet-rtos" }
+rivet-arch-aarch64 = { path = "../../rivet-arch-aarch64" }
+rivet-bsp-rpi3b = { path = "../../rivet-bsp-rpi3b", features = ["kernel"] }

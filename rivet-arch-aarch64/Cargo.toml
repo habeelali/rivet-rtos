@@ -1,0 +1,14 @@
+[package]
+name = "rivet-arch-aarch64"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Rivet RTOS architecture port: AArch64 (ARMv8-A), EL1 context switch and exception vectors"
+# Experimental. Not published while the port is still being brought up.
+publish = false
+
+[dependencies]
+rivet = { path = "../rivet", version = "0.2.0", package = "rivet-rtos" }
+
+[lib]
