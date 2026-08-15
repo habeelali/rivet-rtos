@@ -18,6 +18,8 @@
 #define _GNU_SOURCE
 #include <errno.h>
 #include <fcntl.h>
+#include <setjmp.h>
+#include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -42,6 +44,69 @@
 // The firmware's spin table: one 64-bit slot per core.
 #define SPIN_TABLE   0xd8UL
 #define RIVET_CORE   3
+
+// Everything below goes through an O_SYNC /dev/mem mapping, which on
+// AArch64 is Device-nGnRnE memory. That only permits naturally aligned
+// accesses of a single register width: memcpy, memset and fread all use
+// unaligned and vector stores and will take an alignment fault, which
+// surfaces as SIGBUS. So the copies here are explicit aligned stores, and
+// the fault is caught rather than killing the process with no clue where.
+
+static sigjmp_buf fault_env;
+static volatile int fault_armed;
+
+static void on_fault(int sig) {
+    (void)sig;
+    if (fault_armed) siglongjmp(fault_env, 1);
+    _exit(135);
+}
+
+static void install_fault_handler(void) {
+    struct sigaction sa;
+    memset(&sa, 0, sizeof sa);
+    sa.sa_handler = on_fault;
+    sigaction(SIGBUS, &sa, NULL);
+    sigaction(SIGSEGV, &sa, NULL);
+}
+
+// Copy with aligned 64-bit stores where possible, bytes for the tail.
+// Byte accesses are always naturally aligned, so they are safe here too.
+static void copy_to_device(volatile unsigned char *dst, const unsigned char *src, size_t n) {
+    size_t i = 0;
+    if (((uintptr_t)dst % 8) == 0) {
+        volatile uint64_t *d64 = (volatile uint64_t *)dst;
+        for (; i + 8 <= n; i += 8) {
+            uint64_t v;
+            memcpy(&v, src + i, 8);      // source is ordinary memory
+            d64[i / 8] = v;
+        }
+    }
+    for (; i < n; i++) dst[i] = src[i];
+}
+
+static void zero_device(volatile unsigned char *dst, size_t n) {
+    size_t i = 0;
+    if (((uintptr_t)dst % 8) == 0) {
+        volatile uint64_t *d64 = (volatile uint64_t *)dst;
+        for (; i + 8 <= n; i += 8) d64[i / 8] = 0;
+    }
+    for (; i < n; i++) dst[i] = 0;
+}
+
+// mmap only reserves address space; it says nothing about whether the
+// physical page behind it can actually be touched. Prove it by writing a
+// word and reading it back.
+static const char *touch_test(volatile unsigned char *p) {
+    if (sigsetjmp(fault_env, 1)) { fault_armed = 0; return "FAULTED on access"; }
+    fault_armed = 1;
+    volatile uint64_t *w = (volatile uint64_t *)p;
+    uint64_t save = *w;
+    *w = 0x5aa5f00d0ff0a55aULL;
+    uint64_t back = *w;
+    *w = save;
+    fault_armed = 0;
+    return back == 0x5aa5f00d0ff0a55aULL ? "OK" : "reads back wrong";
+}
 
 static void *map_phys(int fd, unsigned long base, unsigned long len, int write) {
     long ps = sysconf(_SC_PAGESIZE);
@@ -69,18 +134,23 @@ static int cmd_probe(void) {
     }
     printf("/dev/mem                 : open\n");
 
-    void *r = map_phys(fd, RIVET_BASE, 0x1000, 1);
-    printf("map reserved %#lx : %s\n", RIVET_BASE, r ? "OK" : "FAILED (is mem= set?)");
-    if (!r) rc = 1; else munmap(r, 0x1000);
-
-    void *s = map_phys(fd, SHMEM_BASE, 0x1000, 1);
-    printf("map shared   %#lx : %s\n", SHMEM_BASE, s ? "OK" : "FAILED");
-    if (!s) rc = 1; else munmap(s, 0x1000);
-
-    void *t = map_phys(fd, 0, 0x1000, 1);
-    printf("map spintable %#lx      : %s\n", SPIN_TABLE,
-           t ? "OK" : "FAILED (needs the kernel-module fallback)");
-    if (!t) rc = 1; else munmap(t, 0x1000);
+    struct { const char *name; unsigned long base; } regions[] = {
+        { "reserved  0x30000000", RIVET_BASE },
+        { "shared    0x31000000", SHMEM_BASE },
+        { "spintable 0x000000d8", SPIN_TABLE },
+    };
+    for (unsigned i = 0; i < 3; i++) {
+        void *p = map_phys(fd, regions[i].base, 0x1000, 1);
+        if (!p) {
+            printf("%s : mmap FAILED (%s)\n", regions[i].name, strerror(errno));
+            rc = 1;
+            continue;
+        }
+        const char *res = touch_test((volatile unsigned char *)p);
+        printf("%s : mmap OK, write %s\n", regions[i].name, res);
+        if (strcmp(res, "OK") != 0) rc = 1;
+        munmap(p, 0x1000);
+    }
 
     close(fd);
     printf("verdict                  : %s\n",
@@ -103,22 +173,42 @@ static int cmd_load(const char *path) {
     int fd = open("/dev/mem", O_RDWR | O_SYNC);
     if (fd < 0) { perror("/dev/mem"); fclose(f); return 1; }
 
-    unsigned long span = ((unsigned long)sz + 0xFFFF) & ~0xFFFFUL;
-    unsigned char *dst = map_phys(fd, RIVET_BASE, span, 1);
-    if (!dst) { perror("mmap reserved region"); close(fd); fclose(f); return 1; }
-
-    if (fread(dst, 1, (size_t)sz, f) != (size_t)sz) {
+    // Read into ordinary memory first. fread straight into the device
+    // mapping would memcpy with unaligned stores and take a bus error.
+    unsigned char *staging = malloc((size_t)sz);
+    if (!staging) { fprintf(stderr, "out of memory\n"); fclose(f); close(fd); return 1; }
+    if (fread(staging, 1, (size_t)sz, f) != (size_t)sz) {
         fprintf(stderr, "short read of image\n");
-        close(fd); fclose(f); return 1;
+        free(staging); fclose(f); close(fd); return 1;
     }
     fclose(f);
+
+    unsigned long span = ((unsigned long)sz + 0xFFFF) & ~0xFFFFUL;
+    unsigned char *dst = map_phys(fd, RIVET_BASE, span, 1);
+    if (!dst) { perror("mmap reserved region"); free(staging); close(fd); return 1; }
+
+    if (sigsetjmp(fault_env, 1)) {
+        fault_armed = 0;
+        fprintf(stderr, "bus error while writing %#lx: the mapping is not "
+                        "backed by usable memory\n", RIVET_BASE);
+        free(staging); close(fd); return 1;
+    }
+    fault_armed = 1;
+    copy_to_device(dst, staging, (size_t)sz);
+    fault_armed = 0;
+    free(staging);
     printf("loaded %ld bytes at %#lx\n", sz, RIVET_BASE);
+
+    // Read one word back, so a silently-dropped write is not mistaken for
+    // a successful load.
+    if (*(volatile uint32_t *)dst == 0)
+        fprintf(stderr, "warning: first word reads back zero\n");
 
     // Clear the ring header so `console` does not replay a previous run's
     // output as if it were new.
     unsigned char *ring = map_phys(fd, SHMEM_BASE, 0x1000, 1);
     if (ring) {
-        memset(ring, 0, 64);
+        zero_device(ring, 64);
         msync(ring, 64, MS_SYNC);
     }
 
@@ -188,6 +278,7 @@ static int cmd_console(void) {
 }
 
 int main(int argc, char **argv) {
+    install_fault_handler();
     if (argc < 2) {
         fprintf(stderr, "usage: %s probe | load <image> | console\n", argv[0]);
         return 2;

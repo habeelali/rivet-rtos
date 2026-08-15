@@ -1,0 +1,36 @@
+// Keep Linux away from core 3 so rivet can have it.
+//
+// `maxcpus=3` is not sufficient on its own, which is the whole reason
+// this file exists. That option limits how many CPUs Linux *brings up*,
+// but arm64 still runs cpu_prepare for every CPU it enumerates, and the
+// spin-table implementation of that writes Linux's own secondary holding
+// pen address into the CPU's release mailbox. The core dutifully leaves
+// the firmware's pen, jumps into Linux's, and spins there forever waiting
+// for a release that maxcpus has guaranteed will never come. Measured on
+// a Pi 3B: with maxcpus=3 alone, cpu3's mailbox at 0xf0 already contained
+// Linux's pen address before anything of ours ran, and writing our own
+// entry point there afterwards did nothing at all.
+//
+// Marking the node disabled makes of_device_is_available() reject it, so
+// Linux never enumerates the CPU, never prepares it, and never touches
+// its mailbox. Core 3 stays exactly where the firmware parked it, which
+// is what the loader needs.
+//
+// Build and install on the Pi:
+//   dtc -@ -I dts -O dtb -o rivet-reserve-cpu3.dtbo rivet-reserve-cpu3.dts
+//   sudo cp rivet-reserve-cpu3.dtbo /boot/firmware/overlays/
+//   then add  dtoverlay=rivet-reserve-cpu3  to config.txt
+
+/dts-v1/;
+/plugin/;
+
+/ {
+    compatible = "brcm,bcm2837";
+
+    fragment@0 {
+        target-path = "/cpus/cpu@3";
+        __overlay__ {
+            status = "disabled";
+        };
+    };
+};
