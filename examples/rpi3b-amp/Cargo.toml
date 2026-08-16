@@ -49,6 +49,12 @@ path = "../rpi3b-kernel/src/bin/rt_bench.rs"
 test = false
 bench = false
 
+[[bin]]
+name = "scope_demo_amp"
+path = "../rpi3b-kernel/src/bin/scope_demo.rs"
+test = false
+bench = false
+
 [features]
 # PulseTrace live tracing, forwarded to the board crate which puts the
 # frames in their own ring in the shared window.

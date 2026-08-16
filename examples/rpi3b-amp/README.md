@@ -423,6 +423,21 @@ sudo rivet-amp console      # the doorbell row
 Results and methodology, idle and under full Linux load, are in
 [docs/rpi3b-benchmarks.md](../../docs/rpi3b-benchmarks.md).
 
+To measure the doorbell with an oscilloscope rather than trusting rivet's
+own clock, `scope_demo` puts it on three pins in the corner of the header:
+GPIO20 (pin 38) raised by Linux before ringing, GPIO21 (pin 40) raised in
+rivet's interrupt handler, GPIO26 (pin 37) raised in the task it wakes,
+with ground on pin 39. Trigger on GPIO20 rising and one capture shows
+interrupt latency and the doorbell-to-task figure separately.
+
+```sh
+sudo rivet-amp load /tmp/scope_demo.img
+sudo rivet-amp scope 200 5
+```
+
+It reads the pads back as it goes and reports whether rivet's pins moved,
+so it says something useful before a probe is attached.
+
 Reboot between runs. A spin-table release latches, so loading a second
 image onto a core still executing the first one does nothing at all, which
 looks exactly like a hang.

@@ -59,6 +59,32 @@ pub unsafe fn set_function(pin: u8, f: u32) {
     }
 }
 
+/// Drive `pin` high without holding a `Pin` handle.
+///
+/// For the interrupt path, where there is nowhere to keep a handle and
+/// the cost of the write is part of what is being measured. GPSET is
+/// write-to-set, so this is a single store that cannot disturb any other
+/// pin, including one another core is driving.
+///
+/// # Safety
+/// The pin must already be configured as an output, and nothing else may
+/// be driving it.
+pub unsafe fn raise(pin: u8) {
+    let reg = (GPIO_BASE + GPSET0 + (pin as usize / 32) * 4) as *mut u32;
+    // SAFETY: forwarded from this function's contract.
+    unsafe { write_volatile(reg, 1 << (pin % 32)) };
+}
+
+/// Drive `pin` low. See [`raise`].
+///
+/// # Safety
+/// Same as [`raise`].
+pub unsafe fn lower(pin: u8) {
+    let reg = (GPIO_BASE + GPCLR0 + (pin as usize / 32) * 4) as *mut u32;
+    // SAFETY: forwarded from this function's contract.
+    unsafe { write_volatile(reg, 1 << (pin % 32)) };
+}
+
 /// Apply a pull-up, pull-down, or neither, to a pin.
 ///
 /// BCM2837 uses the BCM2835 clocked handshake for this. The newer

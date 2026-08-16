@@ -304,6 +304,35 @@ pub static DOORBELL: rivet::sync::Signal = rivet::sync::Signal::new();
 /// Count of doorbells taken, for tests that want to prove one arrived.
 static DOORBELL_COUNT: AtomicU32 = AtomicU32::new(0);
 
+/// A pin driven high the instant the doorbell interrupt is taken, or
+/// `NO_SCOPE_PIN` for none.
+///
+/// Every latency figure this port reports is measured by software timing
+/// itself, which is an argument the software makes on its own behalf. A
+/// pin raised here can be watched by an oscilloscope against the pin Linux
+/// raises before ringing, and that interval is witnessed from outside the
+/// machine by an instrument neither side controls.
+///
+/// It costs one write-to-set store on the interrupt path, which is the
+/// smallest marker that can exist here. It is still not free, and it is
+/// inside the interval being measured rather than outside it.
+static DOORBELL_SCOPE_PIN: AtomicU32 = AtomicU32::new(NO_SCOPE_PIN);
+const NO_SCOPE_PIN: u32 = u32::MAX;
+
+/// Raise `pin` on every doorbell interrupt, for external measurement.
+///
+/// # Safety
+/// The pin must already be configured as an output and nothing else may
+/// be driving it.
+pub unsafe fn set_doorbell_scope_pin(pin: u8) {
+    DOORBELL_SCOPE_PIN.store(pin as u32, Ordering::Release);
+}
+
+/// Stop driving a pin on doorbell interrupts.
+pub fn clear_doorbell_scope_pin() {
+    DOORBELL_SCOPE_PIN.store(NO_SCOPE_PIN, Ordering::Release);
+}
+
 pub fn doorbell_count() -> u32 {
     DOORBELL_COUNT.load(Ordering::Relaxed)
 }
@@ -331,6 +360,14 @@ extern "Rust" fn __rivet_board_on_irq() {
     }
 
     if source & crate::mailbox::IRQ_SOURCE_MBOX0 != 0 {
+        // First thing in the branch, so the edge marks the handler being
+        // reached and not the work that follows it.
+        let scope = DOORBELL_SCOPE_PIN.load(Ordering::Acquire);
+        if scope != NO_SCOPE_PIN {
+            // SAFETY: the pin was configured as an output by whoever
+            // registered it, per set_doorbell_scope_pin's contract.
+            unsafe { crate::gpio::raise(scope as u8) };
+        }
         // Clearing the mailbox is what drops the interrupt line; skip it
         // and this handler re-enters forever.
         // SAFETY: servicing this core's own mailbox.

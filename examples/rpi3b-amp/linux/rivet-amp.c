@@ -6,6 +6,7 @@
 //   rivet-amp trace <file>          drain the PulseTrace ring to a file
 //   rivet-amp send <command>        send a command and ring the doorbell
 //   rivet-amp bench [rounds]        time the Linux-to-rivet round trip
+//   rivet-amp scope [n] [ms]        pulse a GPIO and ring, for a scope
 //
 // Build:  cc -O2 -o rivet-amp rivet-amp.c
 // Run as root.
@@ -27,6 +28,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sched.h>
 #include <sys/mman.h>
 #include <unistd.h>
 
@@ -49,6 +51,20 @@
 // interrupt on the target core, which is the only interrupt on this SoC
 // that can be aimed at a specific core; peripheral IRQs go wherever the
 // single global routing register points.
+// GPIO, for the scope demonstration. Only the level registers are touched
+// here: GPSET and GPCLR are write-to-set and write-to-clear, so driving a
+// pin from this side cannot disturb the pins rivet drives in the same
+// bank, and no lock is needed between the two. GPFSEL, which is a
+// read-modify-write register and would need one, is left entirely to
+// rivet's scope_demo image.
+#define GPIO_BASE    0x3F200000UL
+#define GPSET0       0x1C
+#define GPCLR0       0x28
+#define GPLEV0       0x34
+#define SCOPE_PIN    20
+#define ISR_PIN      21
+#define TASK_PIN     26
+
 #define ARM_LOCAL    0x40000000UL
 #define MBOX_SET     0x80UL
 #define RING_MAGIC   0x52565443U    // "RVTC"
@@ -542,18 +558,100 @@ static int cmd_bench(int rounds) {
     return 0;
 }
 
+// Raise a pin, ring the doorbell, and do it again, so an oscilloscope
+// triggering on that pin can measure the interval to the pins rivet
+// raises.
+//
+// The GPIO write comes first and the mailbox write second, so the cost of
+// the mailbox write itself falls inside the measured interval. That is
+// the honest ordering: it is work Linux must do before rivet can possibly
+// hear anything.
+//
+// This deliberately does not write to the command ring. rivet's
+// scope_demo does not read one, and leaving it out keeps everything
+// between the two edges on the path being measured.
+static int cmd_scope(int rounds, int period_ms) {
+    int fd = open("/dev/mem", O_RDWR | O_SYNC);
+    if (fd < 0) { perror("/dev/mem"); return 1; }
+
+    unsigned char *gpio  = map_phys(fd, GPIO_BASE, 0x1000, 1);
+    unsigned char *local = map_phys(fd, ARM_LOCAL, 0x1000, 1);
+    if (!gpio || !local) { perror("mmap"); close(fd); return 1; }
+
+    volatile uint32_t *set  = (volatile uint32_t *)(gpio + GPSET0);
+    volatile uint32_t *clr  = (volatile uint32_t *)(gpio + GPCLR0);
+    volatile uint32_t *bell = (volatile uint32_t *)(local + MBOX_SET + RIVET_CORE * 16);
+    const uint32_t bit = 1u << SCOPE_PIN;
+
+    printf("pulsing GPIO%d (header 38) and ringing core %d, %d times every %d ms\n",
+           SCOPE_PIN, RIVET_CORE, rounds, period_ms);
+    printf("trigger the scope on GPIO%d rising; ground is header 39\n", SCOPE_PIN);
+
+    // Ask for the best scheduling this process can get. It does not make
+    // the send deterministic, and the tail of the measured distribution
+    // is still Linux's, but it removes the easiest source of outliers.
+    struct sched_param sp = { .sched_priority = 50 };
+    if (sched_setscheduler(0, SCHED_FIFO, &sp) != 0)
+        fprintf(stderr, "note: no SCHED_FIFO (%s), expect a longer tail\n",
+                strerror(errno));
+    if (mlockall(MCL_CURRENT | MCL_FUTURE) != 0)
+        fprintf(stderr, "note: no mlockall (%s), a page fault may show up\n",
+                strerror(errno));
+
+    // Watch the pads while pulsing, so this reports something useful with
+    // no instrument attached. A wiring mistake and a broken doorbell path
+    // look identical on an unconnected scope, and this separates them:
+    // the levels are read back from GPLEV, which reports what the pad is
+    // actually doing rather than what was last written to it.
+    volatile uint32_t *lev = (volatile uint32_t *)(gpio + GPLEV0);
+    int saw_isr = 0, saw_task = 0;
+
+    for (int i = 0; i < rounds; i++) {
+        *set = bit;
+        BARRIER();
+        *bell = 1;
+        BARRIER();
+
+        // Poll across the pulse. rivet holds its pins high for 200 us, so
+        // a spin here catches them; a sleeping loop would step over them.
+        uint64_t until = cntvct() + CNT_HZ / 2000;   // 500 us
+        do {
+            uint32_t l = *lev;
+            if (l & (1u << ISR_PIN))  saw_isr = 1;
+            if (l & (1u << TASK_PIN)) saw_task = 1;
+        } while (cntvct() < until);
+
+        *clr = bit;
+        BARRIER();
+        usleep(period_ms * 1000);
+    }
+    *clr = bit;
+    printf("done, %d pulses\n", rounds);
+    printf("  GPIO%d (ch B, interrupt handler): %s\n", ISR_PIN,
+           saw_isr ? "seen high" : "NEVER HIGH");
+    printf("  GPIO%d (ch C, woken task):        %s\n", TASK_PIN,
+           saw_task ? "seen high" : "NEVER HIGH");
+    if (!saw_isr || !saw_task)
+        printf("  a pin that never went high means scope_demo is not the\n"
+               "  loaded image, or the doorbell is not reaching it\n");
+    close(fd);
+    return 0;
+}
+
 int main(int argc, char **argv) {
     install_fault_handler();
     if (argc < 2) {
         fprintf(stderr,
                 "usage: %s probe | load <image> | console | trace <file>\n"
-                "       %s send <cmd> | bench [rounds]\n",
+                "       %s send <cmd> | bench [rounds] | scope [n] [ms]\n",
                 argv[0],
                 argv[0]);
         return 2;
     }
     if (!strcmp(argv[1], "probe"))   return cmd_probe();
     if (!strcmp(argv[1], "bench"))   return cmd_bench(argc > 2 ? atoi(argv[2]) : 500);
+    if (!strcmp(argv[1], "scope"))
+        return cmd_scope(argc > 2 ? atoi(argv[2]) : 200, argc > 3 ? atoi(argv[3]) : 10);
     if (!strcmp(argv[1], "console")) return cmd_console();
     if (!strcmp(argv[1], "send")) {
         if (argc < 3) { fprintf(stderr, "send needs a command\n"); return 2; }

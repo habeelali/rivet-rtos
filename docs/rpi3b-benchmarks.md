@@ -226,6 +226,84 @@ the offset is aligned and the run does not wrap.
   visible in the console ring. Detected by watching the write pointer move
   rather than by parsing text, since parsing would time the parser.
 
+## Measuring it from outside the machine
+
+Everything above is rivet timing itself. That is a real measurement, but
+it is an argument the software makes on its own behalf using a counter it
+reads with instructions it also schedules. `scope_demo` puts the same
+interval on three pins so an oscilloscope or logic analyser can measure it
+instead.
+
+The doorbell is the only figure where this is possible, and that is why it
+is the one chosen. Its start event happens on the Linux side, so an
+external observer can see both ends. A purely internal quantity like the
+context switch has no externally visible start, and instrumenting one with
+GPIO would mostly measure the instrumentation.
+
+### Wiring
+
+Four adjacent pins in the corner of the 40-pin header, so three probes and
+a ground reach without spanning the board.
+
+| Header pin | GPIO | Channel | Driven by |
+|---|---|---|---|
+| 38 | 20 | A | Linux, immediately before ringing the doorbell |
+| 40 | 21 | B | rivet, first statement in the interrupt handler |
+| 37 | 26 | C | rivet, in the task the doorbell wakes |
+| 39 | — | GND | ground for all three probes |
+
+Trigger on A rising. One capture gives three intervals:
+
+- **A to B** is Linux's MMIO write reaching rivet's interrupt handler.
+- **B to C** is the scheduler waking the task that was awaiting the
+  doorbell.
+- **A to C** is the whole path, and the figure the table above reports as
+  "Linux doorbell to task".
+
+### Running it
+
+```sh
+sudo rivet-amp load /tmp/scope_demo.img
+sudo rivet-amp console &        # prints a pulse count every 2 s
+sudo rivet-amp scope 200 5      # 200 pulses, 5 ms apart
+```
+
+`rivet-amp scope` asks for `SCHED_FIFO` and `mlockall`, and says so if it
+cannot have them. Neither makes the send deterministic, since the tail of
+this distribution belongs to Linux either way, but they remove the
+easiest sources of outliers.
+
+It also reads the pads back through `GPLEV` while pulsing, and reports
+whether each of rivet's two pins was ever observed high. Without that, a
+wiring mistake and a doorbell that never arrives look identical on a scope
+that is not yet connected. Confirmed on hardware, idle and under the load
+described above: 200 rings produced 200 pulses both times, with both pins
+seen high.
+
+### Reading the trace honestly
+
+A GPIO write here is a store to Device memory, so each edge costs a trip
+to the peripheral bus, and that cost sits inside the measured interval on
+both sides. The scope will therefore read somewhat longer than the table
+above, which stamps a counter register instead.
+
+Neither number is wrong and they answer different questions. The scope
+figure includes the cost of being observed, which is what you want if you
+intend to react to the doorbell by driving a pin. The software figure is
+what you want if you intend to react to it in software.
+
+### Why the two sides need no lock
+
+Both sides drive pins in the same GPIO bank with no coordination at all,
+which is safe for a specific reason: `GPSET` and `GPCLR` are write-to-set
+and write-to-clear, not read-modify-write. Writing bit 20 from Linux
+cannot disturb bit 21 or 26, whatever rivet is doing at the time.
+
+`GPFSEL`, which selects pin function, does not have that property. So all
+three pins, including the one only Linux ever drives, are configured by
+rivet's image at startup. If each side configured its own, the two
+read-modify-write updates could lose each other.
+
 ## Known gaps
 
 - Nothing here is a proven bound. See [realtime.md §1](realtime.md).
@@ -236,5 +314,7 @@ the offset is aligned and the run does not wrap.
 - The doorbell and round-trip maxima are Linux scheduling artefacts and
   would need `SCHED_FIFO` on the sending process to say anything about the
   channel's own worst case.
+- The scope demonstration covers the doorbell path only. The other rows
+  remain self-timed.
 - Only the 10 kHz tick is tabulated. The quantisation relationship is
   arithmetic, but the other rates are not separately measured here.
