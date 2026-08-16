@@ -6,7 +6,7 @@
 //   rivet-amp trace <file>          drain the PulseTrace ring to a file
 //   rivet-amp send <command>        send a command and ring the doorbell
 //   rivet-amp bench [rounds]        time the Linux-to-rivet round trip
-//   rivet-amp scope [n] [ms]        pulse a GPIO and ring, for a scope
+//   rivet-amp scope [n] [ms]        ring repeatedly, for a scope capture
 //   rivet-amp status                what is running, on which core, where
 //   rivet-amp banner                one-line identity, also to /dev/kmsg
 //   rivet-amp watch                 exit non-zero if the heartbeat stops
@@ -61,19 +61,16 @@ static int RIVET_CORE_N = 3;
 // interrupt on the target core, which is the only interrupt on this SoC
 // that can be aimed at a specific core; peripheral IRQs go wherever the
 // single global routing register points.
-// GPIO, for the scope demonstration. Only the level registers are touched
-// here: GPSET and GPCLR are write-to-set and write-to-clear, so driving a
-// pin from this side cannot disturb the pins rivet drives in the same
-// bank, and no lock is needed between the two. GPFSEL, which is a
-// read-modify-write register and would need one, is left entirely to
-// rivet's scope_demo image.
+// GPIO, read only. Every scope pin is driven by rivet now: each is high
+// for exactly as long as its operation runs, so one channel's width is
+// the whole measurement and this side has nothing to signal. GPLEV is
+// still read, to confirm the pins move at all: a wiring mistake and a
+// dead doorbell look identical on a scope that is not connected yet.
 #define GPIO_BASE    0x3F200000UL
-#define GPSET0       0x1C
-#define GPCLR0       0x28
 #define GPLEV0       0x34
-#define SCOPE_PIN    20
-#define ISR_PIN      21
-#define TASK_PIN     26
+#define TICK_PIN     21
+#define TASK_PIN     20
+#define DOORBELL_PIN 26
 
 #define ARM_LOCAL    0x40000000UL
 #define MBOX_SET     0x80UL
@@ -469,6 +466,10 @@ static inline uint64_t cntvct(void) {
 #define CNT_HZ 19200000ULL
 static uint64_t cnt_to_ns(uint64_t t) { return t * 625ULL / 12ULL; }
 
+// A beat is expected about ten times a second, so this is many missed
+// beats rather than a marginal call.
+#define STALL_MS 1000
+
 struct rt_stats { uint64_t min, max, sum, n; };
 static void rt_add(struct rt_stats *s, uint64_t v) {
     if (!s->n || v < s->min) s->min = v;
@@ -641,66 +642,49 @@ static int cmd_scope(int rounds, int period_ms) {
     int fd = open("/dev/mem", O_RDWR | O_SYNC);
     if (fd < 0) { perror("/dev/mem"); return 1; }
 
-    unsigned char *gpio  = map_phys(fd, GPIO_BASE, 0x1000, 1);
+    unsigned char *gpio  = map_phys(fd, GPIO_BASE, 0x1000, 0);
     unsigned char *local = map_phys(fd, ARM_LOCAL, 0x1000, 1);
     if (!gpio || !local) { perror("mmap"); close(fd); return 1; }
 
-    volatile uint32_t *set  = (volatile uint32_t *)(gpio + GPSET0);
-    volatile uint32_t *clr  = (volatile uint32_t *)(gpio + GPCLR0);
+    volatile uint32_t *lev  = (volatile uint32_t *)(gpio + GPLEV0);
     volatile uint32_t *bell = (volatile uint32_t *)(local + MBOX_SET + RIVET_CORE_N * 16);
-    const uint32_t bit = 1u << SCOPE_PIN;
 
-    printf("pulsing GPIO%d (header 38) and ringing core %d, %d times every %d ms\n",
-           SCOPE_PIN, RIVET_CORE_N, rounds, period_ms);
-    printf("trigger the scope on GPIO%d rising; ground is header 39\n", SCOPE_PIN);
+    printf("ringing core %d, %d times every %d ms\n", RIVET_CORE_N, rounds, period_ms);
+    printf("  pin 40  GPIO%-3d tick handler   width = time in the timer ISR\n", TICK_PIN);
+    printf("  pin 38  GPIO%-3d control task   width = execution, edges = release\n", TASK_PIN);
+    printf("  pin 37  GPIO%-3d doorbell       width = ISR to woken task\n", DOORBELL_PIN);
+    printf("  pin 39          GND\n");
 
-    // Ask for the best scheduling this process can get. It does not make
-    // the send deterministic, and the tail of the measured distribution
-    // is still Linux's, but it removes the easiest source of outliers.
+    // Best effort scheduling, though it matters less than it used to:
+    // every width being measured is rivet's, so jitter here moves when a
+    // pulse happens, not how wide it is.
     struct sched_param sp = { .sched_priority = 50 };
     if (sched_setscheduler(0, SCHED_FIFO, &sp) != 0)
-        fprintf(stderr, "note: no SCHED_FIFO (%s), expect a longer tail\n",
-                strerror(errno));
-    if (mlockall(MCL_CURRENT | MCL_FUTURE) != 0)
-        fprintf(stderr, "note: no mlockall (%s), a page fault may show up\n",
-                strerror(errno));
+        fprintf(stderr, "note: no SCHED_FIFO (%s)\n", strerror(errno));
 
-    // Watch the pads while pulsing, so this reports something useful with
-    // no instrument attached. A wiring mistake and a broken doorbell path
-    // look identical on an unconnected scope, and this separates them:
-    // the levels are read back from GPLEV, which reports what the pad is
-    // actually doing rather than what was last written to it.
-    volatile uint32_t *lev = (volatile uint32_t *)(gpio + GPLEV0);
-    int saw_isr = 0, saw_task = 0;
-
+    int saw_tick = 0, saw_task = 0, saw_bell = 0;
     for (int i = 0; i < rounds; i++) {
-        *set = bit;
-        BARRIER();
         *bell = 1;
         BARRIER();
-
-        // Poll across the pulse. rivet holds its pins high for 200 us, so
-        // a spin here catches them; a sleeping loop would step over them.
+        // The pulses are hundreds of nanoseconds wide, so sampling
+        // catches them only by chance. Over a few hundred rounds that is
+        // enough to prove they move, which is all this claims to do.
         uint64_t until = cntvct() + CNT_HZ / 2000;   // 500 us
         do {
             uint32_t l = *lev;
-            if (l & (1u << ISR_PIN))  saw_isr = 1;
-            if (l & (1u << TASK_PIN)) saw_task = 1;
+            if (l & (1u << TICK_PIN))     saw_tick = 1;
+            if (l & (1u << TASK_PIN))     saw_task = 1;
+            if (l & (1u << DOORBELL_PIN)) saw_bell = 1;
         } while (cntvct() < until);
-
-        *clr = bit;
-        BARRIER();
         usleep(period_ms * 1000);
     }
-    *clr = bit;
-    printf("done, %d pulses\n", rounds);
-    printf("  GPIO%d (ch B, interrupt handler): %s\n", ISR_PIN,
-           saw_isr ? "seen high" : "NEVER HIGH");
-    printf("  GPIO%d (ch C, woken task):        %s\n", TASK_PIN,
-           saw_task ? "seen high" : "NEVER HIGH");
-    if (!saw_isr || !saw_task)
-        printf("  a pin that never went high means scope_demo is not the\n"
-               "  loaded image, or the doorbell is not reaching it\n");
+
+    printf("done, %d rings\n", rounds);
+    printf("  GPIO%-3d tick handler  %s\n", TICK_PIN, saw_tick ? "seen high" : "NEVER HIGH");
+    printf("  GPIO%-3d control task  %s\n", TASK_PIN, saw_task ? "seen high" : "NEVER HIGH");
+    printf("  GPIO%-3d doorbell      %s\n", DOORBELL_PIN, saw_bell ? "seen high" : "NEVER HIGH");
+    if (!saw_tick || !saw_task || !saw_bell)
+        printf("  a pin that never went high means scope_demo is not the loaded image\n");
     close(fd);
     return 0;
 }
@@ -880,16 +864,21 @@ static int cmd_status(void) {
         if (h.state != 1) {
             kv("heartbeat", "stopped");
         } else {
-            struct sysinfo_hdr h2;
-            usleep(300000);
-            read_sysinfo(&h2);
-            if (h2.heartbeat == h.heartbeat)
-                kv("heartbeat", "%s%sstalled%s  none in 300 ms, expected %u",
-                   CBOLD, CRED, CRST, h.beat_hz * 3 / 10);
+            // The published value is the architected counter at the last
+            // beat, and this side reads the same counter, so one sample
+            // gives the age directly. The old scheme sampled twice 600 ms
+            // apart just to see whether a number had moved.
+            uint64_t now = cntvct();
+            uint64_t age_ms = now > h.heartbeat ? cnt_to_ns(now - h.heartbeat) / 1000000 : 0;
+            uint64_t up_s = h.heartbeat > h.boot
+                          ? cnt_to_ns(h.heartbeat - h.boot) / 1000000000ULL : 0;
+            if (age_ms > STALL_MS)
+                kv("heartbeat", "%s%sstalled%s  last beat %llu ms ago",
+                   CBOLD, CRED, CRST, (unsigned long long)age_ms);
             else
-                kv("heartbeat", "%s%u Hz%s  %llu beats  %llu s", CGRN, h.beat_hz, CRST,
-                   (unsigned long long)h.heartbeat,
-                   h.beat_hz ? (unsigned long long)(h.heartbeat / h.beat_hz) : 0ULL);
+                kv("heartbeat", "%s%u Hz%s  last beat %llu ms ago  up %llu s",
+                   CGRN, h.beat_hz, CRST,
+                   (unsigned long long)age_ms, (unsigned long long)up_s);
         }
     }
     kv("config", "%s", config_from_dt ? "device tree" : "built-in defaults");
@@ -976,20 +965,19 @@ static int cmd_watch(int grace_ms) {
            h.image, h.core, h.beat_hz, grace_ms);
     fflush(stdout);
 
-    uint64_t last = h.heartbeat;
-    int stalled_ms = 0;
     for (;;) {
-        usleep(200000);
+        sleep(1);
         if (!read_sysinfo(&h)) continue;
         if (h.state != 1) {
             printf("rivet stopped: state is %s\n", state_name(h.state));
-            return h.state == 2 ? 1 : 0;      // faulted is a failure, exited is not
+            return h.state == 2 ? 1 : 0;   // faulted is a failure, exited is not
         }
-        if (h.heartbeat != last) { last = h.heartbeat; stalled_ms = 0; continue; }
-        stalled_ms += 200;
-        if (stalled_ms >= grace_ms) {
-            fprintf(stderr, "rivet heartbeat stalled for %d ms: the core is hung\n",
-                    stalled_ms);
+        // Age from one sample, since both sides read the same counter.
+        uint64_t now = cntvct();
+        uint64_t age_ms = now > h.heartbeat ? cnt_to_ns(now - h.heartbeat) / 1000000 : 0;
+        if ((int)age_ms > grace_ms) {
+            fprintf(stderr, "rivet heartbeat stalled: last beat %llu ms ago\n",
+                    (unsigned long long)age_ms);
             return 1;
         }
     }

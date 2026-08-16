@@ -26,7 +26,6 @@
 //! sides see writes without cache maintenance.
 
 use core::ptr::write_volatile;
-use core::sync::atomic::{AtomicU64, Ordering};
 
 /// Offset of the header within the shared window: the last 4 KiB of the
 /// 2 MiB region, past the console, trace and command rings.
@@ -70,16 +69,20 @@ pub mod state {
     pub const EXITED: u32 = 3;
 }
 
-/// One heartbeat per this many ticks.
+/// One heartbeat per this many ticks. Power of two: the test is a mask.
 ///
-/// Not every tick. The write goes to Device memory, which costs a trip to
-/// the interconnect, and it would land on the tick path that was just
-/// measured and tightened. At the default 10 kHz this is 100 Hz, fast
-/// enough that a two-second stall is unambiguous and slow enough to
-/// disappear into the noise.
-pub const TICKS_PER_BEAT: u32 = 100;
-
-static BEATS: AtomicU64 = AtomicU64::new(0);
+/// A power of two so the test is a mask rather than a division, and a
+/// large one because the write goes to Device memory. Each such store is
+/// its own trip to the interconnect, and it lands on the tick path that
+/// was measured and tightened at some cost.
+///
+/// This was 100, giving 100 Hz at a 10 kHz tick, and that was too eager:
+/// 300 Device writes across a 30000-tick window accounted for most of a
+/// jump in ticks over a microsecond from 6 to 717. Nothing needs to know
+/// within ten milliseconds that the core has stopped. At 1024 the rate is
+/// about 10 Hz at a 10 kHz tick, which still gives roughly twenty beats
+/// inside the watcher's two-second grace.
+pub const TICKS_PER_BEAT: u32 = 1024;
 
 fn base() -> usize {
     crate::shmem::SHARED_BASE + HEADER_OFFSET
@@ -164,7 +167,7 @@ pub unsafe fn set_tick_hz(hz: u32) {
     // SAFETY: forwarded from this function's contract.
     unsafe {
         put32(off::TICK_HZ, hz);
-        put32(off::HEARTBEAT_HZ, hz / TICKS_PER_BEAT);
+        put32(off::HEARTBEAT_HZ, (hz / TICKS_PER_BEAT).max(1));
     }
 }
 
@@ -189,21 +192,31 @@ pub unsafe fn set_state(s: u32) {
     unsafe { put32(off::STATE, s) };
 }
 
-/// Called from the tick handler. Writes once every [`TICKS_PER_BEAT`].
+/// Publish the architected counter as the liveness timestamp.
+///
+/// The value is the counter itself rather than a beat count, which means
+/// Linux can read the same counter and know the age of the last beat from
+/// a single sample. Before this it had to sample twice, hundreds of
+/// milliseconds apart, and decide whether the number had moved.
+///
+/// No state is kept here. A counter of its own was one more static on the
+/// tick path, read once per tick and not otherwise, and that is the access
+/// pattern that sits in a shared L2 and gets evicted between ticks. It
+/// cost about 156 ns on the mean tick, which is the same mechanism already
+/// written up for the timer sweep in `docs/rpi3b-benchmarks.md`. The
+/// caller passes a counter it has loaded anyway.
 ///
 /// This proves the timer interrupt is still being taken, which covers the
-/// failure modes that actually happen here: a fault, an abort, a hang
-/// with interrupts masked. It does not prove the scheduler is making
-/// progress, so a task spinning forever at the top priority would keep
-/// this beating. That case belongs to the watchdog, not here.
-pub fn heartbeat() {
-    let n = BEATS.fetch_add(1, Ordering::Relaxed) + 1;
-    if !n.is_multiple_of(TICKS_PER_BEAT as u64) {
-        return;
-    }
-    // SAFETY: the shared window is mapped for the whole life of an AMP
-    // image, and this offset is inside it.
-    unsafe { put64(off::HEARTBEAT, n / TICKS_PER_BEAT as u64) };
+/// failure modes that actually happen here: a fault, an abort, a hang with
+/// interrupts masked. It does not prove the scheduler is making progress,
+/// so a task spinning forever at the top priority would keep it beating.
+/// That case belongs to the watchdog.
+///
+/// # Safety
+/// The shared window must be mapped.
+pub unsafe fn heartbeat(cntpct: u64) {
+    // SAFETY: forwarded from this function's contract.
+    unsafe { put64(off::HEARTBEAT, cntpct) };
 }
 
 fn read_counter() -> u64 {

@@ -1,74 +1,63 @@
 #![no_std]
 #![no_main]
-//! Puts the doorbell latency on three pins, so an oscilloscope can measure
-//! it instead of taking rivet's word for it.
+//! Kernel operations on three GPIO pins, one operation per pin.
 //!
-//! Every figure in `docs/rpi3b-benchmarks.md` is the software timing
-//! itself. That is a real measurement, but it is an argument rivet makes
-//! on its own behalf, using a counter it reads with instructions it also
-//! schedules. This binary makes the same interval visible to an instrument
-//! outside the machine, on the one path where an external observer can see
-//! both ends: the doorbell, whose start event happens on the Linux side.
-//!
-//! Wiring, all four pins adjacent in the corner of the 40-pin header:
+//! Each pin is high for exactly as long as its operation runs, so the
+//! measurement is a pulse width on a single channel. Nothing has to be
+//! lined up against anything else, and for the periodic channel the
+//! rising edges give the release times for free.
 //!
 //! ```text
-//!   header 37   GPIO26   ch C   rivet, in the woken task
-//!   header 38   GPIO20   ch A   Linux, just before ringing the doorbell
-//!   header 39   GND             ground for all three probes
-//!   header 40   GPIO21   ch B   rivet, first thing in the interrupt handler
+//!   header 37   GPIO26   doorbell service   ISR entry to woken task running
+//!   header 38   GPIO20   control task       execution time; edges = release
+//!   header 39   GND
+//!   header 40   GPIO21   tick handler       time inside the timer interrupt
 //! ```
 //!
-//! Trigger on A rising. Three intervals fall out of one capture:
+//! What to expect at a 10 kHz tick, from `docs/rpi3b-benchmarks.md`:
 //!
 //! ```text
-//!   A -> B   Linux's MMIO write to rivet's interrupt handler running
-//!   B -> C   the scheduler waking the task that was awaiting the doorbell
-//!   A -> C   the whole path, and the figure rt_bench reports as
-//!            "Linux doorbell to task"
+//!   GPIO21   ~300 ns wide, every 100 us
+//!   GPIO20   ~200 ns wide, every 1 ms, edges within a tick of the grid
+//!   GPIO26   ~2 us wide, only when Linux rings
 //! ```
 //!
-//! Run it against `rivet-amp scope`, which drives channel A. Run that
-//! under Linux load too: the point of the exercise is that the interval
-//! barely moves.
+//! Ring the doorbell from Linux with `rivet-amp scope 200 5`, or with
+//! `rivet send ping` for single shots.
 //!
-//! # What the trace does and does not include
+//! # Reading the widths honestly
 //!
-//! A GPIO write on this SoC is a store to Device memory, so each edge
-//! costs a trip to the peripheral bus. That cost is inside the measured
-//! interval, on both sides, and it is why the scope reads slightly longer
-//! than `rt_bench`, which stamps a counter register instead. Neither is
-//! wrong. The scope figure includes the cost of being observed, which is
-//! the honest number if you intend to react to the doorbell by driving a
-//! pin, and the software figure is the honest one if you intend to react
-//! to it in software.
+//! A pin is driven by a store to Device memory, a trip to the peripheral
+//! bus, and two of those bracket each operation. **The width is the
+//! operation plus the cost of marking it**, and that cost is inside the
+//! window, not outside. On the tick handler, a few hundred nanoseconds
+//! wide, it is a large fraction of what you see. Widths are good for
+//! comparing against each other and for watching the tail under load;
+//! `rt_bench` is what to use when the absolute number matters.
 //!
-//! Both pins rivet drives are configured here, including the one Linux
-//! drives. `GPFSEL` is a read-modify-write register and the two sides do
-//! not coordinate, so if both configured their own pin the two updates
-//! could lose each other. Setting all three from one side removes the
-//! race entirely. The level registers need no such care: `GPSET` and
-//! `GPCLR` are write-to-set and write-to-clear, so two cores driving
-//! different pins in the same bank cannot interfere.
+//! rivet configures all three pins, including any Linux might read.
+//! `GPFSEL` is read-modify-write and the two sides do not coordinate, so
+//! two independent configurations could lose each other. The level
+//! registers need no such care: `GPSET` and `GPCLR` are write-to-set and
+//! write-to-clear.
 
 use core::sync::atomic::{AtomicU32, Ordering};
 
 use rivet_arch_aarch64 as _;
-use rivet_bsp_rpi3b::{gpio, kernel};
+use rivet_bsp_rpi3b::{gpio, kernel, scope};
 
-/// Linux raises this before ringing. rivet only configures it.
-const PIN_TRIGGER: u8 = 20;
-/// Raised in the doorbell interrupt handler.
-const PIN_ISR: u8 = 21;
-/// Raised in the task the doorbell wakes.
-const PIN_TASK: u8 = 26;
+/// Time inside the timer interrupt.
+const PIN_TICK: u8 = 21;
+/// A 1 kHz task's own execution window.
+const PIN_TASK: u8 = 20;
+/// Doorbell interrupt to the task it wakes.
+const PIN_DOORBELL: u8 = 26;
 
-/// How long the pins stay high after an event. Only the rising edges
-/// carry the measurement; this exists so the pulse is wide enough to see
-/// at a timebase that also shows a millisecond of context.
-const PULSE_US: u64 = 200;
+/// Period of the control task, in microseconds.
+const PERIOD_US: u64 = 1000;
 
-static PULSES: AtomicU32 = AtomicU32::new(0);
+static RINGS: AtomicU32 = AtomicU32::new(0);
+static CYCLES: AtomicU32 = AtomicU32::new(0);
 
 fn w(s: &str) {
     rivet::console::write_str(s);
@@ -89,47 +78,59 @@ fn dec(mut v: u64) {
     w(unsafe { core::str::from_utf8_unchecked(&buf[i..]) });
 }
 
+/// Lowers the doorbell pin, which is what makes that channel's width the
+/// whole wake path rather than the interrupt on its own.
 #[rivet::task(priority = 3, stack = 4096)]
-async fn responder() {
+async fn doorbell_responder() {
     loop {
         kernel::DOORBELL.wait().await;
-        // Before anything else, including the reset below: this edge is
-        // the measurement.
-        // SAFETY: configured as an output in main, and only this task
-        // drives it.
-        unsafe { gpio::raise(PIN_TASK) };
         kernel::DOORBELL.reset();
-        PULSES.fetch_add(1, Ordering::Relaxed);
+        RINGS.fetch_add(1, Ordering::Relaxed);
+        scope::doorbell_end();
+    }
+}
 
-        rivet::time::Sleep::<PULSE_US>::new().await;
-        // SAFETY: as above. The ISR raised PIN_ISR and leaves clearing it
-        // here, since the handler has nowhere to wait.
-        unsafe {
-            gpio::lower(PIN_TASK);
-            gpio::lower(PIN_ISR);
+/// A periodic task doing a fixed, small amount of work.
+///
+/// The marker is the point of this one. Its width is the execution time
+/// and the gap between rising edges is the release interval, so a single
+/// channel shows both how long the work takes and how regularly it is
+/// started.
+fn control(_: &'static ()) -> ! {
+    let mut next = rivet::port::board::now_us() + PERIOD_US;
+    loop {
+        rivet::preempt::sleep_until(next);
+        next += PERIOD_US;
+
+        // SAFETY: configured as an output in main; only this task drives it.
+        let marker = unsafe { scope::Marker::new(PIN_TASK) };
+        let mut acc = 0u32;
+        for i in 0..64u32 {
+            acc = acc.wrapping_add(i.wrapping_mul(2654435761));
         }
+        core::hint::black_box(acc);
+        drop(marker);
+
+        CYCLES.fetch_add(1, Ordering::Relaxed);
     }
 }
 
 fn reporter(_: &'static ()) -> ! {
-    w("\n==== rivet rpi3b scope demo ====\n");
-    w("header 38 / GPIO20  ch A  Linux, before ringing\n");
-    w("header 40 / GPIO21  ch B  rivet, in the interrupt handler\n");
-    w("header 37 / GPIO26  ch C  rivet, in the woken task\n");
-    w("header 39           GND\n");
-    w("trigger on A rising; A->B is interrupt latency, A->C is doorbell-to-task\n");
-    w("drive it from Linux with: sudo rivet-amp scope 200\n\n");
+    w("\n==== rivet rpi3b scope ====\n");
+    w("pin 40 / GPIO21  tick handler     width = time in the timer ISR\n");
+    w("pin 38 / GPIO20  control task     width = execution, edges = release\n");
+    w("pin 37 / GPIO26  doorbell         width = ISR to woken task\n");
+    w("pin 39           GND\n\n");
+    w("each pin is high while its operation runs; measure the width\n");
+    w("ring the doorbell from Linux: sudo rivet-amp scope 200 5\n\n");
 
-    let mut last = 0u32;
     loop {
         rivet::preempt::sleep_ms(2000);
-        let n = PULSES.load(Ordering::Relaxed);
-        w("pulses=");
-        dec(n as u64);
-        w(" (+");
-        dec((n - last) as u64);
-        w(" in 2 s)\n");
-        last = n;
+        w("cycles=");
+        dec(CYCLES.load(Ordering::Relaxed) as u64);
+        w(" rings=");
+        dec(RINGS.load(Ordering::Relaxed) as u64);
+        w("\n");
     }
 }
 
@@ -147,23 +148,20 @@ pub extern "C" fn rust_main(_dtb: u64) -> ! {
 
 #[rivet::main]
 fn main() -> ! {
-    // SAFETY: none of these three pins has a function on a Pi 3B, and
-    // nothing in this image or in Linux's device tree claims them.
-    // Configuring the Linux-driven pin from here too is deliberate; see
-    // the note at the top of this file.
+    // SAFETY: none of these three pins has a function on a Pi 3B and
+    // nothing in this image or in Linux's device tree claims them. All
+    // three are configured here, from one side, because GPFSEL is
+    // read-modify-write.
     unsafe {
-        gpio::set_function(PIN_TRIGGER, gpio::func::OUTPUT);
-        gpio::set_function(PIN_ISR, gpio::func::OUTPUT);
-        gpio::set_function(PIN_TASK, gpio::func::OUTPUT);
-        gpio::lower(PIN_TRIGGER);
-        gpio::lower(PIN_ISR);
-        gpio::lower(PIN_TASK);
-    }
-    // SAFETY: PIN_ISR was just configured as an output above.
-    unsafe {
-        kernel::set_doorbell_scope_pin(PIN_ISR);
+        for p in [PIN_TICK, PIN_TASK, PIN_DOORBELL] {
+            gpio::set_function(p, gpio::func::OUTPUT);
+            gpio::lower(p);
+        }
+        scope::set_tick_pin(PIN_TICK);
+        scope::set_doorbell_pin(PIN_DOORBELL);
         kernel::enable_doorbell();
     }
+    let _ = rivet::spawn_ptask!(stack = 4096, priority = 2, entry = control, arg = ());
     let _ = rivet::spawn_ptask!(stack = 4096, priority = 1, entry = reporter, arg = ());
     rivet::run();
 }

@@ -71,9 +71,6 @@ static TICK_HZ: AtomicU32 = AtomicU32::new(0);
 pub fn configured_tick_hz() -> u32 {
     TICK_HZ.load(Ordering::Acquire)
 }
-/// Generic-timer counts between ticks, reloaded on every expiry.
-static TICK_INTERVAL: AtomicU64 = AtomicU64::new(0);
-
 macro_rules! read_sysreg {
     ($name:literal) => {{
         let v: u64;
@@ -123,7 +120,7 @@ extern "Rust" fn __rivet_board_tick_start(hz: u32) {
     let hz = hz.max(1);
     let freq = read_sysreg!("cntfrq_el0");
     let interval = freq / hz as u64;
-    TICK_INTERVAL.store(interval, Ordering::Release);
+    TK.interval.store(interval, Ordering::Release);
     TICK_PERIOD_US.store(1_000_000 / hz, Ordering::Release);
     TICK_HZ.store(hz, Ordering::Release);
     // The header was published before the tick started, so the rate in it
@@ -157,20 +154,56 @@ extern "Rust" fn __rivet_board_tick_start(hz: u32) {
 /// is the exact hardware instant of expiry, so subtracting it from the
 /// counter read at the top of the handler covers exception entry, the
 /// full register save and the board's dispatch, with nothing estimated.
-static IRQ_LAT_MIN: AtomicU64 = AtomicU64::new(u64::MAX);
-static IRQ_LAT_MAX: AtomicU64 = AtomicU64::new(0);
-static IRQ_LAT_SUM: AtomicU64 = AtomicU64::new(0);
-static IRQ_LAT_CNT: AtomicU64 = AtomicU64::new(0);
-static TICK_COST_MIN: AtomicU64 = AtomicU64::new(u64::MAX);
-static TICK_COST_MAX: AtomicU64 = AtomicU64::new(0);
-static TICK_COST_SUM: AtomicU64 = AtomicU64::new(0);
-static TICK_GAP_MIN: AtomicU64 = AtomicU64::new(u64::MAX);
-static TICK_GAP_MAX: AtomicU64 = AtomicU64::new(0);
-static TICK_GAP_SUM: AtomicU64 = AtomicU64::new(0);
-static TICK_GAP_CNT: AtomicU64 = AtomicU64::new(0);
-static TICK_LAST_ENTRY: AtomicU64 = AtomicU64::new(0);
-static IRQ_LAT_OVER: AtomicU64 = AtomicU64::new(0);
-static TICK_COST_OVER: AtomicU64 = AtomicU64::new(0);
+///
+/// They live in one cache-line-aligned block rather than as separate
+/// statics.
+///
+/// As separate statics these landed wherever the linker put them, and it
+/// put them badly: the three minima initialise to `u64::MAX` so they went
+/// to `.data` while the rest, zero-initialised, went to `.bss`, 36 KiB
+/// away. Three cache lines, touched once per tick and not otherwise,
+/// which is the access pattern that lives in a shared L2 and is evicted
+/// between ticks by the other cores. The footprint was decided by
+/// initialiser values, which is no way to decide it.
+///
+/// Grouped and aligned, this is two lines and stays two lines however the
+/// linker feels, and adding a counter cannot silently cost a third.
+#[repr(C, align(64))]
+struct TickCounters {
+    lat_min: AtomicU64,
+    lat_max: AtomicU64,
+    lat_sum: AtomicU64,
+    lat_cnt: AtomicU64,
+    lat_over: AtomicU64,
+    cost_min: AtomicU64,
+    cost_max: AtomicU64,
+    cost_sum: AtomicU64,
+    cost_over: AtomicU64,
+    gap_min: AtomicU64,
+    gap_max: AtomicU64,
+    gap_sum: AtomicU64,
+    gap_cnt: AtomicU64,
+    last_entry: AtomicU64,
+    interval: AtomicU64,
+}
+
+static TK: TickCounters = TickCounters {
+    lat_min: AtomicU64::new(u64::MAX),
+    lat_max: AtomicU64::new(0),
+    lat_sum: AtomicU64::new(0),
+    lat_cnt: AtomicU64::new(0),
+    lat_over: AtomicU64::new(0),
+    cost_min: AtomicU64::new(u64::MAX),
+    cost_max: AtomicU64::new(0),
+    cost_sum: AtomicU64::new(0),
+    cost_over: AtomicU64::new(0),
+    gap_min: AtomicU64::new(u64::MAX),
+    gap_max: AtomicU64::new(0),
+    gap_sum: AtomicU64::new(0),
+    gap_cnt: AtomicU64::new(0),
+    last_entry: AtomicU64::new(0),
+    interval: AtomicU64::new(0),
+};
 
 /// Per-stage timing inside the tick handler, behind `tick-phases`.
 ///
@@ -284,39 +317,39 @@ pub struct IrqStats {
 /// Snapshot of the tick handler's self-measurements.
 pub fn irq_stats() -> IrqStats {
     IrqStats {
-        lat_min: IRQ_LAT_MIN.load(Ordering::Relaxed),
-        lat_max: IRQ_LAT_MAX.load(Ordering::Relaxed),
-        lat_sum: IRQ_LAT_SUM.load(Ordering::Relaxed),
-        count: IRQ_LAT_CNT.load(Ordering::Relaxed),
-        lat_over: IRQ_LAT_OVER.load(Ordering::Relaxed),
-        cost_min: TICK_COST_MIN.load(Ordering::Relaxed),
-        cost_max: TICK_COST_MAX.load(Ordering::Relaxed),
-        cost_sum: TICK_COST_SUM.load(Ordering::Relaxed),
-        cost_over: TICK_COST_OVER.load(Ordering::Relaxed),
-        gap_min: TICK_GAP_MIN.load(Ordering::Relaxed),
-        gap_max: TICK_GAP_MAX.load(Ordering::Relaxed),
-        gap_sum: TICK_GAP_SUM.load(Ordering::Relaxed),
-        gap_count: TICK_GAP_CNT.load(Ordering::Relaxed),
+        lat_min: TK.lat_min.load(Ordering::Relaxed),
+        lat_max: TK.lat_max.load(Ordering::Relaxed),
+        lat_sum: TK.lat_sum.load(Ordering::Relaxed),
+        count: TK.lat_cnt.load(Ordering::Relaxed),
+        lat_over: TK.lat_over.load(Ordering::Relaxed),
+        cost_min: TK.cost_min.load(Ordering::Relaxed),
+        cost_max: TK.cost_max.load(Ordering::Relaxed),
+        cost_sum: TK.cost_sum.load(Ordering::Relaxed),
+        cost_over: TK.cost_over.load(Ordering::Relaxed),
+        gap_min: TK.gap_min.load(Ordering::Relaxed),
+        gap_max: TK.gap_max.load(Ordering::Relaxed),
+        gap_sum: TK.gap_sum.load(Ordering::Relaxed),
+        gap_count: TK.gap_cnt.load(Ordering::Relaxed),
     }
 }
 
 /// Discard everything gathered so far, so a measurement window excludes
 /// start-up.
 pub fn reset_irq_stats() {
-    IRQ_LAT_MIN.store(u64::MAX, Ordering::Relaxed);
-    IRQ_LAT_MAX.store(0, Ordering::Relaxed);
-    IRQ_LAT_SUM.store(0, Ordering::Relaxed);
-    IRQ_LAT_CNT.store(0, Ordering::Relaxed);
-    TICK_COST_MIN.store(u64::MAX, Ordering::Relaxed);
-    TICK_COST_MAX.store(0, Ordering::Relaxed);
-    TICK_COST_SUM.store(0, Ordering::Relaxed);
-    TICK_GAP_MIN.store(u64::MAX, Ordering::Relaxed);
-    TICK_GAP_MAX.store(0, Ordering::Relaxed);
-    TICK_GAP_SUM.store(0, Ordering::Relaxed);
-    TICK_GAP_CNT.store(0, Ordering::Relaxed);
-    TICK_LAST_ENTRY.store(0, Ordering::Relaxed);
-    IRQ_LAT_OVER.store(0, Ordering::Relaxed);
-    TICK_COST_OVER.store(0, Ordering::Relaxed);
+    TK.lat_min.store(u64::MAX, Ordering::Relaxed);
+    TK.lat_max.store(0, Ordering::Relaxed);
+    TK.lat_sum.store(0, Ordering::Relaxed);
+    TK.lat_cnt.store(0, Ordering::Relaxed);
+    TK.cost_min.store(u64::MAX, Ordering::Relaxed);
+    TK.cost_max.store(0, Ordering::Relaxed);
+    TK.cost_sum.store(0, Ordering::Relaxed);
+    TK.gap_min.store(u64::MAX, Ordering::Relaxed);
+    TK.gap_max.store(0, Ordering::Relaxed);
+    TK.gap_sum.store(0, Ordering::Relaxed);
+    TK.gap_cnt.store(0, Ordering::Relaxed);
+    TK.last_entry.store(0, Ordering::Relaxed);
+    TK.lat_over.store(0, Ordering::Relaxed);
+    TK.cost_over.store(0, Ordering::Relaxed);
     #[cfg(feature = "tick-phases")]
     phases::reset();
 }
@@ -333,6 +366,7 @@ fn record_min(cell: &AtomicU64, v: u64) {
 
 /// Called from the interrupt path when the generic timer has expired.
 fn on_timer_tick() {
+    crate::scope::tick_begin();
     // Advance the absolute comparator rather than reloading a countdown.
     //
     // Writing CNTP_TVAL_EL0 sets the deadline relative to *now*, meaning
@@ -343,7 +377,7 @@ fn on_timer_tick() {
     // time forever. Advancing CVAL by a fixed interval cannot drift: a
     // late handler produces one late tick, not a permanently skewed
     // grid.
-    let interval = TICK_INTERVAL.load(Ordering::Acquire);
+    let interval = TK.interval.load(Ordering::Acquire);
     let cval = read_sysreg!("cntp_cval_el0");
     let entry = read_sysreg!("cntpct_el0");
     write_sysreg!("cntp_cval_el0", cval + interval);
@@ -351,33 +385,41 @@ fn on_timer_tick() {
     // `cval` is the instant the comparator matched, so this is the real
     // hardware-to-handler latency rather than an estimate.
     let lat = entry.wrapping_sub(cval);
-    IRQ_LAT_MAX.fetch_max(lat, Ordering::Relaxed);
-    record_min(&IRQ_LAT_MIN, lat);
-    IRQ_LAT_SUM.fetch_add(lat, Ordering::Relaxed);
-    IRQ_LAT_CNT.fetch_add(1, Ordering::Relaxed);
+    TK.lat_max.fetch_max(lat, Ordering::Relaxed);
+    record_min(&TK.lat_min, lat);
+    TK.lat_sum.fetch_add(lat, Ordering::Relaxed);
+    let ticks = TK.lat_cnt.fetch_add(1, Ordering::Relaxed) + 1;
+
+    // Liveness for the Linux side, published from a counter this handler
+    // already maintains. Adding one of its own put another cold line on
+    // this path and cost more than the feature is worth; see
+    // sysinfo::heartbeat.
+    #[cfg(feature = "amp")]
+    if ticks & (crate::sysinfo::TICKS_PER_BEAT as u64 - 1) == 0 {
+        // SAFETY: the shared window is mapped for the life of an AMP image.
+        unsafe { crate::sysinfo::heartbeat(entry) };
+    }
+
     if lat > LONG_TICKS {
-        IRQ_LAT_OVER.fetch_add(1, Ordering::Relaxed);
+        TK.lat_over.fetch_add(1, Ordering::Relaxed);
     }
 
     // Skip the first tick after a reset: there is no previous entry to
     // measure an interval against, and treating zero as one would report
     // a gap the size of the uptime.
-    let prev = TICK_LAST_ENTRY.swap(entry, Ordering::Relaxed);
+    let prev = TK.last_entry.swap(entry, Ordering::Relaxed);
     if prev != 0 {
         let gap = entry.wrapping_sub(prev);
-        TICK_GAP_MAX.fetch_max(gap, Ordering::Relaxed);
-        record_min(&TICK_GAP_MIN, gap);
-        TICK_GAP_SUM.fetch_add(gap, Ordering::Relaxed);
-        TICK_GAP_CNT.fetch_add(1, Ordering::Relaxed);
+        TK.gap_max.fetch_max(gap, Ordering::Relaxed);
+        record_min(&TK.gap_min, gap);
+        TK.gap_sum.fetch_add(gap, Ordering::Relaxed);
+        TK.gap_cnt.fetch_add(1, Ordering::Relaxed);
     }
 
     #[cfg(feature = "tick-phases")]
     let t_book = read_sysreg!("cntpct_el0");
     #[cfg(feature = "tick-phases")]
     phases::record(&phases::BOOKKEEPING, t_book.wrapping_sub(entry));
-
-    #[cfg(feature = "amp")]
-    crate::sysinfo::heartbeat();
 
     rivet::watchdog::on_tick();
     #[cfg(feature = "tick-phases")]
@@ -406,12 +448,14 @@ fn on_timer_tick() {
     }
 
     let cost = read_sysreg!("cntpct_el0").wrapping_sub(entry);
-    TICK_COST_MAX.fetch_max(cost, Ordering::Relaxed);
-    record_min(&TICK_COST_MIN, cost);
-    TICK_COST_SUM.fetch_add(cost, Ordering::Relaxed);
+    TK.cost_max.fetch_max(cost, Ordering::Relaxed);
+    record_min(&TK.cost_min, cost);
+    TK.cost_sum.fetch_add(cost, Ordering::Relaxed);
     if cost > LONG_TICKS {
-        TICK_COST_OVER.fetch_add(1, Ordering::Relaxed);
+        TK.cost_over.fetch_add(1, Ordering::Relaxed);
     }
+
+    crate::scope::tick_end();
 }
 
 // ── Interrupts ────────────────────────────────────────────────────
@@ -425,35 +469,6 @@ pub static DOORBELL: rivet::sync::Signal = rivet::sync::Signal::new();
 
 /// Count of doorbells taken, for tests that want to prove one arrived.
 static DOORBELL_COUNT: AtomicU32 = AtomicU32::new(0);
-
-/// A pin driven high the instant the doorbell interrupt is taken, or
-/// `NO_SCOPE_PIN` for none.
-///
-/// Every latency figure this port reports is measured by software timing
-/// itself, which is an argument the software makes on its own behalf. A
-/// pin raised here can be watched by an oscilloscope against the pin Linux
-/// raises before ringing, and that interval is witnessed from outside the
-/// machine by an instrument neither side controls.
-///
-/// It costs one write-to-set store on the interrupt path, which is the
-/// smallest marker that can exist here. It is still not free, and it is
-/// inside the interval being measured rather than outside it.
-static DOORBELL_SCOPE_PIN: AtomicU32 = AtomicU32::new(NO_SCOPE_PIN);
-const NO_SCOPE_PIN: u32 = u32::MAX;
-
-/// Raise `pin` on every doorbell interrupt, for external measurement.
-///
-/// # Safety
-/// The pin must already be configured as an output and nothing else may
-/// be driving it.
-pub unsafe fn set_doorbell_scope_pin(pin: u8) {
-    DOORBELL_SCOPE_PIN.store(pin as u32, Ordering::Release);
-}
-
-/// Stop driving a pin on doorbell interrupts.
-pub fn clear_doorbell_scope_pin() {
-    DOORBELL_SCOPE_PIN.store(NO_SCOPE_PIN, Ordering::Release);
-}
 
 pub fn doorbell_count() -> u32 {
     DOORBELL_COUNT.load(Ordering::Relaxed)
@@ -482,14 +497,10 @@ extern "Rust" fn __rivet_board_on_irq() {
     }
 
     if source & crate::mailbox::IRQ_SOURCE_MBOX0 != 0 {
-        // First thing in the branch, so the edge marks the handler being
-        // reached and not the work that follows it.
-        let scope = DOORBELL_SCOPE_PIN.load(Ordering::Acquire);
-        if scope != NO_SCOPE_PIN {
-            // SAFETY: the pin was configured as an output by whoever
-            // registered it, per set_doorbell_scope_pin's contract.
-            unsafe { crate::gpio::raise(scope as u8) };
-        }
+        // First thing in the branch, so the rising edge marks the handler
+        // being reached and not the work that follows it. The task the
+        // doorbell wakes drops it again, making the width the wake path.
+        crate::scope::doorbell_begin();
         // Clearing the mailbox is what drops the interrupt line; skip it
         // and this handler re-enters forever.
         // SAFETY: servicing this core's own mailbox.

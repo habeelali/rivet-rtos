@@ -71,6 +71,9 @@ trace = ["rivet/trace", "rivet-bsp-rpi3b/trace"]
 # Per-stage timing inside the tick handler, for tick_anatomy. Diagnostic
 # only: it puts counter reads on the tick path.
 tick-phases = ["rivet-bsp-rpi3b/tick-phases"]
+# GPIO markers on the tick and doorbell handlers, for scope_demo. Off by
+# default because they are not free; see rivet-bsp-rpi3b/src/scope.rs.
+scope-pins = ["rivet-bsp-rpi3b/scope-pins"]
 
 [dependencies]
 rivet = { path = "../../rivet", package = "rivet-rtos" }

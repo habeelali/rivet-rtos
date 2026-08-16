@@ -1,9 +1,11 @@
 [Unit]
 Description=Rivet RTOS
 Documentation=file:///usr/local/share/doc/rivet/README.md
-# Something for dependent services to order against, so "after the RTOS
-# is up" is expressible without naming the individual units.
-Requires=rivet.service
+# An ordering point only. It deliberately does not Requires= or Wants=
+# rivet.service: a dependency here starts the service whatever its enable
+# state, so `systemctl disable rivet` appeared to work and did nothing.
+# That cost an afternoon of benchmarking against a board that was not in
+# the state it was reported to be in.
 After=rivet.service
 [Install]
 WantedBy=multi-user.target

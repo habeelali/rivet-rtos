@@ -40,31 +40,50 @@ why the Linux side reads the virtual counter and not the same register.
 
 ## Running it
 
-Three phases, because `rivet-amp bench` and `rivet-amp console` are both
-readers of the console ring and would otherwise eat each other's bytes.
+**Disable the auto-start first.** This is not optional and it is not
+tidiness:
 
 ```sh
-# On the build machine
-cd examples/rpi3b-amp
-cargo build --release
-rust-objcopy -O binary \
-    ../../target/aarch64-unknown-none/release/rt_bench_amp rt_bench.img
-scp rt_bench.img pi:/tmp/
+sudo systemctl disable rivet rivet.target rivet-console rivet-health
+sudo systemctl reboot
+```
 
-# On the Pi
-sudo rivet-amp load /tmp/rt_bench.img
-sudo rivet-amp console      # self-contained results, then it waits
-                            # Ctrl-C once it says it is waiting
+`rivet.service` loads the selected image about eighteen seconds into boot,
+so a suite left to auto-start takes its measurements while systemd is
+still bringing the system up. The same binary measured 312 ns mean tick
+cost with zero samples over a microsecond on a settled system, and 468 ns
+with 673 over a microsecond when it auto-started, which is most of the
+difference between the idle and loaded columns below. Nothing about the
+code changed.
+
+`rivet.target` has to go too. It used to declare `Requires=rivet.service`,
+which starts the service whatever its enable state, so disabling the
+service alone appeared to work and did not. That is fixed, but a card
+provisioned before the fix still has the old unit.
+
+Then, on a system that has finished booting:
+
+```sh
+# wait for the load average to settle, twenty seconds is plenty
+sudo rivet-amp load /usr/local/lib/rivet/rt_bench.img
+sudo rivet-amp console      # self-contained rows, then it waits; Ctrl-C
 sudo rivet-amp bench 400    # round trip and one-way throughput
 sudo rivet-amp console      # the doorbell row, then RT_BENCH_OK
 ```
 
+Put them back afterwards:
+
+```sh
+sudo systemctl enable rivet rivet.target rivet-console rivet-health
+```
+
 A spin-table release latches, so a core already running an image cannot be
 restarted in place. **Reboot between runs.** Loading a second image onto a
-core still executing the first one silently does nothing, which looks
-exactly like a hang.
+core still executing the first silently does nothing, which looks exactly
+like a hang. Worse, the load reinitialises the rings, so it also destroys
+whatever the running image had already reported.
 
-For the loaded numbers, start the load before `rivet-amp load`:
+For the loaded numbers, start this before `rivet-amp load`:
 
 ```sh
 for i in 1 2 3; do (while :; do :; done) & done

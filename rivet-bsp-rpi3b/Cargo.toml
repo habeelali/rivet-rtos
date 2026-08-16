@@ -35,6 +35,10 @@ trace = ["rivet/trace"]
 # Time each stage of the tick handler separately. Diagnostic only: it adds
 # counter reads to the tick path, inside the interval the handler reports.
 tick-phases = []
+# GPIO markers around the tick and doorbell handlers. Off by default: the
+# pin-number statics are cold lines on the tick path, and measuring with
+# them left in cost 156 ns on the mean tick. See src/scope.rs.
+scope-pins = []
 
 [dependencies]
 rivet = { path = "../rivet", version = "0.2.0", package = "rivet-rtos", optional = true }

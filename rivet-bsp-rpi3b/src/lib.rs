@@ -33,6 +33,7 @@ pub mod i2c;
 pub mod kernel;
 pub mod mailbox;
 pub mod mmu;
+pub mod scope;
 pub mod shmem;
 pub mod smp;
 pub mod spi;
