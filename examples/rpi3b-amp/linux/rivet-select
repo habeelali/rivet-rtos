@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# Choose which image core 3 runs at boot.
+#
+#   rivet-select              list images and show the current choice
+#   rivet-select rt_bench     select it (takes effect at the next boot)
+#   rivet-select rt_bench -r  select it and reboot now
+#
+# This exists because of the spin table. Releasing a core latches: once
+# core 3 has left the firmware's pen and started an image, writing a
+# different one into memory does nothing at all, because nothing will send
+# it back to the pen to pick the new entry point up. The core cannot be
+# restarted in place, so switching images means rebooting, and the boot
+# service needs to know which one to load. Hence a symlink rather than an
+# argument.
+#
+# The failure this prevents is a quiet one: load a second image onto a
+# running core and it looks exactly like a hang.
+set -euo pipefail
+
+LIB=/usr/local/lib/rivet
+LINK=$LIB/rivet.img
+
+have() { ls "$LIB"/*.img 2>/dev/null | grep -v '/rivet\.img$' || true; }
+
+if [ $# -eq 0 ]; then
+    cur=$(readlink "$LINK" 2>/dev/null || echo "(not a symlink)")
+    echo "boot image: $(basename "$cur" .img)"
+    echo
+    echo "available:"
+    for f in $(have); do
+        n=$(basename "$f" .img)
+        [ "$f" = "$(readlink -f "$LINK" 2>/dev/null)" ] && echo "  * $n" || echo "    $n"
+    done
+    exit 0
+fi
+
+NAME="${1%.img}"
+TARGET="$LIB/$NAME.img"
+if [ ! -f "$TARGET" ]; then
+    echo "no such image: $NAME" >&2
+    echo "try one of:" >&2
+    for f in $(have); do echo "  $(basename "$f" .img)" >&2; done
+    exit 1
+fi
+
+sudo ln -sfn "$TARGET" "$LINK"
+echo "boot image is now $NAME"
+
+if [ "${2:-}" = "-r" ] || [ "${2:-}" = "--reboot" ]; then
+    echo "rebooting"
+    sudo systemctl reboot
+else
+    echo "reboot to run it:  sudo systemctl reboot"
+fi

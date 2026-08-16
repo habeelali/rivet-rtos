@@ -405,45 +405,127 @@ that needs a wire, and report the weaker one until it is there:
 Nothing else changes: `periph_test` detects both and says which case it
 measured.
 
-## Benchmarking
+## Running it
 
-`rt_bench` is the characterisation suite for this port: interrupt latency,
-context switch, scheduler decision cost, tick jitter, priority-inheritance
-mutex handoff, cache coherency overhead, the Linux doorbell and ring
-figures, and deadline lateness, each as min, mean and max with a sample
-count.
+rivet starts itself at boot. Three units do it, all enabled:
+
+| Unit | Does |
+|---|---|
+| `rivet-build` | compiles `rivet-amp` if it is missing, once |
+| `rivet` | loads the selected image onto core 3 and releases it |
+| `rivet-console` | relays rivet's console ring into the journal, forever |
+
+So after a cold boot, with nothing typed:
 
 ```sh
-sudo rivet-amp load /tmp/rt_bench.img
-sudo rivet-amp console      # self-contained rows, then it waits
-sudo rivet-amp bench 400    # round trip and one-way throughput
-sudo rivet-amp console      # the doorbell row
+systemctl is-active rivet rivet-console      # active active
+journalctl -b -u rivet -u rivet-console      # what it said coming up
+sudo rivet-amp send ping                     # -> [rivet] pong
 ```
 
-Results and methodology, idle and under full Linux load, are in
-[docs/rpi3b-benchmarks.md](../../docs/rpi3b-benchmarks.md). Which of those
-figures are guarantees rather than observations, and the shared-L2 limit
-that keeps the rest from being promoted, are in
-[docs/rpi3b-guarantees.md](../../docs/rpi3b-guarantees.md).
-
-To measure the doorbell with an oscilloscope rather than trusting rivet's
-own clock, `scope_demo` puts it on three pins in the corner of the header:
-GPIO20 (pin 38) raised by Linux before ringing, GPIO21 (pin 40) raised in
-rivet's interrupt handler, GPIO26 (pin 37) raised in the task it wakes,
-with ground on pin 39. Trigger on GPIO20 rising and one capture shows
-interrupt latency and the doorbell-to-task figure separately.
+### Choosing what runs
 
 ```sh
-sudo rivet-amp load /tmp/scope_demo.img
+rivet-select                 # list images, star the current one
+rivet-select rt_bench        # select it, takes effect next boot
+rivet-select rt_bench -r     # select it and reboot now
+```
+
+**Switching images requires a reboot, and this is not a convenience
+choice.** Releasing a core through the spin table latches: once core 3 has
+left the firmware's pen and started an image, writing a different one into
+memory does nothing, because nothing sends the core back to the pen to
+pick up the new entry point. It cannot be restarted in place. Load a second
+image onto a running core and it looks exactly like a hang, which is the
+one failure worth knowing about in advance.
+
+Installed images:
+
+| Image | What it is |
+|---|---|
+| `channel_demo` | the default. Idles on the doorbell, answers commands, never exits |
+| `rt_bench` | the characterisation suite |
+| `scope_demo` | doorbell latency on three GPIO pins |
+| `tick_anatomy` | per-stage timing inside the tick handler |
+| `kernel_features` | tasks, mutexes, semaphores, channels, watchdog |
+| `periph_test` | GPIO, SPI, I2C |
+| `trace_demo` | emits PulseTrace frames while scheduling |
+
+### The one conflict to know about
+
+`rivet-console` holds the console ring, and so do `rivet-amp console` and
+`rivet-amp bench`. Two readers on one ring eat each other's bytes. Stop the
+service before running either by hand:
+
+```sh
+sudo systemctl stop rivet-console
+...
+sudo systemctl start rivet-console
+```
+
+### The benchmark suite
+
+```sh
+rivet-select rt_bench -r
+# wait for it to come back
+sudo systemctl stop rivet-console
+sudo rivet-amp console      # self-contained rows, then it waits; Ctrl-C
+sudo rivet-amp bench 400    # round trip and one-way throughput
+sudo rivet-amp console      # the doorbell row, then RT_BENCH_OK
+```
+
+For the loaded numbers, start this before the run and reboot afterwards to
+clear it:
+
+```sh
+for i in 1 2 3; do setsid bash -c "while :; do :; done" & done
+setsid bash -c "while :; do cat /dev/urandom | gzip -1 > /dev/null; done" &
+setsid bash -c "while :; do dd if=/dev/zero of=/tmp/lf bs=1M count=64; sync; rm -f /tmp/lf; done" &
+```
+
+Results in [docs/rpi3b-benchmarks.md](../../docs/rpi3b-benchmarks.md), and
+which of them are guarantees in
+[docs/rpi3b-guarantees.md](../../docs/rpi3b-guarantees.md).
+
+### The scope demo
+
+Probe header pins 37, 38 and 40 with ground on 39, then:
+
+```sh
+rivet-select scope_demo -r
 sudo rivet-amp scope 200 5
 ```
 
-It reads the pads back as it goes and reports whether rivet's pins moved,
-so it says something useful before a probe is attached.
+Trigger on GPIO20 (pin 38) rising. GPIO21 (pin 40) is rivet's interrupt
+handler, GPIO26 (pin 37) is the task it wakes. It reads the pads back as it
+goes, so it reports whether rivet's pins moved even with no probe attached.
 
-Reboot between runs. A spin-table release latches, so loading a second
-image onto a core still executing the first one does nothing at all, which
-looks exactly like a hang.
+### Tracing
+
+```sh
+rivet-select trace_demo -r
+sudo systemctl stop rivet-console
+sudo rivet-amp trace /tmp/rivet.ptrace
+```
+
+Frames go to their own ring, not the console: the wire format is framed
+binary and a log line in the middle of a frame corrupts it.
+
+### Deploying a new image
+
+From the build machine:
+
+```sh
+cd examples/rpi3b-amp
+cargo build --release
+rust-objcopy -O binary \
+    ../../target/aarch64-unknown-none/release/channel_demo_amp channel_demo.img
+scp channel_demo.img pi:/tmp/
+ssh pi 'sudo cp /tmp/channel_demo.img /usr/local/lib/rivet/ && rivet-select channel_demo -r'
+```
+
+`tick_anatomy` is the one image that needs a feature:
+`cargo build --release --features tick-phases --bin tick_anatomy_amp`.
 
 ## What is not done yet
 

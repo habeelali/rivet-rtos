@@ -92,7 +92,25 @@ say "$(cat "$BOOT/cmdline.txt")"
 echo "== rivet payload and services =="
 sudo mkdir -p "$ROOT/usr/local/lib/rivet" "$ROOT/usr/local/bin"
 sudo cp "$HERE/rivet-amp.c" "$ROOT/usr/local/lib/rivet/"
-[ -n "$IMG" ] && sudo cp "$IMG" "$ROOT/usr/local/lib/rivet/rivet.img" && say "image: $(basename "$IMG")"
+sudo install -m755 "$HERE/rivet-select" "$ROOT/usr/local/bin/rivet-select"
+
+# Images are installed under their own names and the one that boots is a
+# symlink, because a released core cannot be restarted in place: switching
+# images means rebooting, so the boot service has to be told which one to
+# take. See rivet-select.
+if [ -n "$IMG" ]; then
+    if [ -d "$IMG" ]; then
+        sudo cp "$IMG"/*.img "$ROOT/usr/local/lib/rivet/"
+        say "images: $(ls "$IMG"/*.img | wc -l) installed"
+        DEFAULT=$(ls "$IMG"/channel_demo.img 2>/dev/null || ls "$IMG"/*.img | head -1)
+    else
+        sudo cp "$IMG" "$ROOT/usr/local/lib/rivet/"
+        DEFAULT="$IMG"
+    fi
+    sudo ln -sfn "/usr/local/lib/rivet/$(basename "$DEFAULT")" \
+                 "$ROOT/usr/local/lib/rivet/rivet.img"
+    say "boot image: $(basename "$DEFAULT" .img)"
+fi
 
 sudo tee "$ROOT/etc/systemd/system/rivet-build.service" >/dev/null <<'UNIT'
 [Unit]
