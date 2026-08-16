@@ -835,17 +835,15 @@ static void first_line(const char *path, char *out, size_t cap) {
 }
 
 // ── status ───────────────────────────────────────────────────────────
-
-static void rule(const char *title) {
-    printf("%s%s  %s %s", CBOLD, CBLU, title, CRST);
-    int pad = 56 - (int)strlen(title);
-    for (int i = 0; i < pad; i++) printf("%s-%s", CDIM, CRST);
-    printf("\n");
-}
+//
+// Fields and values, in two shapes: aligned label/value pairs for scalars
+// and a plain column table where there are repeated rows. Anything that
+// needs a sentence to explain belongs in the documentation, not in output
+// someone reads twenty times a day.
 
 static void kv(const char *k, const char *fmt, ...) {
     va_list ap;
-    printf("  %s%-18s%s ", CDIM, k, CRST);
+    printf("  %s%9s%s  ", CDIM, k, CRST);
     va_start(ap, fmt);
     vprintf(fmt, ap);
     va_end(ap);
@@ -855,87 +853,54 @@ static void kv(const char *k, const char *fmt, ...) {
 static int cmd_status(void) {
     struct sysinfo_hdr h;
     int live = read_sysinfo(&h);
+    char buf[256], hb[32], hb2[32];
 
-    printf("\n  %s%sRIVET RTOS%s %s+ Linux%s   %sone board, two kernels%s\n\n",
-           CBOLD, CCYN, CRST, CBOLD, CRST, CDIM, CRST);
-
-    // -- identity ------------------------------------------------------
-    rule("system");
     if (live) {
-        kv("system version", "%s%s%s", CBOLD, h.sysver, CRST);
-        kv("build", "%s", h.build);
-        if (h.abi == SYS_ABI) {
-            kv("header ABI", "%u %s(matches this tool)%s", h.abi, CDIM, CRST);
-        } else {
-            kv("header ABI", "%u %sMISMATCH: this tool speaks %u%s",
-               h.abi, CRED, SYS_ABI, CRST);
-        }
+        printf("%srivet %s%s  build %s  abi %s%u%s\n\n",
+               CBOLD, h.sysver, CRST, h.build,
+               h.abi == SYS_ABI ? "" : CRED, h.abi, h.abi == SYS_ABI ? "" : CRST);
+        if (h.abi != SYS_ABI)
+            printf("  %sabi %u unsupported, this build reads %u%s\n\n",
+                   CRED, h.abi, SYS_ABI, CRST);
     } else {
-        kv("system version", "%s(rivet has not published a header)%s", CYEL, CRST);
+        printf("%srivet%s  no image running\n\n", CBOLD, CRST);
     }
-    kv("config source", "%s", config_from_dt ? "device tree" : "compiled defaults");
 
-    // -- the two kernels ----------------------------------------------
-    char buf[256], buf2[256];
-    printf("\n");
-    rule("kernels");
     first_line("/proc/sys/kernel/osrelease", buf, sizeof buf);
-    printf("  %s%-18s%s %s%s%s\n", CDIM, "Linux", CRST, CBOLD, buf, CRST);
-    first_line("/proc/sys/kernel/version", buf, sizeof buf);
-    printf("  %s%-18s%s %s%s%s\n", CDIM, "", CRST, CDIM, buf, CRST);
-    buf2[0] = 0;
-    FILE *f = fopen("/etc/os-release", "r");
-    if (f) {
-        while (fgets(buf, sizeof buf, f))
-            if (!strncmp(buf, "PRETTY_NAME=", 12)) {
-                char *q = strchr(buf, '"');
-                if (q) { snprintf(buf2, sizeof buf2, "%s", q + 1);
-                         char *e = strchr(buf2, '"'); if (e) *e = 0; }
-            }
-        fclose(f);
-    }
-    if (buf2[0]) printf("  %s%-18s%s %s%s%s\n", CDIM, "", CRST, CDIM, buf2, CRST);
+    kv("linux", "%s", buf);
 
     if (live) {
-        printf("  %s%-18s%s %s%s%s   %simage %s%s\n", CDIM, "rivet", CRST,
-               CBOLD, h.rivetver, CRST, CDIM, h.image, CRST);
         const char *col = h.state == 1 ? CGRN : h.state == 2 ? CRED : CYEL;
-        printf("  %s%-18s%s %s%s%s", CDIM, "", CRST, col, state_name(h.state), CRST);
-        if (h.tick_hz) printf("   %s%u Hz tick%s", CDIM, h.tick_hz, CRST);
-        printf("\n");
-    } else {
-        printf("  %s%-18s%s %snot running%s\n", CDIM, "rivet", CRST, CRED, CRST);
+        kv("rtos", "%s  %s", h.rivetver, h.image);
+        if (h.tick_hz)
+            kv("state", "%s%s%s  %u Hz tick", col, state_name(h.state), CRST, h.tick_hz);
+        else
+            kv("state", "%s%s%s", col, state_name(h.state), CRST);
+
+        if (h.state != 1) {
+            kv("heartbeat", "stopped");
+        } else {
+            struct sysinfo_hdr h2;
+            usleep(300000);
+            read_sysinfo(&h2);
+            if (h2.heartbeat == h.heartbeat)
+                kv("heartbeat", "%s%sstalled%s  none in 300 ms, expected %u",
+                   CBOLD, CRED, CRST, h.beat_hz * 3 / 10);
+            else
+                kv("heartbeat", "%s%u Hz%s  %llu beats  %llu s", CGRN, h.beat_hz, CRST,
+                   (unsigned long long)h.heartbeat,
+                   h.beat_hz ? (unsigned long long)(h.heartbeat / h.beat_hz) : 0ULL);
+        }
     }
+    kv("config", "%s", config_from_dt ? "device tree" : "built-in defaults");
 
-    // -- cores ----------------------------------------------------------
-    printf("\n");
-    rule("cores");
-    first_line("/sys/devices/system/cpu/online", buf, sizeof buf);
-    long ncpu = sysconf(_SC_NPROCESSORS_ONLN);
-    unsigned khz = 0;
-    { char p2[128];
-      snprintf(p2, sizeof p2, "/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq");
-      char t[64]; first_line(p2, t, sizeof t); khz = (unsigned)strtoul(t, NULL, 10); }
+    { char t[64];
+      first_line("/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq", t, sizeof t);
+      unsigned khz = (unsigned)strtoul(t, NULL, 10);
+      if (khz) kv("clock", "%u MHz", khz / 1000); }
 
-    for (int c = 0; c < 4; c++) {
-        int is_rivet = live && (int)h.core == c;
-        int is_linux = c < ncpu;
-        const char *who  = is_rivet ? "rivet" : is_linux ? "Linux" : "unassigned";
-        const char *col  = is_rivet ? CGRN : is_linux ? CBLU : CYEL;
-        printf("  %score %d%s  %s%-10s%s %s%s%s\n", CDIM, c, CRST, col, who, CRST, CDIM,
-               is_rivet ? "exclusive, not in Linux's device tree"
-                        : is_linux ? "scheduled by Linux" : "parked in the firmware spin table",
-               CRST);
-    }
-    kv("Linux online", "%s (%ld of 4)", buf, ncpu);
-    if (khz) kv("ARM clock", "%u MHz%s", khz / 1000,
-                access("/boot/firmware/config.txt", R_OK) == 0 ? "" : "");
-
-    // -- memory ---------------------------------------------------------
-    printf("\n");
-    rule("memory");
     unsigned long memtotal = 0, memavail = 0;
-    f = fopen("/proc/meminfo", "r");
+    FILE *f = fopen("/proc/meminfo", "r");
     if (f) {
         while (fgets(buf, sizeof buf, f)) {
             sscanf(buf, "MemTotal: %lu kB", &memtotal);
@@ -943,48 +908,32 @@ static int cmd_status(void) {
         }
         fclose(f);
     }
-    char hb[32];
     human_bytes(memtotal * 1024, hb, sizeof hb);
-    kv("Linux total", "%s", hb);
-    human_bytes(memavail * 1024, hb, sizeof hb);
-    kv("Linux available", "%s", hb);
+    human_bytes(memavail * 1024, hb2, sizeof hb2);
+    kv("memory", "%s, %s free", hb, hb2);
+
+    long ncpu = sysconf(_SC_NPROCESSORS_ONLN);
+    printf("\n  %scpu  owner  status%s\n", CDIM, CRST);
+    for (int c = 0; c < 4; c++) {
+        if (live && (int)h.core == c)
+            printf("  %3d  rivet  %s%s%s\n", c,
+                   h.state == 1 ? CGRN : CYEL, state_name(h.state), CRST);
+        else if (c < ncpu)
+            printf("  %3d  linux  %sonline%s\n", c, CGRN, CRST);
+        else
+            printf("  %3d  %s-      parked%s\n", c, CDIM, CRST);
+    }
+
+    printf("\n  %sregion  base        size%s\n", CDIM, CRST);
     if (live) {
         human_bytes(h.owned_len, hb, sizeof hb);
-        kv("rivet window", "%#lx  %s", (unsigned long)h.load_base, hb);
-        kv("shared window", "%#lx  2 MiB, Device-nGnRnE", (unsigned long)h.shared);
+        printf("  rtos    %#-11lx %s\n", (unsigned long)h.load_base, hb);
+        printf("  shared  %#-11lx 2 MiB   Device-nGnRnE\n", (unsigned long)h.shared);
     } else {
-        kv("rivet window", "%#lx  (reserved, no-map)", RIVET_BASE);
-        kv("shared window", "%#lx", SHMEM_BASE);
-    }
-    kv("isolation", "%srivet maps none of Linux's RAM%s", CGRN, CRST);
-
-    // -- liveness ---------------------------------------------------------
-    printf("\n");
-    rule("health");
-    if (!live) {
-        printf("  %sno header: rivet is not running, or predates this tool%s\n", CYEL, CRST);
-    } else {
-        struct sysinfo_hdr h2;
-        usleep(300000);
-        read_sysinfo(&h2);
-        uint64_t delta = h2.heartbeat - h.heartbeat;
-        if (h.state != 1) {
-            printf("  %sheartbeat stopped, and should have: state is %s%s\n",
-                   CYEL, state_name(h.state), CRST);
-        } else if (delta == 0) {
-            printf("  %s%sHEARTBEAT STALLED%s  no beat in 300 ms, expected ~%u\n",
-                   CBOLD, CRED, CRST, h.beat_hz ? h.beat_hz * 3 / 10 : 0);
-            printf("  %srivet claims to be running but its timer interrupt is not firing%s\n",
-                   CDIM, CRST);
-        } else {
-            printf("  %s%sheartbeat OK%s  %llu beats in 300 ms at %u Hz\n",
-                   CBOLD, CGRN, CRST, (unsigned long long)delta, h.beat_hz);
-        }
-        if (h.tick_hz && h.beat_hz) {
-            double up = (double)h.heartbeat / h.beat_hz;
-            kv("rivet uptime", "%.0f s (%llu beats)", up,
-               (unsigned long long)h.heartbeat);
-        }
+        // No size column to align against here, so no padding either:
+        // padding a final field just emits trailing whitespace.
+        printf("  rtos    %#lx\n", RIVET_BASE);
+        printf("  shared  %#lx\n", SHMEM_BASE);
     }
     printf("\n");
     return 0;

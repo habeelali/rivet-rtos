@@ -48,9 +48,7 @@ rm -f /tmp/os-release.new
 # Pre-login banner. \4 is the IP, filled in by agetty.
 sudo tee "$(f /etc/issue)" >/dev/null <<'ISSUE'
 
-  Rivet RTOS + Linux   \s \r \m
-
-  RTOS on core 3, Linux on cores 0-2.  Run `rivet status`.
+  Rivet RTOS + Linux  \s \r \m
   \4
 
 ISSUE
@@ -59,13 +57,11 @@ sudo tee "$(f /etc/motd)" >/dev/null <<'MOTD'
 
    ██████  ██ ██    ██ ███████ ████████
    ██   ██ ██ ██    ██ ██         ██
-   ██████  ██ ██    ██ █████      ██      RTOS + Linux
-   ██   ██ ██  ██  ██  ██         ██      one board, two kernels
-   ██   ██ ██   ████   ███████    ██
+   ██████  ██ ██    ██ █████      ██
+   ██   ██ ██  ██  ██  ██         ██
+   ██   ██ ██   ████   ███████    ██   RTOS core 3 / Linux cores 0-2
 
-   rivet status     what is running, where, and whether it is healthy
-   rivet images     what else can run
-   rivet --help     everything else
+   rivet status     rivet images     rivet --help
 
 MOTD
 

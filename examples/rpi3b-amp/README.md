@@ -487,12 +487,28 @@ memory windows, state, and a heartbeat.
 That last one closed a real gap. A hung core and an idle one used to be
 indistinguishable from Linux, because the console ring simply stopped
 producing, which is also what a healthy system with nothing to say looks
-like. Now:
+like.
 
 ```
-  health ----------------------------------------
-  heartbeat OK  30 beats in 300 ms at 100 Hz
-  rivet uptime       17 s (1741 beats)
+rivet 0.3.0  build v0.1.0-44-g0d73b3c3ec2b-dirty  abi 1
+
+      linux  6.18.34+rpt-rpi-v8
+       rtos  0.2.0  channel_demo_amp
+      state  running  10000 Hz tick
+  heartbeat  100 Hz  1711 beats  17 s
+     config  device tree
+      clock  1200 MHz
+     memory  887 MiB, 750 MiB free
+
+  cpu  owner  status
+    0  linux  online
+    1  linux  online
+    2  linux  online
+    3  rivet  running
+
+  region  base        size
+  rtos    0x30000000  16 MiB
+  shared  0x31000000  2 MiB   Device-nGnRnE
 ```
 
 The heartbeat comes from the tick handler, once per hundred ticks, so it
