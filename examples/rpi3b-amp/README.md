@@ -421,7 +421,10 @@ sudo rivet-amp console      # the doorbell row
 ```
 
 Results and methodology, idle and under full Linux load, are in
-[docs/rpi3b-benchmarks.md](../../docs/rpi3b-benchmarks.md).
+[docs/rpi3b-benchmarks.md](../../docs/rpi3b-benchmarks.md). Which of those
+figures are guarantees rather than observations, and the shared-L2 limit
+that keeps the rest from being promoted, are in
+[docs/rpi3b-guarantees.md](../../docs/rpi3b-guarantees.md).
 
 To measure the doorbell with an oscilloscope rather than trusting rivet's
 own clock, `scope_demo` puts it on three pins in the corner of the header:

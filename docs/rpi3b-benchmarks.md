@@ -8,8 +8,10 @@ carried over from another port.
 The tool that produces them is `examples/rpi3b-kernel/src/bin/rt_bench.rs`,
 with the two Linux-side figures produced by `rivet-amp bench`.
 
-Read this alongside [realtime.md](realtime.md), which sets out what a
-measured number does and does not entitle you to claim. The short version
+Which of these you may design against, and on what conditions, is
+[rpi3b-guarantees.md](rpi3b-guarantees.md). Read both alongside
+[realtime.md](realtime.md), which sets out what a measured number does and
+does not entitle you to claim. The short version
 applies here too: this is empirical black-box measurement under a described
 load, not a formally proven WCET bound. A longer run or a load shape not
 exercised here could observe something worse.
