@@ -45,6 +45,7 @@ static QUIT: AtomicBool = AtomicBool::new(false);
 pub extern "C" fn rust_main(_dtb: u64) -> ! {
     // SAFETY: called once, from EL2, on the boot stack.
     unsafe { rivet_bsp_rpi3b::board_bringup() };
+    rivet_bsp_rpi3b::publish_identity!();
     extern "C" {
         fn rivet_main() -> !;
     }

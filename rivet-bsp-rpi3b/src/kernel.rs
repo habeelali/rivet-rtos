@@ -61,6 +61,16 @@ const PM_RSTC_WRCFG_CLR: u32 = 0xFFFF_FFCF;
 
 /// Ticks elapsed since `tick_start`, and the period it was started with.
 static TICK_PERIOD_US: AtomicU32 = AtomicU32::new(0);
+static TICK_HZ: AtomicU32 = AtomicU32::new(0);
+
+/// The tick rate the board was actually started at.
+///
+/// Published to Linux rather than left implicit: the rate lives in the
+/// image's build configuration, so the Linux side has no way to know it
+/// and every latency figure it reports depends on it.
+pub fn configured_tick_hz() -> u32 {
+    TICK_HZ.load(Ordering::Acquire)
+}
 /// Generic-timer counts between ticks, reloaded on every expiry.
 static TICK_INTERVAL: AtomicU64 = AtomicU64::new(0);
 
@@ -115,6 +125,14 @@ extern "Rust" fn __rivet_board_tick_start(hz: u32) {
     let interval = freq / hz as u64;
     TICK_INTERVAL.store(interval, Ordering::Release);
     TICK_PERIOD_US.store(1_000_000 / hz, Ordering::Release);
+    TICK_HZ.store(hz, Ordering::Release);
+    // The header was published before the tick started, so the rate in it
+    // is still zero. Fill it in now that there is one.
+    #[cfg(feature = "amp")]
+    // SAFETY: the shared window is mapped by the time the tick starts.
+    unsafe {
+        crate::sysinfo::set_tick_hz(hz)
+    };
 
     // Route the non-secure physical timer to *this* core as an IRQ. The
     // kernel may well be running on a core the firmware never booted.
@@ -357,6 +375,9 @@ fn on_timer_tick() {
     let t_book = read_sysreg!("cntpct_el0");
     #[cfg(feature = "tick-phases")]
     phases::record(&phases::BOOKKEEPING, t_book.wrapping_sub(entry));
+
+    #[cfg(feature = "amp")]
+    crate::sysinfo::heartbeat();
 
     rivet::watchdog::on_tick();
     #[cfg(feature = "tick-phases")]
@@ -647,12 +668,33 @@ extern "Rust" fn __rivet_board_reset() -> ! {
 /// than by looping forever through its own boot.
 #[no_mangle]
 extern "Rust" fn __rivet_board_exit(code: u32) -> ! {
+    // An orderly end. Without this the heartbeat simply stops and Linux
+    // reports a hang, which would be wrong and would cry wolf every time
+    // a benchmark finished.
+    #[cfg(feature = "amp")]
+    // SAFETY: the shared window is mapped for the life of an AMP image.
+    unsafe {
+        crate::sysinfo::set_state(if code == 0 {
+            crate::sysinfo::state::EXITED
+        } else {
+            crate::sysinfo::state::FAULTED
+        })
+    };
+
     rivet::console::write_str(if code == 0 {
         "\n[rivet] exit(0)\n"
     } else {
         "\n[rivet] exit(nonzero)\n"
     });
     rivet::console::flush_sync();
+
+    // Mask interrupts before halting. Otherwise the timer keeps firing
+    // into a kernel that has stopped, the heartbeat keeps incrementing,
+    // and Linux sees a healthy pulse from something that is no longer
+    // running. A stopped kernel should look stopped.
+    // SAFETY: nothing further runs on this core.
+    unsafe { core::arch::asm!("msr daifset, #3", options(nomem, nostack)) };
+
     loop {
         // SAFETY: WFE is side-effect free.
         unsafe { core::arch::asm!("wfe", options(nomem, nostack)) };

@@ -34,6 +34,7 @@ pub extern "C" fn rust_main(_dtb: u64) -> ! {
     // shared rings, which the trace transport needs before any task can
     // emit a frame.
     unsafe { rivet_bsp_rpi3b::board_bringup() };
+    rivet_bsp_rpi3b::publish_identity!();
     extern "C" {
         fn rivet_main() -> !;
     }

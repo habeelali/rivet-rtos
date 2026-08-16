@@ -7,6 +7,9 @@
 //   rivet-amp send <command>        send a command and ring the doorbell
 //   rivet-amp bench [rounds]        time the Linux-to-rivet round trip
 //   rivet-amp scope [n] [ms]        pulse a GPIO and ring, for a scope
+//   rivet-amp status                what is running, on which core, where
+//   rivet-amp banner                one-line identity, also to /dev/kmsg
+//   rivet-amp watch                 exit non-zero if the heartbeat stops
 //
 // Build:  cc -O2 -o rivet-amp rivet-amp.c
 // Run as root.
@@ -24,6 +27,7 @@
 #include <fcntl.h>
 #include <setjmp.h>
 #include <signal.h>
+#include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -32,12 +36,18 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
-// Must match RIVET_RPI3B_LOAD_ADDR in the amp package's cargo config.
-#define RIVET_BASE   0x30000000UL
+// Defaults, overridden at run time from the device tree. The addresses
+// used to be declared independently here, in the board crate, in the
+// cargo config and in provision.sh, with nothing checking they agreed: a
+// change to one produced silent corruption rather than an error, because
+// every ring magic still matched and every pointer still pointed
+// somewhere. read_config() below reads the values the provisioner wrote
+// into /reserved-memory, so there is one source of truth and these are
+// only the fallback for a card provisioned before that existed.
+static unsigned long RIVET_BASE = 0x30000000UL;
+static unsigned long SHMEM_BASE = 0x31000000UL;
+static int RIVET_CORE_N = 3;
 #define RIVET_LEN    0x01000000UL   // 16 MiB window the image is linked into
-
-// Must match rivet_bsp_rpi3b::shmem.
-#define SHMEM_BASE   0x31000000UL
 #define SHMEM_LEN    0x00200000UL
 // Two rings in the window: text for a human, and PulseTrace's framed
 // binary. They cannot share a transport, because a log line landing in
@@ -76,7 +86,6 @@
 
 // The firmware's spin table: one 64-bit slot per core.
 #define SPIN_TABLE   0xd8UL
-#define RIVET_CORE   3
 
 // Everything below goes through an O_SYNC /dev/mem mapping, which on
 // AArch64 is Device-nGnRnE memory. That only permits naturally aligned
@@ -92,6 +101,64 @@
 #else
 #define BARRIER() __asm__ __volatile__("" ::: "memory")
 #endif
+
+// ── System header, mirrored from rivet_bsp_rpi3b::sysinfo ────────────
+//
+// Offsets are the ABI. Change one and bump SYS_ABI on both sides; the
+// handshake below exists so a mismatch is a sentence rather than a
+// mystery.
+#define SYS_OFFSET       0x1FF000UL
+#define SYS_MAGIC        0x52565453U   // "RVTS"
+#define SYS_ABI          1U
+
+#define SYS_O_MAGIC      0x00
+#define SYS_O_ABI        0x04
+#define SYS_O_HEARTBEAT  0x08
+#define SYS_O_BOOT       0x10
+#define SYS_O_TICK_HZ    0x18
+#define SYS_O_CORE       0x1C
+#define SYS_O_STATE      0x20
+#define SYS_O_BEAT_HZ    0x24
+#define SYS_O_LOAD_BASE  0x28
+#define SYS_O_SHARED     0x30
+#define SYS_O_OWNED_LEN  0x38
+#define SYS_O_SYSVER     0x40
+#define SYS_O_IMAGE      0x60
+#define SYS_O_BUILD      0x80
+#define SYS_O_RIVETVER   0xB0
+
+struct sysinfo_hdr {
+    uint32_t magic, abi;
+    uint64_t heartbeat, boot;
+    uint32_t tick_hz, core, state, beat_hz;
+    uint64_t load_base, shared, owned_len;
+    char sysver[33], image[33], build[49], rivetver[33];
+};
+
+static const char *state_name(uint32_t s) {
+    switch (s) {
+    case 0: return "booting";
+    case 1: return "running";
+    case 2: return "faulted";
+    case 3: return "exited";
+    default: return "unknown";
+    }
+}
+
+// ── Colour ───────────────────────────────────────────────────────────
+//
+// Only when stdout is a terminal. Piping this into a log or a journal
+// should not fill it with escape sequences.
+static int use_colour = 0;
+#define C(code) (use_colour ? code : "")
+#define CDIM    C("\033[2m")
+#define CBOLD   C("\033[1m")
+#define CRED    C("\033[31m")
+#define CGRN    C("\033[32m")
+#define CYEL    C("\033[33m")
+#define CBLU    C("\033[34m")
+#define CCYN    C("\033[36m")
+#define CRST    C("\033[0m")
 
 static sigjmp_buf fault_env;
 static volatile int fault_armed;
@@ -176,8 +243,8 @@ static int cmd_probe(void) {
     printf("/dev/mem                 : open\n");
 
     struct { const char *name; unsigned long base; } regions[] = {
-        { "reserved  0x30000000", RIVET_BASE },
-        { "shared    0x31000000", SHMEM_BASE },
+        { "reserved region", RIVET_BASE },
+        { "shared window", SHMEM_BASE },
         { "spintable 0x000000d8", SPIN_TABLE },
     };
     for (unsigned i = 0; i < 3; i++) {
@@ -272,7 +339,7 @@ static int cmd_load(const char *path) {
         close(fd);
         return 1;
     }
-    volatile uint64_t *slot = (volatile uint64_t *)(low + SPIN_TABLE + RIVET_CORE * 8);
+    volatile uint64_t *slot = (volatile uint64_t *)(low + SPIN_TABLE + RIVET_CORE_N * 8);
     *slot = (uint64_t)RIVET_BASE;
     msync(low, 0x1000, MS_SYNC);
 #ifdef __aarch64__
@@ -282,7 +349,7 @@ static int cmd_load(const char *path) {
 #else
     fprintf(stderr, "warning: not AArch64, skipping DSB/SEV\n");
 #endif
-    printf("wrote %#lx to spin slot for core %d, sent SEV\n", RIVET_BASE, RIVET_CORE);
+    printf("wrote %#lx to spin slot for core %d, sent SEV\n", RIVET_BASE, RIVET_CORE_N);
 
     close(fd);
     return 0;
@@ -376,11 +443,11 @@ static int cmd_send(const char *text) {
     // Ring the doorbell for core 3, mailbox 0.
     unsigned char *local = map_phys(fd, ARM_LOCAL, 0x1000, 1);
     if (!local) { perror("mmap ARM-local block"); close(fd); return 1; }
-    volatile uint32_t *set = (volatile uint32_t *)(local + MBOX_SET + RIVET_CORE * 16);
+    volatile uint32_t *set = (volatile uint32_t *)(local + MBOX_SET + RIVET_CORE_N * 16);
     *set = 1;
     BARRIER();
 
-    printf("sent \"%s\" and rang core %d\n", text, RIVET_CORE);
+    printf("sent \"%s\" and rang core %d\n", text, RIVET_CORE_N);
     close(fd);
     return 0;
 }
@@ -432,7 +499,7 @@ static int cmd_bench(int rounds) {
     volatile uint32_t *ocap   = (volatile uint32_t *)(con + OFF_CAP);
     volatile uint64_t *owp    = (volatile uint64_t *)(con + OFF_WRITE);
     volatile uint64_t *orp    = (volatile uint64_t *)(con + OFF_READ);
-    volatile uint32_t *bell   = (volatile uint32_t *)(local + MBOX_SET + RIVET_CORE * 16);
+    volatile uint32_t *bell   = (volatile uint32_t *)(local + MBOX_SET + RIVET_CORE_N * 16);
 
     if (*cmagic != RING_MAGIC) {
         fprintf(stderr, "command ring not initialised: is rivet running?\n");
@@ -580,11 +647,11 @@ static int cmd_scope(int rounds, int period_ms) {
 
     volatile uint32_t *set  = (volatile uint32_t *)(gpio + GPSET0);
     volatile uint32_t *clr  = (volatile uint32_t *)(gpio + GPCLR0);
-    volatile uint32_t *bell = (volatile uint32_t *)(local + MBOX_SET + RIVET_CORE * 16);
+    volatile uint32_t *bell = (volatile uint32_t *)(local + MBOX_SET + RIVET_CORE_N * 16);
     const uint32_t bit = 1u << SCOPE_PIN;
 
     printf("pulsing GPIO%d (header 38) and ringing core %d, %d times every %d ms\n",
-           SCOPE_PIN, RIVET_CORE, rounds, period_ms);
+           SCOPE_PIN, RIVET_CORE_N, rounds, period_ms);
     printf("trigger the scope on GPIO%d rising; ground is header 39\n", SCOPE_PIN);
 
     // Ask for the best scheduling this process can get. It does not make
@@ -638,18 +705,365 @@ static int cmd_scope(int rounds, int period_ms) {
     return 0;
 }
 
+// Read the layout the provisioner wrote into the device tree.
+//
+// This is the single source of truth for where things live. Falls back to
+// the compiled defaults on a card provisioned before the node carried
+// these properties, and says so, because silently using different numbers
+// from the ones rivet was built with is the failure this exists to
+// prevent.
+static int dt_u32(const char *path, uint32_t *out) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return 0;
+    unsigned char b[4];
+    int ok = fread(b, 1, 4, f) == 4;
+    fclose(f);
+    if (!ok) return 0;
+    *out = ((uint32_t)b[0] << 24) | ((uint32_t)b[1] << 16) |
+           ((uint32_t)b[2] << 8) | b[3];        // device tree is big-endian
+    return 1;
+}
+
+#define DT_NODE "/proc/device-tree/reserved-memory/rivet@30000000"
+
+static int config_from_dt = 0;
+
+static void read_config(void) {
+    uint32_t v;
+    char path[256];
+
+    snprintf(path, sizeof path, "%s/rivet,core", DT_NODE);
+    if (dt_u32(path, &v)) { RIVET_CORE_N = (int)v; config_from_dt = 1; }
+
+    // reg is <base size>, two big-endian 32-bit cells on this platform.
+    snprintf(path, sizeof path, "%s/reg", DT_NODE);
+    FILE *f = fopen(path, "rb");
+    if (f) {
+        unsigned char b[8];
+        if (fread(b, 1, 8, f) == 8) {
+            RIVET_BASE = ((unsigned long)b[0] << 24) | ((unsigned long)b[1] << 16) |
+                         ((unsigned long)b[2] << 8) | b[3];
+            config_from_dt = 1;
+        }
+        fclose(f);
+    }
+
+    // Sanity-check rather than trust. A shared offset of zero would put
+    // the rings on top of the image, which is exactly what happened when
+    // fdtput quietly stored a 0x literal as zero: every reader then
+    // waited forever on a ring that could not be there. A wrong value
+    // here should be a sentence, not a hang.
+    snprintf(path, sizeof path, "%s/rivet,shared-offset", DT_NODE);
+    if (dt_u32(path, &v)) {
+        if (v >= 0x100000 && v < 0x8000000) {
+            SHMEM_BASE = RIVET_BASE + v;
+            config_from_dt = 1;
+        } else {
+            fprintf(stderr,
+                    "device tree says rivet,shared-offset = %#x, which cannot "
+                    "be right; using %#lx\n", v, SHMEM_BASE);
+        }
+    }
+    if (RIVET_CORE_N < 0 || RIVET_CORE_N > 3) {
+        fprintf(stderr, "device tree says rivet,core = %d; using 3\n", RIVET_CORE_N);
+        RIVET_CORE_N = 3;
+    }
+    if (RIVET_BASE & 0x1FFFFF) {
+        fprintf(stderr, "device tree base %#lx is not 2 MiB aligned; using 0x30000000\n",
+                RIVET_BASE);
+        RIVET_BASE = 0x30000000UL;
+    }
+}
+
+// Read the header rivet published. Returns 0 if there is none.
+static int read_sysinfo(struct sysinfo_hdr *h) {
+    int fd = open("/dev/mem", O_RDONLY | O_SYNC);
+    if (fd < 0) return 0;
+    unsigned char *p = mmap(NULL, 0x1000, PROT_READ, MAP_SHARED, fd,
+                            SHMEM_BASE + SYS_OFFSET);
+    close(fd);
+    if (p == MAP_FAILED) return 0;
+
+    memset(h, 0, sizeof *h);
+    h->magic = *(volatile uint32_t *)(p + SYS_O_MAGIC);
+    if (h->magic != SYS_MAGIC) { munmap(p, 0x1000); return 0; }
+    h->abi       = *(volatile uint32_t *)(p + SYS_O_ABI);
+    h->heartbeat = *(volatile uint64_t *)(p + SYS_O_HEARTBEAT);
+    h->boot      = *(volatile uint64_t *)(p + SYS_O_BOOT);
+    h->tick_hz   = *(volatile uint32_t *)(p + SYS_O_TICK_HZ);
+    h->core      = *(volatile uint32_t *)(p + SYS_O_CORE);
+    h->state     = *(volatile uint32_t *)(p + SYS_O_STATE);
+    h->beat_hz   = *(volatile uint32_t *)(p + SYS_O_BEAT_HZ);
+    h->load_base = *(volatile uint64_t *)(p + SYS_O_LOAD_BASE);
+    h->shared    = *(volatile uint64_t *)(p + SYS_O_SHARED);
+    h->owned_len = *(volatile uint64_t *)(p + SYS_O_OWNED_LEN);
+    memcpy(h->sysver,   p + SYS_O_SYSVER,   32);
+    memcpy(h->image,    p + SYS_O_IMAGE,    32);
+    memcpy(h->build,    p + SYS_O_BUILD,    48);
+    memcpy(h->rivetver, p + SYS_O_RIVETVER, 32);
+    munmap(p, 0x1000);
+    return 1;
+}
+
+// Refuse to interpret a header this build does not understand.
+//
+// The alternative is reading fields at offsets that have moved, which
+// produces confident nonsense. Warn rather than exit for the commands
+// that only stream bytes, since a ring is a ring whatever the header says.
+static int abi_ok(const struct sysinfo_hdr *h, int fatal) {
+    if (h->abi == SYS_ABI) return 1;
+    fprintf(stderr,
+            "%srivet image speaks header ABI %u, this tool speaks %u%s\n",
+            CRED, h->abi, SYS_ABI, CRST);
+    fprintf(stderr, "  the image and the loader were not built together\n");
+    if (fatal) exit(1);
+    return 0;
+}
+
+static void human_bytes(unsigned long n, char *out, size_t cap) {
+    if (n >= 1UL << 20) snprintf(out, cap, "%lu MiB", n >> 20);
+    else if (n >= 1UL << 10) snprintf(out, cap, "%lu KiB", n >> 10);
+    else snprintf(out, cap, "%lu B", n);
+}
+
+static void first_line(const char *path, char *out, size_t cap) {
+    out[0] = 0;
+    FILE *f = fopen(path, "r");
+    if (!f) return;
+    if (fgets(out, (int)cap, f)) out[strcspn(out, "\n")] = 0;
+    fclose(f);
+}
+
+// ── status ───────────────────────────────────────────────────────────
+
+static void rule(const char *title) {
+    printf("%s%s  %s %s", CBOLD, CBLU, title, CRST);
+    int pad = 56 - (int)strlen(title);
+    for (int i = 0; i < pad; i++) printf("%s-%s", CDIM, CRST);
+    printf("\n");
+}
+
+static void kv(const char *k, const char *fmt, ...) {
+    va_list ap;
+    printf("  %s%-18s%s ", CDIM, k, CRST);
+    va_start(ap, fmt);
+    vprintf(fmt, ap);
+    va_end(ap);
+    putchar('\n');
+}
+
+static int cmd_status(void) {
+    struct sysinfo_hdr h;
+    int live = read_sysinfo(&h);
+
+    printf("\n  %s%sRIVET RTOS%s %s+ Linux%s   %sone board, two kernels%s\n\n",
+           CBOLD, CCYN, CRST, CBOLD, CRST, CDIM, CRST);
+
+    // -- identity ------------------------------------------------------
+    rule("system");
+    if (live) {
+        kv("system version", "%s%s%s", CBOLD, h.sysver, CRST);
+        kv("build", "%s", h.build);
+        if (h.abi == SYS_ABI) {
+            kv("header ABI", "%u %s(matches this tool)%s", h.abi, CDIM, CRST);
+        } else {
+            kv("header ABI", "%u %sMISMATCH: this tool speaks %u%s",
+               h.abi, CRED, SYS_ABI, CRST);
+        }
+    } else {
+        kv("system version", "%s(rivet has not published a header)%s", CYEL, CRST);
+    }
+    kv("config source", "%s", config_from_dt ? "device tree" : "compiled defaults");
+
+    // -- the two kernels ----------------------------------------------
+    char buf[256], buf2[256];
+    printf("\n");
+    rule("kernels");
+    first_line("/proc/sys/kernel/osrelease", buf, sizeof buf);
+    printf("  %s%-18s%s %s%s%s\n", CDIM, "Linux", CRST, CBOLD, buf, CRST);
+    first_line("/proc/sys/kernel/version", buf, sizeof buf);
+    printf("  %s%-18s%s %s%s%s\n", CDIM, "", CRST, CDIM, buf, CRST);
+    buf2[0] = 0;
+    FILE *f = fopen("/etc/os-release", "r");
+    if (f) {
+        while (fgets(buf, sizeof buf, f))
+            if (!strncmp(buf, "PRETTY_NAME=", 12)) {
+                char *q = strchr(buf, '"');
+                if (q) { snprintf(buf2, sizeof buf2, "%s", q + 1);
+                         char *e = strchr(buf2, '"'); if (e) *e = 0; }
+            }
+        fclose(f);
+    }
+    if (buf2[0]) printf("  %s%-18s%s %s%s%s\n", CDIM, "", CRST, CDIM, buf2, CRST);
+
+    if (live) {
+        printf("  %s%-18s%s %s%s%s   %simage %s%s\n", CDIM, "rivet", CRST,
+               CBOLD, h.rivetver, CRST, CDIM, h.image, CRST);
+        const char *col = h.state == 1 ? CGRN : h.state == 2 ? CRED : CYEL;
+        printf("  %s%-18s%s %s%s%s", CDIM, "", CRST, col, state_name(h.state), CRST);
+        if (h.tick_hz) printf("   %s%u Hz tick%s", CDIM, h.tick_hz, CRST);
+        printf("\n");
+    } else {
+        printf("  %s%-18s%s %snot running%s\n", CDIM, "rivet", CRST, CRED, CRST);
+    }
+
+    // -- cores ----------------------------------------------------------
+    printf("\n");
+    rule("cores");
+    first_line("/sys/devices/system/cpu/online", buf, sizeof buf);
+    long ncpu = sysconf(_SC_NPROCESSORS_ONLN);
+    unsigned khz = 0;
+    { char p2[128];
+      snprintf(p2, sizeof p2, "/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq");
+      char t[64]; first_line(p2, t, sizeof t); khz = (unsigned)strtoul(t, NULL, 10); }
+
+    for (int c = 0; c < 4; c++) {
+        int is_rivet = live && (int)h.core == c;
+        int is_linux = c < ncpu;
+        const char *who  = is_rivet ? "rivet" : is_linux ? "Linux" : "unassigned";
+        const char *col  = is_rivet ? CGRN : is_linux ? CBLU : CYEL;
+        printf("  %score %d%s  %s%-10s%s %s%s%s\n", CDIM, c, CRST, col, who, CRST, CDIM,
+               is_rivet ? "exclusive, not in Linux's device tree"
+                        : is_linux ? "scheduled by Linux" : "parked in the firmware spin table",
+               CRST);
+    }
+    kv("Linux online", "%s (%ld of 4)", buf, ncpu);
+    if (khz) kv("ARM clock", "%u MHz%s", khz / 1000,
+                access("/boot/firmware/config.txt", R_OK) == 0 ? "" : "");
+
+    // -- memory ---------------------------------------------------------
+    printf("\n");
+    rule("memory");
+    unsigned long memtotal = 0, memavail = 0;
+    f = fopen("/proc/meminfo", "r");
+    if (f) {
+        while (fgets(buf, sizeof buf, f)) {
+            sscanf(buf, "MemTotal: %lu kB", &memtotal);
+            sscanf(buf, "MemAvailable: %lu kB", &memavail);
+        }
+        fclose(f);
+    }
+    char hb[32];
+    human_bytes(memtotal * 1024, hb, sizeof hb);
+    kv("Linux total", "%s", hb);
+    human_bytes(memavail * 1024, hb, sizeof hb);
+    kv("Linux available", "%s", hb);
+    if (live) {
+        human_bytes(h.owned_len, hb, sizeof hb);
+        kv("rivet window", "%#lx  %s", (unsigned long)h.load_base, hb);
+        kv("shared window", "%#lx  2 MiB, Device-nGnRnE", (unsigned long)h.shared);
+    } else {
+        kv("rivet window", "%#lx  (reserved, no-map)", RIVET_BASE);
+        kv("shared window", "%#lx", SHMEM_BASE);
+    }
+    kv("isolation", "%srivet maps none of Linux's RAM%s", CGRN, CRST);
+
+    // -- liveness ---------------------------------------------------------
+    printf("\n");
+    rule("health");
+    if (!live) {
+        printf("  %sno header: rivet is not running, or predates this tool%s\n", CYEL, CRST);
+    } else {
+        struct sysinfo_hdr h2;
+        usleep(300000);
+        read_sysinfo(&h2);
+        uint64_t delta = h2.heartbeat - h.heartbeat;
+        if (h.state != 1) {
+            printf("  %sheartbeat stopped, and should have: state is %s%s\n",
+                   CYEL, state_name(h.state), CRST);
+        } else if (delta == 0) {
+            printf("  %s%sHEARTBEAT STALLED%s  no beat in 300 ms, expected ~%u\n",
+                   CBOLD, CRED, CRST, h.beat_hz ? h.beat_hz * 3 / 10 : 0);
+            printf("  %srivet claims to be running but its timer interrupt is not firing%s\n",
+                   CDIM, CRST);
+        } else {
+            printf("  %s%sheartbeat OK%s  %llu beats in 300 ms at %u Hz\n",
+                   CBOLD, CGRN, CRST, (unsigned long long)delta, h.beat_hz);
+        }
+        if (h.tick_hz && h.beat_hz) {
+            double up = (double)h.heartbeat / h.beat_hz;
+            kv("rivet uptime", "%.0f s (%llu beats)", up,
+               (unsigned long long)h.heartbeat);
+        }
+    }
+    printf("\n");
+    return 0;
+}
+
+// One line of identity, also pushed into the kernel ring buffer so it
+// lands in dmesg next to the kernel's own boot messages rather than in a
+// separate log nobody correlates with them.
+static int cmd_banner(void) {
+    struct sysinfo_hdr h;
+    char line[512];
+    if (read_sysinfo(&h)) {
+        snprintf(line, sizeof line,
+                 "rivet: RTOS %s (%s) on core %u, %u Hz tick, %s, system %s build %s",
+                 h.rivetver, h.image, h.core, h.tick_hz, state_name(h.state),
+                 h.sysver, h.build);
+    } else {
+        snprintf(line, sizeof line, "rivet: no image running on core %d", RIVET_CORE_N);
+    }
+    printf("%s\n", line);
+    FILE *k = fopen("/dev/kmsg", "w");
+    if (k) { fprintf(k, "<5>%s\n", line); fclose(k); }
+    return 0;
+}
+
+// Block until the heartbeat stops, then exit non-zero.
+//
+// This is what a systemd unit runs. Until it existed, a hung core and an
+// idle one were indistinguishable from Linux: the console ring simply
+// stopped producing, which is also what a healthy system with nothing to
+// say looks like.
+static int cmd_watch(int grace_ms) {
+    struct sysinfo_hdr h;
+    while (!read_sysinfo(&h)) {
+        fprintf(stderr, "waiting for rivet to publish its header...\n");
+        sleep(2);
+    }
+    abi_ok(&h, 0);
+    printf("watching %s on core %u, %u beats/s, %d ms grace\n",
+           h.image, h.core, h.beat_hz, grace_ms);
+    fflush(stdout);
+
+    uint64_t last = h.heartbeat;
+    int stalled_ms = 0;
+    for (;;) {
+        usleep(200000);
+        if (!read_sysinfo(&h)) continue;
+        if (h.state != 1) {
+            printf("rivet stopped: state is %s\n", state_name(h.state));
+            return h.state == 2 ? 1 : 0;      // faulted is a failure, exited is not
+        }
+        if (h.heartbeat != last) { last = h.heartbeat; stalled_ms = 0; continue; }
+        stalled_ms += 200;
+        if (stalled_ms >= grace_ms) {
+            fprintf(stderr, "rivet heartbeat stalled for %d ms: the core is hung\n",
+                    stalled_ms);
+            return 1;
+        }
+    }
+}
+
 int main(int argc, char **argv) {
     install_fault_handler();
+    use_colour = isatty(STDOUT_FILENO) && !getenv("NO_COLOR");
+    read_config();
     if (argc < 2) {
         fprintf(stderr,
                 "usage: %s probe | load <image> | console | trace <file>\n"
-                "       %s send <cmd> | bench [rounds] | scope [n] [ms]\n",
+                "       %s send <cmd> | bench [rounds] | scope [n] [ms]\n"
+                "       %s status | banner | watch [grace-ms]\n",
                 argv[0],
-                argv[0]);
+                argv[0], argv[0]);
         return 2;
     }
     if (!strcmp(argv[1], "probe"))   return cmd_probe();
     if (!strcmp(argv[1], "bench"))   return cmd_bench(argc > 2 ? atoi(argv[2]) : 500);
+    if (!strcmp(argv[1], "status"))  return cmd_status();
+    if (!strcmp(argv[1], "banner"))  return cmd_banner();
+    if (!strcmp(argv[1], "watch"))   return cmd_watch(argc > 2 ? atoi(argv[2]) : 2000);
     if (!strcmp(argv[1], "scope"))
         return cmd_scope(argc > 2 ? atoi(argv[2]) : 200, argc > 3 ? atoi(argv[3]) : 10);
     if (!strcmp(argv[1], "console")) return cmd_console();

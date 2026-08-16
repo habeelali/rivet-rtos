@@ -72,4 +72,18 @@ fn main() {
     )
     .expect("write layout.rs");
     println!("cargo:rustc-env=RIVET_RPI3B_LOAD_ADDR={load_addr}");
+
+    // A build identity the Linux side can compare against its own, so an
+    // image and a loader that were not built together say so instead of
+    // quietly disagreeing about a memory layout.
+    let build_id = std::process::Command::new("git")
+        .args(["describe", "--always", "--dirty", "--abbrev=12"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|| "unknown".into());
+    println!("cargo:rustc-env=RIVET_BUILD_ID={build_id}");
+    println!("cargo:rerun-if-changed=../.git/HEAD");
 }

@@ -407,20 +407,118 @@ measured.
 
 ## Running it
 
-rivet starts itself at boot. Three units do it, all enabled:
+`rivet` is the front door. Two commands with different names read as two
+projects, so everything is behind one:
+
+```sh
+rivet status              what is running, on which core, where
+rivet images              what else can run
+rivet boot <image> -r     switch and reboot
+rivet console             follow the RTOS console
+rivet send ping           talk to it
+rivet --help              the rest
+```
+
+It starts itself at boot. Four units, all enabled:
 
 | Unit | Does |
 |---|---|
 | `rivet-build` | compiles `rivet-amp` if it is missing, once |
-| `rivet` | loads the selected image onto core 3 and releases it |
-| `rivet-console` | relays rivet's console ring into the journal, forever |
+| `rivet` | loads the selected image onto core 3, then announces it to `dmesg` |
+| `rivet-console` | relays the RTOS console into the journal, forever |
+| `rivet-health` | watches the heartbeat, fails loudly if it stops |
 
-So after a cold boot, with nothing typed:
+`rivet.target` groups them, so a service that needs the RTOS can order
+itself `After=rivet.target` without naming the individual units.
+
+### Identity
+
+`rivet-identity.sh` re-badges the presentation layer: `/etc/os-release`
+becomes `Rivet RTOS + Linux 0.3.0 (Raspberry Pi 3B)` with
+`VARIANT_ID=rivet-amp`, and `/etc/issue` and `/etc/motd` match. The
+Debian-derived fields stay exactly as they were, because package tooling
+depends on them; only what a human sees changes. The original is kept at
+`/etc/os-release.stock`.
+
+The RTOS also announces itself into the kernel ring buffer, so it lands in
+`dmesg` next to the kernel's own boot messages instead of in a separate
+log nobody correlates with them:
+
+```
+[   18.870343] rivet: RTOS 0.2.0 (channel_demo_amp) on core 3, 10000 Hz
+               tick, running, system 0.3.0 build v0.1.0-44-g0d73b3c3
+```
+
+### One source of truth
+
+The memory map used to be declared independently in the board crate, the
+cargo config, the Linux loader and `provision.sh`, with nothing checking
+they agreed. A change to one produced silent corruption rather than an
+error, because every ring magic still matched and every pointer still
+pointed somewhere.
+
+It now lives in the device tree, in the `/reserved-memory` node the
+provisioner already creates, and `rivet-amp` reads it at run time:
+
+```dts
+rivet@30000000 {
+    compatible = "rivet,amp-core";
+    reg = <0x30000000 0x1200000>;
+    no-map;
+    rivet,core = <3>;
+    rivet,shared-offset = <16777216>;
+    rivet,tick-hz = <10000>;
+    rivet,abi = <1>;
+};
+```
+
+The offset is written in decimal deliberately. `fdtput -t u` accepts a
+`0x` literal without complaining and stores zero, which put the rings on
+top of the image and left every reader waiting for a ring that was never
+going to be there. `rivet-amp` now range-checks what it reads and says so
+rather than using it.
+
+### Health
+
+The RTOS publishes a header in the last 4 KiB of the shared window: ABI
+version, system and RTOS versions, build id, image name, tick rate, core,
+memory windows, state, and a heartbeat.
+
+That last one closed a real gap. A hung core and an idle one used to be
+indistinguishable from Linux, because the console ring simply stopped
+producing, which is also what a healthy system with nothing to say looks
+like. Now:
+
+```
+  health ----------------------------------------
+  heartbeat OK  30 beats in 300 ms at 100 Hz
+  rivet uptime       17 s (1741 beats)
+```
+
+The heartbeat comes from the tick handler, once per hundred ticks, so it
+proves the timer interrupt is still being taken. It does not prove the
+scheduler is making progress: a task spinning forever at the top priority
+would keep it beating, and that case belongs to the watchdog.
+
+`state` distinguishes an orderly stop from a failure, so a finished
+benchmark does not read as a crash. The exit and panic paths mask
+interrupts before halting, so a stopped kernel actually looks stopped
+rather than leaving the tick running and the pulse alive.
+
+The ABI field is a handshake. An image and a loader built at different
+times say so:
+
+```
+rivet image speaks header ABI 99, this tool speaks 1
+  the image and the loader were not built together
+```
+
+### Talking to it after a cold boot
 
 ```sh
-systemctl is-active rivet rivet-console      # active active
-journalctl -b -u rivet -u rivet-console      # what it said coming up
-sudo rivet-amp send ping                     # -> [rivet] pong
+systemctl is-active rivet rivet-console rivet-health   # active active active
+rivet status
+rivet send ping                                        # -> [rivet] pong
 ```
 
 ### Choosing what runs

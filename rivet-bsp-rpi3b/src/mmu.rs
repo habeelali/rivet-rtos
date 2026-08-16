@@ -91,7 +91,7 @@ pub const SHARED_BASE: usize = crate::shmem::SHARED_BASE;
 const SHARED_LEN: usize = BLOCK_2M;
 
 /// The RAM window this image was linked into, from the linker script.
-mod layout {
+pub mod layout {
     include!(concat!(env!("OUT_DIR"), "/layout.rs"));
 }
 

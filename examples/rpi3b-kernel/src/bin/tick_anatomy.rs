@@ -29,12 +29,16 @@
 //! `rt_bench` reports. Compare the columns, not the rows.
 
 use rivet_arch_aarch64 as _;
+// Everything that reads the per-stage counters is behind the feature, so
+// without it this file is a stub that says so.
+#[cfg(feature = "tick-phases")]
 use rivet_bsp_rpi3b::kernel;
 
 fn w(s: &str) {
     rivet::console::write_str(s);
 }
 
+#[cfg(feature = "tick-phases")]
 fn dec(mut v: u64) {
     let mut buf = [0u8; 24];
     let mut i = buf.len();
@@ -50,6 +54,7 @@ fn dec(mut v: u64) {
     w(unsafe { core::str::from_utf8_unchecked(&buf[i..]) });
 }
 
+#[cfg(feature = "tick-phases")]
 fn pad(label: &str, width: usize) {
     w(label);
     for _ in 0..width.saturating_sub(label.len()) {
@@ -57,6 +62,7 @@ fn pad(label: &str, width: usize) {
     }
 }
 
+#[cfg(feature = "tick-phases")]
 fn ns(t: u64) -> u64 {
     t.saturating_mul(625) / 12
 }
@@ -124,6 +130,7 @@ fn report(_: &'static ()) -> ! {
     }
 }
 
+#[cfg(feature = "tick-phases")]
 fn count_digits(mut v: u64) -> usize {
     let mut n = 1;
     while v >= 10 {
@@ -137,6 +144,7 @@ fn count_digits(mut v: u64) -> usize {
 pub extern "C" fn rust_main(_dtb: u64) -> ! {
     // SAFETY: called once, from EL2, on the boot stack.
     unsafe { rivet_bsp_rpi3b::board_bringup() };
+    rivet_bsp_rpi3b::publish_identity!();
     extern "C" {
         fn rivet_main() -> !;
     }

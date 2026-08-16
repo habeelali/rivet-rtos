@@ -1,0 +1,20 @@
+[Unit]
+Description=Load Rivet RTOS onto its reserved core
+Documentation=file:///usr/local/share/doc/rivet/README.md
+After=rivet-build.service local-fs.target
+Wants=rivet-build.service
+Before=multi-user.target
+ConditionPathExists=/usr/local/lib/rivet/rivet.img
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/rivet-amp load /usr/local/lib/rivet/rivet.img
+# Announce what came up, into dmesg as well as the journal, so the RTOS
+# appears in the boot log next to the kernel's own messages rather than in
+# a separate stream nobody correlates with them.
+ExecStartPost=/usr/local/bin/rivet-amp banner
+StandardOutput=journal+console
+StandardError=journal+console
+SyslogIdentifier=rivet
+[Install]
+WantedBy=multi-user.target

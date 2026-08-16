@@ -60,6 +60,20 @@ chmod u+w "$TMP"
 fdtput -r "$TMP" /cpus/cpu@3 2>/dev/null || say "cpu@3 already absent"
 fdtput -p -t x "$TMP" /reserved-memory/rivet@30000000 reg $RIVET_BASE $RIVET_SIZE
 fdtput -t s "$TMP" /reserved-memory/rivet@30000000 no-map ""
+# The layout, in the one place both halves of the system can read it.
+# These numbers used to be declared independently in the board crate, the
+# cargo config, the Linux loader and this script, with nothing checking
+# they agreed, so a change to one produced silent corruption rather than
+# an error. rivet-amp reads them from here at run time.
+fdtput -t s "$TMP" /reserved-memory/rivet@30000000 compatible "rivet,amp-core"
+fdtput -t u "$TMP" /reserved-memory/rivet@30000000 rivet,core 3
+# Decimal, deliberately. fdtput -t u accepts a 0x literal without
+# complaint and stores zero, which produced a shared window pointing at
+# the image's own base and a loader that sat waiting for a ring that was
+# never going to appear there.
+fdtput -t u "$TMP" /reserved-memory/rivet@30000000 rivet,shared-offset 16777216
+fdtput -t u "$TMP" /reserved-memory/rivet@30000000 rivet,tick-hz 10000
+fdtput -t u "$TMP" /reserved-memory/rivet@30000000 rivet,abi 1
 sudo cp "$TMP" "$OUT"
 rm -f "$TMP"
 say "cpus now: $(fdtget -l "$OUT" /cpus | tr '\n' ' ')"
@@ -93,6 +107,10 @@ echo "== rivet payload and services =="
 sudo mkdir -p "$ROOT/usr/local/lib/rivet" "$ROOT/usr/local/bin"
 sudo cp "$HERE/rivet-amp.c" "$ROOT/usr/local/lib/rivet/"
 sudo install -m755 "$HERE/rivet-select" "$ROOT/usr/local/bin/rivet-select"
+sudo install -m755 "$HERE/rivet" "$ROOT/usr/local/bin/rivet"
+sudo install -m755 "$HERE/rivet-identity.sh" "$ROOT/usr/local/lib/rivet/"
+sudo mkdir -p "$ROOT/usr/local/share/doc/rivet"
+sudo cp "$HERE/../README.md" "$ROOT/usr/local/share/doc/rivet/" 2>/dev/null || true
 
 # Images are installed under their own names and the one that boots is a
 # symlink, because a released core cannot be restarted in place: switching
@@ -112,58 +130,23 @@ if [ -n "$IMG" ]; then
     say "boot image: $(basename "$DEFAULT" .img)"
 fi
 
-sudo tee "$ROOT/etc/systemd/system/rivet-build.service" >/dev/null <<'UNIT'
-[Unit]
-Description=Build the rivet loader
-ConditionPathExists=!/usr/local/bin/rivet-amp
-Before=rivet.service
-[Service]
-Type=oneshot
-RemainAfterExit=yes
-ExecStart=/usr/bin/cc -O2 -o /usr/local/bin/rivet-amp /usr/local/lib/rivet/rivet-amp.c
-[Install]
-WantedBy=multi-user.target
-UNIT
-
-sudo tee "$ROOT/etc/systemd/system/rivet.service" >/dev/null <<'UNIT'
-[Unit]
-Description=Load rivet RTOS onto its reserved core
-After=rivet-build.service local-fs.target
-Wants=rivet-build.service
-Before=multi-user.target
-ConditionPathExists=/usr/local/lib/rivet/rivet.img
-[Service]
-Type=oneshot
-RemainAfterExit=yes
-ExecStart=/usr/local/bin/rivet-amp load /usr/local/lib/rivet/rivet.img
-StandardOutput=journal+console
-StandardError=journal+console
-[Install]
-WantedBy=multi-user.target
-UNIT
-
-sudo tee "$ROOT/etc/systemd/system/rivet-console.service" >/dev/null <<'UNIT'
-[Unit]
-Description=Relay the rivet console ring into the journal
-After=rivet.service
-Requires=rivet.service
-[Service]
-ExecStart=/usr/local/bin/rivet-amp console
-Restart=always
-RestartSec=2
-StandardOutput=journal+console
-StandardError=journal
-[Install]
-WantedBy=multi-user.target
-UNIT
+for u in "$HERE"/units/*; do
+    sudo install -m644 "$u" "$ROOT/etc/systemd/system/$(basename "$u")"
+done
 
 # Enable without systemctl, since the target root is not running.
 W="$ROOT/etc/systemd/system/multi-user.target.wants"
 sudo mkdir -p "$W"
-for u in rivet-build rivet rivet-console; do
-    sudo ln -sf "/etc/systemd/system/$u.service" "$W/$u.service"
+for u in rivet-build rivet rivet-console rivet-health rivet.target; do
+    case "$u" in
+      *.target) sudo ln -sf "/etc/systemd/system/$u" "$W/$u" ;;
+      *)        sudo ln -sf "/etc/systemd/system/$u.service" "$W/$u.service" ;;
+    esac
 done
-say "services enabled: rivet-build, rivet, rivet-console"
+say "services enabled: rivet-build, rivet, rivet-console, rivet-health"
+
+echo "== identity =="
+sudo "$HERE/rivet-identity.sh" "$ROOT" "${RIVET_SYSTEM_VERSION:-0.3.0}"
 
 echo
 echo "Done. Boot it, then:"

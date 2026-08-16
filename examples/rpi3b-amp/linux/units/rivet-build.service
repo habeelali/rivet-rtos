@@ -1,0 +1,11 @@
+[Unit]
+Description=Build the Rivet loader
+Documentation=file:///usr/local/share/doc/rivet/README.md
+ConditionPathExists=!/usr/local/bin/rivet-amp
+Before=rivet.service
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/cc -O2 -o /usr/local/bin/rivet-amp /usr/local/lib/rivet/rivet-amp.c
+[Install]
+WantedBy=multi-user.target

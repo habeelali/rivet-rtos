@@ -360,6 +360,16 @@ impl Diag {
 /// silent hang into a decoded exception is the whole point.
 #[no_mangle]
 pub extern "C" fn rust_fault_handler(esr: u64, elr: u64, far: u64, spsr: u64) {
+    // Say so in the shared window before saying so on the console. The
+    // heartbeat is about to stop either way, and a Linux side that can
+    // tell "faulted" from "hung" reports something useful instead of
+    // guessing.
+    #[cfg(feature = "amp")]
+    // SAFETY: the shared window is mapped for the life of an AMP image.
+    unsafe {
+        crate::sysinfo::set_state(crate::sysinfo::state::FAULTED)
+    };
+
     let ec = (esr >> 26) & 0x3f;
     let mut uart = Diag;
     let _ = write!(
@@ -395,9 +405,21 @@ pub extern "C" fn rust_fault_handler(esr: u64, elr: u64, far: u64, spsr: u64) {
 #[cfg(feature = "panic-handler")]
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
+    #[cfg(feature = "amp")]
+    // SAFETY: the shared window is mapped for the life of an AMP image.
+    unsafe {
+        crate::sysinfo::set_state(crate::sysinfo::state::FAULTED)
+    };
+
     let mut uart = Diag;
     let _ = write!(uart, "\n*** PANIC: {info}\n");
     uart.flush();
+
+    // Same reasoning as the exit path: stop the tick, so the heartbeat
+    // stops with the kernel rather than outliving it.
+    // SAFETY: nothing further runs on this core.
+    unsafe { core::arch::asm!("msr daifset, #3", options(nomem, nostack)) };
+
     loop {
         // SAFETY: WFE is side-effect free.
         unsafe { core::arch::asm!("wfe", options(nomem, nostack)) };

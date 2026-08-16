@@ -36,6 +36,8 @@ pub mod mmu;
 pub mod shmem;
 pub mod smp;
 pub mod spi;
+#[cfg(feature = "amp")]
+pub mod sysinfo;
 pub use boot::drop_to_el1;
 
 /// True when this crate was built to run alongside another operating
@@ -75,6 +77,11 @@ pub unsafe fn board_bringup() {
 
         #[cfg(all(feature = "amp", feature = "kernel"))]
         kernel::use_shared_console();
+
+        // After the MMU, because the header lives in the shared window
+        // and the mapping has to exist first.
+        #[cfg(feature = "amp")]
+        sysinfo::publish();
     }
 }
 
@@ -420,4 +427,32 @@ impl core::fmt::Write for MiniUart {
         }
         Ok(())
     }
+}
+
+/// Record which image is running, for `rivet status` on the Linux side.
+///
+/// A macro rather than a function so the name comes from Cargo instead of
+/// a string each binary has to keep in step with its own filename.
+///
+/// The `amp` switch is here rather than at the call site because Cargo
+/// features are per-package: a binary asking `cfg!(feature = "amp")`
+/// reads its own package's features, not this crate's, and would get the
+/// wrong answer in both packages that build these images.
+#[cfg(feature = "amp")]
+#[macro_export]
+macro_rules! publish_identity {
+    () => {{
+        // SAFETY: called after board_bringup, which publishes the header.
+        unsafe {
+            $crate::sysinfo::set_image_name(env!("CARGO_BIN_NAME"));
+            $crate::sysinfo::set_running();
+        }
+    }};
+}
+
+/// Nothing to publish without a shared window to publish into.
+#[cfg(not(feature = "amp"))]
+#[macro_export]
+macro_rules! publish_identity {
+    () => {{}};
 }

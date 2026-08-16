@@ -1,0 +1,15 @@
+[Unit]
+Description=Relay the Rivet console into the journal
+Documentation=file:///usr/local/share/doc/rivet/README.md
+After=rivet.service
+Requires=rivet.service
+PartOf=rivet.target
+[Service]
+ExecStart=/usr/local/bin/rivet-amp console
+Restart=always
+RestartSec=2
+StandardOutput=journal+console
+StandardError=journal
+SyslogIdentifier=rivet
+[Install]
+WantedBy=multi-user.target

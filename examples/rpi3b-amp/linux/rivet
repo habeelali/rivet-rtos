@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+# One entry point for the whole system.
+#
+# Two commands with different names read as two projects. This is the
+# front door: it wraps the loader and the image selector so there is one
+# name to remember and one place to discover the rest.
+set -euo pipefail
+
+AMP=/usr/local/bin/rivet-amp
+SEL=/usr/local/bin/rivet-select
+
+usage() {
+    cat <<'USAGE'
+rivet - RTOS and Linux on one board
+
+  rivet status              what is running, on which core, where
+  rivet banner              one-line identity, also to dmesg
+  rivet health              exit non-zero if the RTOS is not beating
+
+  rivet images              list installed images, star the current
+  rivet boot <image> [-r]   choose what runs at the next boot
+
+  rivet console             follow the RTOS console
+  rivet log                 the same, from the journal
+  rivet send <command>      send a command and ring the doorbell
+
+  rivet bench [rounds]      Linux-to-RTOS round trip and throughput
+  rivet scope [n] [ms]      pulse a GPIO and ring, for an oscilloscope
+  rivet trace <file>        capture PulseTrace frames
+
+Switching images needs a reboot: a released core cannot be restarted in
+place. `rivet boot <image> -r` does both.
+USAGE
+}
+
+# The console ring has one reader. rivet-console holds it by default, so
+# anything that wants to read it directly has to take over and hand back.
+with_console() {
+    local was=0
+    systemctl is-active --quiet rivet-console && was=1
+    [ $was = 1 ] && sudo systemctl stop rivet-console
+    "$@" || true
+    [ $was = 1 ] && sudo systemctl start rivet-console
+    return 0
+}
+
+case "${1:-}" in
+    status|"")   exec sudo "$AMP" status ;;
+    banner)      exec sudo "$AMP" banner ;;
+    health)      exec sudo "$AMP" watch "${2:-2000}" ;;
+    images)      exec "$SEL" ;;
+    boot)        shift; exec "$SEL" "$@" ;;
+    console)     with_console sudo "$AMP" console ;;
+    log)         exec journalctl -u rivet-console -f -o cat ;;
+    send)        shift; exec sudo "$AMP" send "$*" ;;
+    bench)       shift; with_console sudo "$AMP" bench "${1:-400}" ;;
+    scope)       shift; exec sudo "$AMP" scope "${1:-200}" "${2:-5}" ;;
+    trace)       shift; with_console sudo "$AMP" trace "${1:?need an output file}" ;;
+    -h|--help|help) usage ;;
+    *)           echo "unknown command: $1" >&2; echo >&2; usage >&2; exit 2 ;;
+esac

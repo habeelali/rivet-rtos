@@ -1,0 +1,22 @@
+[Unit]
+Description=Watch the Rivet heartbeat
+Documentation=file:///usr/local/share/doc/rivet/rpi3b-guarantees.md
+After=rivet.service
+Requires=rivet.service
+PartOf=rivet.target
+[Service]
+# Exits non-zero when the RTOS stops beating. Before this existed a hung
+# core and an idle one looked identical from Linux: the console ring just
+# stopped, which is also what a healthy system with nothing to say does.
+#
+# It does not restart the RTOS. A released core cannot be restarted in
+# place, so recovery means a reboot, and that is a policy decision for
+# whoever deploys this rather than a default.
+ExecStart=/usr/local/bin/rivet-amp watch 2000
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=rivet-health
+[Install]
+WantedBy=multi-user.target
