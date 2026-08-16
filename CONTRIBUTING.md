@@ -101,6 +101,21 @@ CI (`.github/workflows/ci.yml`) runs the host suite, `miri`, `loom`, the
 full QEMU board matrix, and clippy per target. A PR that doesn't pass CI
 locally first is a slower review, not a faster one.
 
+### QEMU versions
+
+CI installs QEMU unpinned (`apt-get install qemu-system-arm
+qemu-system-misc` on `ubuntu-latest`), so the QEMU in use drifts as
+runner images update. The board suite is verified against **QEMU 8.2.2**
+(the maintainers' local baseline); newer QEMUs (10.2.x) log additional
+machine-model guest-error lines on the ARM boards (e.g. `NVIC: Bad read
+offset 0xdfc`, `PL011 data written to disabled UART`). These are
+known-benign QEMU model quirks, not kernel bugs — the per-board
+`ignore_log_lines` lists in `xtask/src/main.rs` exist to absorb them. If
+a QEMU you're testing with logs lines the allowlists don't cover, add
+them with a comment explaining why they're benign **and** an entry in
+`tests/golden/KNOWN_FAILURES.md` (the project's convention: record, don't
+silently hide) rather than chasing each one as a kernel regression.
+
 ## Commit and PR style
 
 - Commit messages explain **why**, not just what changed. Match the
