@@ -5,6 +5,7 @@
 //   rivet-amp console               drain rivet's text console ring
 //   rivet-amp trace <file>          drain the PulseTrace ring to a file
 //   rivet-amp send <command>        send a command and ring the doorbell
+//   rivet-amp bench [rounds]        time the Linux-to-rivet round trip
 //
 // Build:  cc -O2 -o rivet-amp rivet-amp.c
 // Run as root.
@@ -368,15 +369,191 @@ static int cmd_send(const char *text) {
     return 0;
 }
 
+// Read the architected counter. rivet reads CNTPCT_EL0 and this reads
+// CNTVCT_EL0, but CNTVOFF_EL2 is zero on this board, so the two are the
+// same number from the same 19.2 MHz counter. That is what makes a true
+// one-way latency measurable at all: without a shared timebase, the only
+// honest figure is a round trip.
+//
+// CNTPCT_EL0 itself traps to EL1 from userspace here and dies with SIGILL,
+// which is why this is not simply the same register.
+static inline uint64_t cntvct(void) {
+    uint64_t v;
+    __asm__ volatile("isb; mrs %0, cntvct_el0" : "=r"(v) :: "memory");
+    return v;
+}
+
+#define CNT_HZ 19200000ULL
+static uint64_t cnt_to_ns(uint64_t t) { return t * 625ULL / 12ULL; }
+
+struct rt_stats { uint64_t min, max, sum, n; };
+static void rt_add(struct rt_stats *s, uint64_t v) {
+    if (!s->n || v < s->min) s->min = v;
+    if (v > s->max) s->max = v;
+    s->sum += v;
+    s->n++;
+}
+
+// Round trip: Linux writes a timestamped command, rings the doorbell,
+// and waits for rivet's reply to appear in the console ring.
+//
+// The reply is detected by watching the console write pointer move rather
+// than by parsing text. Parsing would time the parser as much as the path
+// being measured, and the first byte becoming visible is the moment that
+// actually matters.
+static int cmd_bench(int rounds) {
+    int fd = open("/dev/mem", O_RDWR | O_SYNC);
+    if (fd < 0) { perror("/dev/mem"); return 1; }
+
+    unsigned char *cmd = map_phys(fd, SHMEM_BASE + CMD_OFF, 0x10000, 1);
+    unsigned char *con = map_phys(fd, SHMEM_BASE + CONSOLE_OFF, 0x100000, 1);
+    unsigned char *local = map_phys(fd, ARM_LOCAL, 0x1000, 1);
+    if (!cmd || !con || !local) { perror("mmap"); close(fd); return 1; }
+
+    volatile uint32_t *cmagic = (volatile uint32_t *)(cmd + OFF_MAGIC);
+    volatile uint32_t *ccap   = (volatile uint32_t *)(cmd + OFF_CAP);
+    volatile uint64_t *cwp    = (volatile uint64_t *)(cmd + OFF_WRITE);
+    volatile uint32_t *ocap   = (volatile uint32_t *)(con + OFF_CAP);
+    volatile uint64_t *owp    = (volatile uint64_t *)(con + OFF_WRITE);
+    volatile uint64_t *orp    = (volatile uint64_t *)(con + OFF_READ);
+    volatile uint32_t *bell   = (volatile uint32_t *)(local + MBOX_SET + RIVET_CORE * 16);
+
+    if (*cmagic != RING_MAGIC) {
+        fprintf(stderr, "command ring not initialised: is rivet running?\n");
+        close(fd);
+        return 1;
+    }
+    uint32_t ccapacity = *ccap, ocapacity = *ocap;
+
+    struct rt_stats rt = {0};
+    uint64_t timeouts = 0;
+
+    for (int i = 0; i < rounds; i++) {
+        // Discard anything already queued, so the pointer only moves for
+        // the reply this round is about to provoke.
+        *orp = *owp;
+        BARRIER();
+
+        char line[64];
+        uint64_t t0 = cntvct();
+        int len = snprintf(line, sizeof line, "ts %llu\n", (unsigned long long)t0);
+
+        uint64_t w = *cwp;
+        for (int k = 0; k < len; k++) cmd[OFF_DATA + (w++ % ccapacity)] = (unsigned char)line[k];
+        BARRIER();
+        *cwp = w;
+        BARRIER();
+        *bell = 1;
+        BARRIER();
+
+        // Spin rather than sleep: the whole quantity being measured is
+        // smaller than the shortest sleep this process could ask for.
+        uint64_t start = *orp, deadline = t0 + CNT_HZ / 10;   // 100 ms
+        for (;;) {
+            if (*owp != start) { rt_add(&rt, cntvct() - t0); break; }
+            if (cntvct() > deadline) { timeouts++; break; }
+        }
+        usleep(1000);   // let rivet settle between rounds
+    }
+
+    printf("== Linux to rivet round trip ==\n");
+    if (rt.n) {
+        printf("  command ring -> doorbell -> reply visible\n");
+        printf("  min %llu  mean %llu  max %llu ns   n=%llu\n",
+               (unsigned long long)cnt_to_ns(rt.min),
+               (unsigned long long)cnt_to_ns(rt.sum / rt.n),
+               (unsigned long long)cnt_to_ns(rt.max),
+               (unsigned long long)rt.n);
+    } else {
+        printf("  no replies: is a build with a command handler loaded?\n");
+    }
+    if (timeouts) printf("  timeouts: %llu\n", (unsigned long long)timeouts);
+
+    // One-way throughput in the rivet-to-Linux direction. rivet floods the
+    // console ring and this drains it as fast as it can. The producer
+    // overwrites rather than blocking, so a shortfall against the amount
+    // asked for is a real measurement of the consumer, not an error.
+    const unsigned kib = 256;
+    *orp = *owp;
+    BARRIER();
+    char flood[32];
+    int len = snprintf(flood, sizeof flood, "flood %u\n", kib);
+    uint64_t w = *cwp;
+    for (int k = 0; k < len; k++) cmd[OFF_DATA + (w++ % ccapacity)] = (unsigned char)flood[k];
+    BARRIER();
+    *cwp = w;
+    BARRIER();
+    *bell = 1;
+    BARRIER();
+
+    uint64_t t0 = cntvct(), last = t0, got = 0, dropped = 0;
+    for (;;) {
+        uint64_t ww = *owp, rr = *orp;
+        if (ww == rr) {
+            // Two idle seconds after the last byte means it is over.
+            if (cntvct() - last > 2 * CNT_HZ) break;
+            continue;
+        }
+        if (ww - rr > ocapacity) { dropped += ww - rr - ocapacity; rr = ww - ocapacity; }
+        // Read 64 bits at a time where the window allows it. The shared
+        // mapping is Device memory, where each access goes to the
+        // interconnect on its own: a byte-at-a-time loop measures the
+        // cost of that round trip roughly eight times over and reports it
+        // as the ring's throughput, which it is not. Unaligned and
+        // vector accesses fault on Device memory, so the fast path is
+        // taken only when the offset is aligned and the run does not
+        // wrap.
+        volatile uint64_t sink = 0;
+        while (rr < ww) {
+            size_t off = rr % ocapacity;
+            uint64_t run = ww - rr;
+            if (run > ocapacity - off) run = ocapacity - off;
+            if ((off % 8) == 0 && run >= 8) {
+                uint64_t words = run / 8;
+                const volatile uint64_t *p = (const volatile uint64_t *)(con + OFF_DATA + off);
+                for (uint64_t k = 0; k < words; k++) sink ^= p[k];
+                rr += words * 8;
+                got += words * 8;
+            } else {
+                sink ^= con[OFF_DATA + off];
+                rr++;
+                got++;
+            }
+        }
+        (void)sink;
+        *orp = rr;
+        last = cntvct();
+    }
+    uint64_t elapsed = last - t0;
+    printf("\n== ring one-way, rivet to Linux ==\n");
+    if (got && elapsed) {
+        printf("  %llu KiB drained in %llu us = %llu MiB/s\n",
+               (unsigned long long)(got / 1024),
+               (unsigned long long)(cnt_to_ns(elapsed) / 1000),
+               (unsigned long long)((got * CNT_HZ) / (elapsed * 1024 * 1024)));
+    } else {
+        printf("  nothing arrived: the loaded build has no flood command\n");
+    }
+    if (dropped)
+        printf("  %llu KiB overwritten before this reader took them\n",
+               (unsigned long long)(dropped / 1024));
+
+    close(fd);
+    return 0;
+}
+
 int main(int argc, char **argv) {
     install_fault_handler();
     if (argc < 2) {
         fprintf(stderr,
-                "usage: %s probe | load <image> | console | trace <file> | send <cmd>\n",
+                "usage: %s probe | load <image> | console | trace <file>\n"
+                "       %s send <cmd> | bench [rounds]\n",
+                argv[0],
                 argv[0]);
         return 2;
     }
     if (!strcmp(argv[1], "probe"))   return cmd_probe();
+    if (!strcmp(argv[1], "bench"))   return cmd_bench(argc > 2 ? atoi(argv[2]) : 500);
     if (!strcmp(argv[1], "console")) return cmd_console();
     if (!strcmp(argv[1], "send")) {
         if (argc < 3) { fprintf(stderr, "send needs a command\n"); return 2; }

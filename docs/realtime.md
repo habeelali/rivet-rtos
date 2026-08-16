@@ -17,7 +17,10 @@ for an explicitly defined workload, as what makes one "hard real-time").
 **This is empirical, black-box measurement under controlled load, on real
 silicon.** Every number below came from flashing an instrumented binary to
 real STM32F401RE / ESP32-S3 / ESP32-C6 hardware and reading back what the
-CPU's own free-running cycle counter recorded. That is a real, honest thing
+CPU's own free-running cycle counter recorded. The AArch64 port on a
+Raspberry Pi 3B is characterised the same way, separately, in
+[rpi3b-benchmarks.md](rpi3b-benchmarks.md), against the architected counter
+rather than a cycle counter. That is a real, honest thing
 to know. It is not the same thing as a *formally proven* WCET bound.
 
 **What it is not:** no static WCET analysis tool (aiT, OTAWA, or similar)

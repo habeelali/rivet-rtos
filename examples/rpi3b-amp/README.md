@@ -405,6 +405,28 @@ that needs a wire, and report the weaker one until it is there:
 Nothing else changes: `periph_test` detects both and says which case it
 measured.
 
+## Benchmarking
+
+`rt_bench` is the characterisation suite for this port: interrupt latency,
+context switch, scheduler decision cost, tick jitter, priority-inheritance
+mutex handoff, cache coherency overhead, the Linux doorbell and ring
+figures, and deadline lateness, each as min, mean and max with a sample
+count.
+
+```sh
+sudo rivet-amp load /tmp/rt_bench.img
+sudo rivet-amp console      # self-contained rows, then it waits
+sudo rivet-amp bench 400    # round trip and one-way throughput
+sudo rivet-amp console      # the doorbell row
+```
+
+Results and methodology, idle and under full Linux load, are in
+[docs/rpi3b-benchmarks.md](../../docs/rpi3b-benchmarks.md).
+
+Reboot between runs. A spin-table release latches, so loading a second
+image onto a core still executing the first one does nothing at all, which
+looks exactly like a hang.
+
 ## What is not done yet
 
 - Peripheral interrupts still go wherever `GPU_INTERRUPTS_ROUTING` at
@@ -412,7 +434,6 @@ measured.
   rather than per-core. Rivet's core realistically wants timer-driven work
   and polled peripherals, leaving the aggregated peripheral IRQ to Linux.
   See the GIC note in `examples/rpi3b/README.md`.
-- Nothing stops rivet writing into Linux's memory. The identity map covers
-  all of RAM as Normal, and narrowing it to just the reserved region would
-  turn an errant pointer into a fault instead of silent corruption of
-  another OS.
+- The load generator used for the benchmark numbers is shell loops, not a
+  calibrated tool. It saturates every core and the I/O path, but it is not
+  a reproducible load profile.

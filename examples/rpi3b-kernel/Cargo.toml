@@ -41,14 +41,14 @@ test = false
 bench = false
 
 [[bin]]
-name = "bench"
-path = "src/bin/bench.rs"
+name = "channel_demo"
+path = "src/bin/channel_demo.rs"
 test = false
 bench = false
 
 [[bin]]
-name = "channel_demo"
-path = "src/bin/channel_demo.rs"
+name = "rt_bench"
+path = "src/bin/rt_bench.rs"
 test = false
 bench = false
 

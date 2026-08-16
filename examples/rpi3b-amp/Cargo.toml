@@ -38,14 +38,14 @@ test = false
 bench = false
 
 [[bin]]
-name = "bench_amp"
-path = "../rpi3b-kernel/src/bin/bench.rs"
+name = "channel_demo_amp"
+path = "../rpi3b-kernel/src/bin/channel_demo.rs"
 test = false
 bench = false
 
 [[bin]]
-name = "channel_demo_amp"
-path = "../rpi3b-kernel/src/bin/channel_demo.rs"
+name = "rt_bench_amp"
+path = "../rpi3b-kernel/src/bin/rt_bench.rs"
 test = false
 bench = false
 

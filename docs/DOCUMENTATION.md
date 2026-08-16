@@ -99,6 +99,7 @@ implicitly written against just one target:
 | **`mps2-an385`** | ARM Cortex-M3 (QEMU) | A *different* memory map and peripheral set from lm3s6965: CMSDK APB UART, CMSDK/SP805-compatible watchdog. Added purely as a new board-support crate, without touching the kernel or the Cortex-M architecture port, as proof the boundary holds. |
 | **ESP32-C6** | RISC-V, RV32IMAC | QEMU-validated board support. |
 | **ESP32-S3** | Xtensa LX7, dual-core | **Real hardware.** The only dual-core (`RIVET_MAX_HARTS=2`) target: cross-hart IPI-driven fairness, a genuine cross-hart data race found and fixed via live JTAG (`docs/realtime.md` §15), real-hardware-verified priority inheritance and round-robin fairness. Built with Espressif's separate `esp` Rust toolchain fork (excluded from the main workspace, see §15). |
+| **Raspberry Pi 3B** | ARM Cortex-A53, AArch64 | **Real hardware.** The first 64-bit target and the first with an MMU. Runs on core 3 with Linux on the other three, which is also the first arrangement where rivet shares silicon with another OS rather than owning the chip. Atomics require the MMU here: with it off, all memory is Device-nGnRnE and `LDXR`/`STXR` takes a data abort. Measured characterisation in `docs/rpi3b-benchmarks.md`. Lives on the `rpi3-bringup` branch and is not part of `main`. |
 | **STM32F401RE (Nucleo-64)** | ARM Cortex-M4, single-core | **Real hardware** (ST-LINK/V2-1 onboard debugger, SWD). The current best hard-real-time story in this project: `docs/wcet-stm32f401re.md` gives a scoped, real-hardware-measured hard-RT declaration: zero-variance nested-interrupt latency (86 cycles, 500/500 identical samples), measured `PRIORITY_INVERSION_BOUNDED` with zero medium-priority interference, no cross-hart contention class of problem (single core). |
 
 An eighth target, ESP32-C3 (RV32IMC), was evaluated and found to lack the
@@ -767,6 +768,12 @@ docs/wcet.md            formal WCET analysis, ESP32-S3/Xtensa — interrupt
                         section, and blocking-time figures, each labeled
                         by method (measured / derived / architectural /
                         assumed)
+docs/rpi3b-benchmarks.md
+                        measured real-time characterisation of the AArch64
+                        port running alongside Linux on a Pi 3B: interrupt
+                        latency, context switch, tick jitter, mutex
+                        handoff, cache coherency cost and the cross-tier
+                        IPC figures, idle and under full Linux load
 docs/wcet-stm32f401re.md
                         formal WCET analysis and a scoped hard-real-time
                         declaration for STM32F401RE — the same figures,

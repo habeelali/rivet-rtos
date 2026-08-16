@@ -143,20 +143,72 @@ static IRQ_LAT_MIN: AtomicU64 = AtomicU64::new(u64::MAX);
 static IRQ_LAT_MAX: AtomicU64 = AtomicU64::new(0);
 static IRQ_LAT_SUM: AtomicU64 = AtomicU64::new(0);
 static IRQ_LAT_CNT: AtomicU64 = AtomicU64::new(0);
+static TICK_COST_MIN: AtomicU64 = AtomicU64::new(u64::MAX);
 static TICK_COST_MAX: AtomicU64 = AtomicU64::new(0);
 static TICK_COST_SUM: AtomicU64 = AtomicU64::new(0);
+static TICK_GAP_MIN: AtomicU64 = AtomicU64::new(u64::MAX);
+static TICK_GAP_MAX: AtomicU64 = AtomicU64::new(0);
+static TICK_GAP_SUM: AtomicU64 = AtomicU64::new(0);
+static TICK_GAP_CNT: AtomicU64 = AtomicU64::new(0);
+static TICK_LAST_ENTRY: AtomicU64 = AtomicU64::new(0);
+static IRQ_LAT_OVER: AtomicU64 = AtomicU64::new(0);
+static TICK_COST_OVER: AtomicU64 = AtomicU64::new(0);
 
-/// `(min, max, sum, count)` of interrupt latency, and `(max, sum)` of
-/// time spent inside the tick handler, both in timer ticks.
-pub fn irq_stats() -> (u64, u64, u64, u64, u64, u64) {
-    (
-        IRQ_LAT_MIN.load(Ordering::Relaxed),
-        IRQ_LAT_MAX.load(Ordering::Relaxed),
-        IRQ_LAT_SUM.load(Ordering::Relaxed),
-        IRQ_LAT_CNT.load(Ordering::Relaxed),
-        TICK_COST_MAX.load(Ordering::Relaxed),
-        TICK_COST_SUM.load(Ordering::Relaxed),
-    )
+/// One microsecond in counter ticks, rounded up, at the 19.2 MHz
+/// architected counter. The bar for counting a sample as having run long.
+const LONG_TICKS: u64 = 20;
+
+/// Everything the tick handler measures about itself, in timer ticks.
+///
+/// A tuple got unreadable once there was more than one thing being
+/// counted, and every field here is a different quantity that happens to
+/// share a unit.
+#[derive(Clone, Copy)]
+pub struct IrqStats {
+    /// Comparator match to the first instruction of the handler.
+    pub lat_min: u64,
+    pub lat_max: u64,
+    pub lat_sum: u64,
+    /// Ticks observed, which is the sample count for latency and cost.
+    pub count: u64,
+    /// Latency samples over one microsecond. A maximum on its own says
+    /// nothing about how often the worst case happens, and on a tight
+    /// distribution the integer mean collapses onto the minimum and stops
+    /// saying anything at all.
+    pub lat_over: u64,
+    /// Time spent inside the handler itself.
+    pub cost_min: u64,
+    pub cost_max: u64,
+    pub cost_sum: u64,
+    /// Handler-cost samples over one microsecond.
+    pub cost_over: u64,
+    /// Interval between consecutive handler entries. The comparator is
+    /// advanced by a fixed step so the deadline grid cannot drift; what
+    /// varies here is only how promptly each deadline was serviced, which
+    /// is what tick jitter means on this design.
+    pub gap_min: u64,
+    pub gap_max: u64,
+    pub gap_sum: u64,
+    pub gap_count: u64,
+}
+
+/// Snapshot of the tick handler's self-measurements.
+pub fn irq_stats() -> IrqStats {
+    IrqStats {
+        lat_min: IRQ_LAT_MIN.load(Ordering::Relaxed),
+        lat_max: IRQ_LAT_MAX.load(Ordering::Relaxed),
+        lat_sum: IRQ_LAT_SUM.load(Ordering::Relaxed),
+        count: IRQ_LAT_CNT.load(Ordering::Relaxed),
+        lat_over: IRQ_LAT_OVER.load(Ordering::Relaxed),
+        cost_min: TICK_COST_MIN.load(Ordering::Relaxed),
+        cost_max: TICK_COST_MAX.load(Ordering::Relaxed),
+        cost_sum: TICK_COST_SUM.load(Ordering::Relaxed),
+        cost_over: TICK_COST_OVER.load(Ordering::Relaxed),
+        gap_min: TICK_GAP_MIN.load(Ordering::Relaxed),
+        gap_max: TICK_GAP_MAX.load(Ordering::Relaxed),
+        gap_sum: TICK_GAP_SUM.load(Ordering::Relaxed),
+        gap_count: TICK_GAP_CNT.load(Ordering::Relaxed),
+    }
 }
 
 /// Discard everything gathered so far, so a measurement window excludes
@@ -166,8 +218,16 @@ pub fn reset_irq_stats() {
     IRQ_LAT_MAX.store(0, Ordering::Relaxed);
     IRQ_LAT_SUM.store(0, Ordering::Relaxed);
     IRQ_LAT_CNT.store(0, Ordering::Relaxed);
+    TICK_COST_MIN.store(u64::MAX, Ordering::Relaxed);
     TICK_COST_MAX.store(0, Ordering::Relaxed);
     TICK_COST_SUM.store(0, Ordering::Relaxed);
+    TICK_GAP_MIN.store(u64::MAX, Ordering::Relaxed);
+    TICK_GAP_MAX.store(0, Ordering::Relaxed);
+    TICK_GAP_SUM.store(0, Ordering::Relaxed);
+    TICK_GAP_CNT.store(0, Ordering::Relaxed);
+    TICK_LAST_ENTRY.store(0, Ordering::Relaxed);
+    IRQ_LAT_OVER.store(0, Ordering::Relaxed);
+    TICK_COST_OVER.store(0, Ordering::Relaxed);
 }
 
 fn record_min(cell: &AtomicU64, v: u64) {
@@ -204,13 +264,32 @@ fn on_timer_tick() {
     record_min(&IRQ_LAT_MIN, lat);
     IRQ_LAT_SUM.fetch_add(lat, Ordering::Relaxed);
     IRQ_LAT_CNT.fetch_add(1, Ordering::Relaxed);
+    if lat > LONG_TICKS {
+        IRQ_LAT_OVER.fetch_add(1, Ordering::Relaxed);
+    }
+
+    // Skip the first tick after a reset: there is no previous entry to
+    // measure an interval against, and treating zero as one would report
+    // a gap the size of the uptime.
+    let prev = TICK_LAST_ENTRY.swap(entry, Ordering::Relaxed);
+    if prev != 0 {
+        let gap = entry.wrapping_sub(prev);
+        TICK_GAP_MAX.fetch_max(gap, Ordering::Relaxed);
+        record_min(&TICK_GAP_MIN, gap);
+        TICK_GAP_SUM.fetch_add(gap, Ordering::Relaxed);
+        TICK_GAP_CNT.fetch_add(1, Ordering::Relaxed);
+    }
 
     rivet::watchdog::on_tick();
     rivet::timer::poll_timers(__rivet_board_now_us());
 
     let cost = read_sysreg!("cntpct_el0").wrapping_sub(entry);
     TICK_COST_MAX.fetch_max(cost, Ordering::Relaxed);
+    record_min(&TICK_COST_MIN, cost);
     TICK_COST_SUM.fetch_add(cost, Ordering::Relaxed);
+    if cost > LONG_TICKS {
+        TICK_COST_OVER.fetch_add(1, Ordering::Relaxed);
+    }
 }
 
 // ── Interrupts ────────────────────────────────────────────────────
