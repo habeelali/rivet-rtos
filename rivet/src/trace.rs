@@ -136,7 +136,14 @@ pub fn stream_header(cpu_hz: u32, max_harts: u8) {
     payload[3..7].copy_from_slice(&cpu_hz.to_le_bytes());
     payload[7] = max_harts;
     let mut buf = [0u8; MAX_FRAME];
-    let n = encode(&mut buf, kind::STREAM_HEADER, core_id(), NO_TASK, now_ts(), &payload);
+    let n = encode(
+        &mut buf,
+        kind::STREAM_HEADER,
+        core_id(),
+        NO_TASK,
+        now_ts(),
+        &payload,
+    );
     crate::port::board::trace_write(&buf[..n]);
 }
 
@@ -204,7 +211,11 @@ pub fn isr(irq: u32, entry: bool) {
     let mut payload = [0u8; 4];
     payload.copy_from_slice(&irq.to_le_bytes());
     let mut buf = [0u8; MAX_FRAME];
-    let k = if entry { kind::IRQ_ENTER } else { kind::IRQ_EXIT };
+    let k = if entry {
+        kind::IRQ_ENTER
+    } else {
+        kind::IRQ_EXIT
+    };
     let n = encode(&mut buf, k, core_id(), NO_TASK, now_ts(), &payload);
     crate::port::board::trace_write(&buf[..n]);
 }
@@ -232,7 +243,14 @@ pub fn mutex_unlock(task_id: u16, mutex_id: u32) {
     let mut payload = [0u8; 4];
     payload.copy_from_slice(&mutex_id.to_le_bytes());
     let mut buf = [0u8; MAX_FRAME];
-    let n = encode(&mut buf, kind::MUTEX_UNLOCK, core_id(), task_id as u32, now_ts(), &payload);
+    let n = encode(
+        &mut buf,
+        kind::MUTEX_UNLOCK,
+        core_id(),
+        task_id as u32,
+        now_ts(),
+        &payload,
+    );
     crate::port::board::trace_write(&buf[..n]);
 }
 
@@ -263,7 +281,11 @@ pub fn fault(task_id: u16, reason: u8, pc: u32) {
     payload[0..4].copy_from_slice(&(reason as u32).to_le_bytes());
     payload[4..8].copy_from_slice(&pc.to_le_bytes());
     let mut buf = [0u8; MAX_FRAME];
-    let k = if reason == 4 { kind::STACK_OVERFLOW } else { kind::HARD_FAULT };
+    let k = if reason == 4 {
+        kind::STACK_OVERFLOW
+    } else {
+        kind::HARD_FAULT
+    };
     let n = encode(&mut buf, k, core_id(), task_id as u32, now_ts(), &payload);
     crate::port::board::trace_write(&buf[..n]);
 }

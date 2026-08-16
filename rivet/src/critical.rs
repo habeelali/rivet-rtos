@@ -149,6 +149,9 @@ mod tests {
     fn lock_is_released_after_outermost_exit() {
         enter(|| {});
         assert_eq!(LOCK_OWNER.load(Ordering::Acquire), -1);
-        assert_eq!(NESTING[crate::port::arch::hart_id()].load(Ordering::Relaxed), 0);
+        assert_eq!(
+            NESTING[crate::port::arch::hart_id()].load(Ordering::Relaxed),
+            0
+        );
     }
 }

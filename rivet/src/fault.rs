@@ -93,7 +93,11 @@ pub fn on_fault(info: &FaultInfo) -> usize {
             FaultKind::StackOverflow => 4,
             FaultKind::BudgetExceeded => 5,
         };
-        crate::trace::fault(info.task_id.map(|id| id as u16).unwrap_or(0xffff), reason, info.pc as u32);
+        crate::trace::fault(
+            info.task_id.map(|id| id as u16).unwrap_or(0xffff),
+            reason,
+            info.pc as u32,
+        );
     }
     if POLICY.load(Ordering::Acquire) == POLICY_ISOLATE {
         isolate(info)

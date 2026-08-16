@@ -386,10 +386,7 @@ impl<'a, T> Drop for PriorityMutexGuard<'a, T> {
             let owner = self.mutex.owner.swap(NO_TASK, Ordering::AcqRel);
             #[cfg(feature = "trace")]
             if owner != NO_TASK {
-                crate::trace::mutex_unlock(
-                    owner as u16,
-                    self.mutex as *const _ as usize as u32,
-                );
+                crate::trace::mutex_unlock(owner as u16, self.mutex as *const _ as usize as u32);
             }
             if owner != NO_TASK {
                 // Remove this mutex from the holder's held list, then

@@ -660,7 +660,10 @@ pub fn on_tick(interrupted_sp: usize) -> usize {
     {
         use core::sync::atomic::{AtomicU32, Ordering};
         static REANNOUNCE_TICK: AtomicU32 = AtomicU32::new(0);
-        if REANNOUNCE_TICK.fetch_add(1, Ordering::Relaxed).is_multiple_of(2000) {
+        if REANNOUNCE_TICK
+            .fetch_add(1, Ordering::Relaxed)
+            .is_multiple_of(2000)
+        {
             crate::trace::reannounce_all_tasks();
             crate::trace::reannounce_stream_header();
         }
@@ -675,7 +678,8 @@ pub fn on_tick(interrupted_sp: usize) -> usize {
 /// after that section has already released PRIMASK — see `on_tick`'s own
 /// doc for why this indirection exists at all.
 #[cfg(feature = "trace")]
-static PENDING_CTX_SWITCH: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(u32::MAX);
+static PENDING_CTX_SWITCH: core::sync::atomic::AtomicU32 =
+    core::sync::atomic::AtomicU32::new(u32::MAX);
 
 /// plan.md Phase 19: the entire read-decide-commit sequence below (read
 /// `sched::current()`, decide via `schedule()`/`should_preempt`, commit via

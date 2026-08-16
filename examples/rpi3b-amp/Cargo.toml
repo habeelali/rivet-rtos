@@ -55,10 +55,19 @@ path = "../rpi3b-kernel/src/bin/scope_demo.rs"
 test = false
 bench = false
 
+[[bin]]
+name = "tick_anatomy_amp"
+path = "../rpi3b-kernel/src/bin/tick_anatomy.rs"
+test = false
+bench = false
+
 [features]
 # PulseTrace live tracing, forwarded to the board crate which puts the
 # frames in their own ring in the shared window.
 trace = ["rivet/trace", "rivet-bsp-rpi3b/trace"]
+# Per-stage timing inside the tick handler, for tick_anatomy. Diagnostic
+# only: it puts counter reads on the tick path.
+tick-phases = ["rivet-bsp-rpi3b/tick-phases"]
 
 [dependencies]
 rivet = { path = "../../rivet", package = "rivet-rtos" }

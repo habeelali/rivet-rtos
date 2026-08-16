@@ -154,6 +154,77 @@ static TICK_LAST_ENTRY: AtomicU64 = AtomicU64::new(0);
 static IRQ_LAT_OVER: AtomicU64 = AtomicU64::new(0);
 static TICK_COST_OVER: AtomicU64 = AtomicU64::new(0);
 
+/// Per-stage timing inside the tick handler, behind `tick-phases`.
+///
+/// Answers where a tick's time actually goes, rather than leaving it to be
+/// inferred from the total. Three stages: the handler's own bookkeeping,
+/// which touches nothing but this module's statics; the watchdog; and the
+/// timer wheel.
+///
+/// Off by default because it adds three counter reads, each with an ISB,
+/// to a path that runs ten thousand times a second, and those reads land
+/// inside the very interval the handler reports as its cost. A build with
+/// this on measures itself measuring.
+#[cfg(feature = "tick-phases")]
+mod phases {
+    use core::sync::atomic::{AtomicU64, Ordering};
+    pub static BOOKKEEPING: [AtomicU64; 3] =
+        [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)];
+    pub static WATCHDOG: [AtomicU64; 3] = [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)];
+    pub static TIMERS: [AtomicU64; 3] = [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)];
+    /// A control that touches only this module's own memory, never the
+    /// shared window, so a stage that degrades under load says something
+    /// about private memory rather than about sharing.
+    pub static CONTROL: [AtomicU64; 3] = [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)];
+    pub static SCRATCH: [AtomicU64; 8] = [
+        AtomicU64::new(0),
+        AtomicU64::new(0),
+        AtomicU64::new(0),
+        AtomicU64::new(0),
+        AtomicU64::new(0),
+        AtomicU64::new(0),
+        AtomicU64::new(0),
+        AtomicU64::new(0),
+    ];
+
+    /// `[max, sum, over-one-microsecond]`.
+    pub fn record(cell: &[AtomicU64; 3], d: u64) {
+        cell[0].fetch_max(d, Ordering::Relaxed);
+        cell[1].fetch_add(d, Ordering::Relaxed);
+        if d > super::LONG_TICKS {
+            cell[2].fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    pub fn reset() {
+        for c in [&BOOKKEEPING, &WATCHDOG, &TIMERS, &CONTROL] {
+            for f in c {
+                f.store(0, Ordering::Relaxed);
+            }
+        }
+    }
+
+    pub fn snapshot(cell: &[AtomicU64; 3]) -> (u64, u64, u64) {
+        (
+            cell[0].load(Ordering::Relaxed),
+            cell[1].load(Ordering::Relaxed),
+            cell[2].load(Ordering::Relaxed),
+        )
+    }
+}
+
+/// `(max, sum, over_1us)` for each stage: bookkeeping, watchdog, timer
+/// wheel, and the private-memory control.
+#[cfg(feature = "tick-phases")]
+pub fn tick_phase_stats() -> [(u64, u64, u64); 4] {
+    [
+        phases::snapshot(&phases::BOOKKEEPING),
+        phases::snapshot(&phases::WATCHDOG),
+        phases::snapshot(&phases::TIMERS),
+        phases::snapshot(&phases::CONTROL),
+    ]
+}
+
 /// One microsecond in counter ticks, rounded up, at the 19.2 MHz
 /// architected counter. The bar for counting a sample as having run long.
 const LONG_TICKS: u64 = 20;
@@ -228,6 +299,8 @@ pub fn reset_irq_stats() {
     TICK_LAST_ENTRY.store(0, Ordering::Relaxed);
     IRQ_LAT_OVER.store(0, Ordering::Relaxed);
     TICK_COST_OVER.store(0, Ordering::Relaxed);
+    #[cfg(feature = "tick-phases")]
+    phases::reset();
 }
 
 fn record_min(cell: &AtomicU64, v: u64) {
@@ -280,8 +353,36 @@ fn on_timer_tick() {
         TICK_GAP_CNT.fetch_add(1, Ordering::Relaxed);
     }
 
+    #[cfg(feature = "tick-phases")]
+    let t_book = read_sysreg!("cntpct_el0");
+    #[cfg(feature = "tick-phases")]
+    phases::record(&phases::BOOKKEEPING, t_book.wrapping_sub(entry));
+
     rivet::watchdog::on_tick();
+    #[cfg(feature = "tick-phases")]
+    let t_wdog = read_sysreg!("cntpct_el0");
+    #[cfg(feature = "tick-phases")]
+    phases::record(&phases::WATCHDOG, t_wdog.wrapping_sub(t_book));
+
     rivet::timer::poll_timers(__rivet_board_now_us());
+    #[cfg(feature = "tick-phases")]
+    let t_timers = read_sysreg!("cntpct_el0");
+    #[cfg(feature = "tick-phases")]
+    phases::record(&phases::TIMERS, t_timers.wrapping_sub(t_wdog));
+
+    // The control: a fixed number of read-modify-writes against this
+    // module's own statics, which live in the reserved region Linux
+    // cannot even map. No shared memory, no coherency traffic with the
+    // other cluster, nothing but private cacheable RAM. Whatever this
+    // does under load is the floor for every other stage.
+    #[cfg(feature = "tick-phases")]
+    {
+        for slot in phases::SCRATCH.iter() {
+            slot.fetch_add(1, Ordering::Relaxed);
+        }
+        let t_ctl = read_sysreg!("cntpct_el0");
+        phases::record(&phases::CONTROL, t_ctl.wrapping_sub(t_timers));
+    }
 
     let cost = read_sysreg!("cntpct_el0").wrapping_sub(entry);
     TICK_COST_MAX.fetch_max(cost, Ordering::Relaxed);

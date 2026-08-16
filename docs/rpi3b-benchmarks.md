@@ -89,48 +89,49 @@ case happens.
 
 | | idle min / mean / max | idle >1us | loaded min / mean / max | loaded >1us |
 |---|---|---|---|---|
-| counter read (floor) | 0 / 0 / 1458 | 1 / 20000 | 0 / 0 / 1406 | 1 / 20000 |
-| reschedule, no task change | 729 / 729 / 3750 | 156 / 20000 | 729 / 729 / 4843 | 152 / 20000 |
+| counter read (floor) | 0 / 0 / 1145 | 1 / 20000 | 0 / 0 / 1145 | 1 / 20000 |
+| reschedule, no task change | 729 / 729 / 3645 | 154 / 20000 | 729 / 729 / 5156 | 153 / 20000 |
 | task-to-task switch | 364 mean | | 364 mean | |
-| semaphore try/release | 156 / 156 / 2708 | 19 / 20000 | 156 / 156 / 3906 | 30 / 20000 |
-| mutex try_lock/unlock | 677 / 677 / 5052 | 140 / 20000 | 677 / 677 / 5833 | 137 / 20000 |
-| mutex handoff, contended | 937 / 937 / 1145 | 1 / 100 | 937 / 937 / 1250 | 1 / 100 |
-| Signal to async task | 781 / 885 / 5260 | 19 / 200 | 781 / 1145 / 7187 | 87 / 200 |
-| 64 writes, Normal cached | 156 / 156 / 1093 | 3 / 2000 | 156 / 156 / 2864 | 5 / 2000 |
-| 64 writes, Device shared | 468 / 468 / 3072 | 9 / 2000 | 468 / 468 / 1458 | 8 / 2000 |
-| dc cvac x8 + dsb ish | 52 / 52 / 989 | 0 / 2000 | 52 / 52 / 989 | 0 / 2000 |
-| **interrupt, hardware to handler** | **52 / 52 / 416** | **0 / 30000** | **52 / 104 / 1145** | **1 / 30000** |
-| tick handler cost | 520 / 572 / 1562 | 22 / 30000 | 520 / 885 / 2395 | 9168 / 30000 |
-| Linux doorbell to task | 2135 / 2552 / 48802 | 400 / 400 | 2291 / 7395 / 54947 | 400 / 400 |
-| Linux round trip | 5364 / 5833 / 54375 | | 5572 / 11614 / 59531 | |
+| semaphore try/release | 156 / 156 / 2656 | 3 / 20000 | 156 / 156 / 4479 | 22 / 20000 |
+| mutex try_lock/unlock | 677 / 677 / 3333 | 144 / 20000 | 677 / 677 / 5000 | 138 / 20000 |
+| mutex handoff, contended | 937 / 937 / 1093 | 1 / 100 | 937 / 937 / 1250 | 1 / 100 |
+| Signal to async task | 781 / 885 / 5312 | 20 / 200 | 781 / 1145 / 7708 | 77 / 200 |
+| 64 writes, Normal cached | 156 / 156 / 2812 | 1 / 2000 | 156 / 156 / 989 | 0 / 2000 |
+| 64 writes, Device shared | 468 / 468 / 1145 | 11 / 2000 | 468 / 572 / 11822 | 98 / 2000 |
+| dc cvac x8 + dsb ish | 52 / 52 / 2447 | 1 / 2000 | 52 / 52 / 729 | 0 / 2000 |
+| **interrupt, hardware to handler** | **52 / 52 / 1041** | **0 / 30000** | **52 / 156 / 1250** | **3 / 30000** |
+| tick handler cost | 260 / 312 / 1614 | 6 / 30000 | 260 / 677 / 2291 | 5408 / 30000 |
+| Linux doorbell to task | 2187 / 2500 / 51979 | 400 / 400 | 2343 / 7500 / 49895 | 400 / 400 |
+| Linux round trip | 5156 / 5781 / 56666 | | 5677 / 11458 / 55364 | |
 
 Coarser figures, in their own units:
 
 | | idle | loaded |
 |---|---|---|
-| tick-to-tick interval, 10 kHz | 99739 / 100000 / 100364 ns | 99062 / 100000 / 100989 ns |
-| deadline lateness, 10 kHz tick | 81 / 87 / 95 us | 81 / 88 / 97 us |
-| ring write, rivet side | 106 MiB/s | 102 MiB/s |
-| ring one-way, rivet to Linux | 63 MiB/s | 30 MiB/s |
+| tick-to-tick interval, 10 kHz | 99010 / 100000 / 100885 ns | 98854 / 99947 / 101145 ns |
+| deadline lateness, 10 kHz tick | 80 / 86 / 94 us | 81 / 87 / 95 us |
+| ring write, rivet side | 107 MiB/s | 84 MiB/s |
+| ring one-way, rivet to Linux | 63 MiB/s | 20 MiB/s |
 
 ## Reading the numbers
 
 **The isolation holds, and this is the row that says so.** Interrupt
 latency is what core isolation exists to protect. Saturating the three
-Linux cores moves its worst case from 416 ns to 1145 ns, and exactly one
-sample in 30000 crossed a microsecond. The mean doubles, from 52 ns to
-104 ns, which in counter ticks is one to two: the quantity is at the
+Linux cores moves its worst case from 1041 ns to 1250 ns, and three
+samples in 30000 crossed a microsecond. The mean goes from 52 ns to
+156 ns, which in counter ticks is one to three: the quantity is at the
 instrument's floor in both conditions. Deadline lateness barely moves at
-all, 95 us to 97 us.
+all, 94 us to 95 us.
 
-**The tick handler is where the load actually lands.** Handler cost is the
-one row that degrades sharply: 22 long samples out of 30000 idle against
-9168 loaded, with the mean going 572 to 885 ns. That is memory-system
-contention, since the handler touches the timer registers and the timer
-wheel while three other cores hammer the same L2 and memory controller. It
-does not reach the deadline figures because it stays far below the 100 us
-tick period, but it is the term that would grow first at a higher tick
-rate.
+**The tick handler is still where the load lands**, and it is the one row
+worth watching: 6 long samples out of 30000 idle against 5408 loaded. An
+earlier version of this port was much worse, 22 against 9168, and running
+that down is written up under [the tick handler
+investigation](#the-tick-handler-investigation) below. What remains is
+real work: at a 10 kHz tick, the sweeps that survive are the ones that
+actually have a timer to fire. It does not reach the deadline figures
+because it stays far below the 100 us tick period, but it is the term
+that would grow first at a higher tick rate.
 
 **`min` equal to `mean` is not a bug.** Several rows report the same value
 for both. The distribution is tight enough that the integer mean lands on
@@ -225,6 +226,104 @@ the offset is aligned and the run does not wrap.
 - **Linux round trip** — the same send, timed until rivet's reply becomes
   visible in the console ring. Detected by watching the write pointer move
   rather than by parsing text, since parsing would time the parser.
+
+## The tick handler investigation
+
+The tick handler cost row originally read 22 long samples out of 30000
+idle against 9168 loaded. A step change like that is not gradual
+degradation, so it was worth running down rather than quoting.
+
+The first hypothesis offered was that the tick handler polls the shared
+mailbox or ring on every tick, that the line sits cheaply in rivet's core
+while Linux is idle and gets invalidated by coherency traffic when the
+other cores are busy, and that the fix is to move the check onto the
+mailbox interrupt. That is a coherent story and it is wrong here, in three
+separate ways worth recording because each one is a thing this SoC does
+differently:
+
+- **The tick handler does not touch shared memory.** It calls exactly two
+  things, `rivet::watchdog::on_tick` and `rivet::timer::poll_timers`.
+  Neither goes near the shared window.
+- **The doorbell is already an interrupt.** There is nothing to move.
+  Linux rings an ARM-local mailbox, `IRQ_SOURCE_MBOX0` fires, and the
+  handler signals a task. There is also no GIC on a BCM2837 to move it to.
+- **The shared window is Device-nGnRnE, so it is never cached.** There is
+  no line to hold and none to evict, and no coherency traffic is generated
+  for it in either direction. That is a deliberate choice, made so both
+  tiers agree on visibility without cache maintenance.
+
+The way to settle it was to measure rather than argue, so `tick_anatomy`
+times each stage of the handler separately and adds a control: eight
+read-modify-writes against private statics, doing no useful work, touching
+about one cache line. Idle against loaded:
+
+| stage | idle mean | loaded mean | idle >1us | loaded >1us |
+|---|---|---|---|---|
+| bookkeeping (own statics) | 104 | 104 | 1 | 0 |
+| watchdog | 0 | 0 | 0 | 0 |
+| timer wheel | 520 | 781 | 16 | 6586 |
+| control (private RMW) | 104 | 156 | 0 | 0 |
+
+That rules out both hypotheses at once. Nothing shared is involved, and
+generic memory contention is not the answer either, because the control
+barely moved. All of the effect is in `poll_timers`.
+
+`poll_timers` swept `TIMER_SLOTS` and `PTASK_DEADLINES` in full on every
+tick, armed or not: 256 plus 128 bytes at the default sizes, six cache
+lines, touched once per 100 us and not otherwise. That is precisely the
+footprint that lives in L2 rather than L1, and the four Cortex-A53 cores
+on this part share one unified L2. Linux's working set evicts those lines
+between ticks and each tick refetches them from DRAM.
+
+The control is what makes this quantitative rather than a story. It moved
+52 ns for its one line; the sweep moved 261 ns for its six. A 5.0x ratio
+of deltas against a 6x ratio of cache lines is the mechanism, measured.
+
+The fix is a cached earliest-deadline, checked before touching either
+array, so a tick with nothing due reads one value and no array at all.
+Correctness rests on a one-sided invariant: the cached value is never
+greater than the true earliest deadline. Arming lowers it, cancelling
+leaves it alone, and only the sweep that recomputed it from the arrays may
+raise it, inside the same critical section. Understating it costs a
+redundant sweep; overstating it would skip a wake, so the code is arranged
+so only the first can happen.
+
+Effect on the unchanged benchmark:
+
+| | before | after |
+|---|---|---|
+| tick cost, idle mean | 572 ns | 312 ns |
+| tick cost, idle >1us | 22 / 30000 | 6 / 30000 |
+| tick cost, loaded mean | 885 ns | 677 ns |
+| tick cost, loaded >1us | 9168 / 30000 | 5408 / 30000 |
+| interrupt latency, idle max | 416 ns | 1041 ns |
+| cheapest possible tick | 520 ns | 260 ns |
+
+The floor halving, 520 to 260 ns, is the cleanest evidence that the sweep
+is what went away. The loaded tail roughly halves rather than returning to
+the idle figure, and that is the honest ceiling on this change: the sweeps
+that remain are ones with a timer genuinely due. `rt_bench` has two tasks
+sleeping at 1 ms against a 100 us tick, so about one tick in five has real
+work. Removing the rest of the tail means reducing how often timers fire,
+not how much a firing costs.
+
+The interrupt latency maximum is the one figure that did not improve and
+it moves around between runs regardless (416, 1041 and 1302 ns have all
+been observed idle, always with zero or one sample over a microsecond).
+Treat that column as run-to-run variation, not as a result.
+
+To reproduce:
+
+```sh
+cd examples/rpi3b-amp
+cargo build --release --features tick-phases
+# load tick_anatomy_amp and read the console
+```
+
+The feature is off by default because it puts three counter reads, each
+with an ISB, on a path that runs ten thousand times a second, inside the
+interval the handler reports as its own cost. Compare its columns against
+each other, not against the main table.
 
 ## Measuring it from outside the machine
 

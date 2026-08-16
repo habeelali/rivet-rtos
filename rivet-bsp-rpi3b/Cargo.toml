@@ -32,6 +32,9 @@ amp = []
 # implements the board-side __rivet_board_trace_write it needs. Frames go
 # to their own ring in the shared window, never the console.
 trace = ["rivet/trace"]
+# Time each stage of the tick handler separately. Diagnostic only: it adds
+# counter reads to the tick path, inside the interval the handler reports.
+tick-phases = []
 
 [dependencies]
 rivet = { path = "../rivet", version = "0.2.0", package = "rivet-rtos", optional = true }

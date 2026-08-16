@@ -30,8 +30,8 @@
 //! cross-hart lock (not just a local interrupt mask), so this holds under
 //! real SMP too, not only the single-hart case.
 
-use crate::sync::{Channel, Once, Receiver, Sender};
 use crate::sync::atomic::{AtomicU32, Ordering};
+use crate::sync::{Channel, Once, Receiver, Sender};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Level {

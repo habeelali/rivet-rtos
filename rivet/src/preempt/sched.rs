@@ -140,10 +140,7 @@ pub fn ready_add(id: usize) {
         return;
     }
     #[cfg(feature = "latency-histograms")]
-    READY_AT_CYCLE[id].store(
-        crate::port::arch::cycle_count() as u32,
-        Ordering::Relaxed,
-    );
+    READY_AT_CYCLE[id].store(crate::port::arch::cycle_count() as u32, Ordering::Relaxed);
     let prio = TASKS[id].effective_priority.load(Ordering::Acquire) as usize;
     QUEUES[prio].fetch_or(1u32 << id, Ordering::Release);
     READY_BITMAP.fetch_or(1u32 << prio, Ordering::Release);
@@ -286,7 +283,9 @@ pub fn schedule() -> Option<usize> {
 /// see [`DISPATCH_SEQ`]'s docs).
 pub fn on_dispatch(id: usize) {
     if id < MAX_PTASKS {
-        let seq = DISPATCH_COUNTER.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
+        let seq = DISPATCH_COUNTER
+            .fetch_add(1, Ordering::Relaxed)
+            .wrapping_add(1);
         DISPATCH_SEQ[id].store(seq, Ordering::Relaxed);
     }
     #[cfg(feature = "latency-histograms")]

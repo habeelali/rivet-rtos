@@ -28,8 +28,8 @@
 //! ([`try_read_byte`]) — genuinely additive, doesn't touch the existing
 //! write path at all.
 
-use core::fmt::{self, Write};
 use crate::sync::atomic::{AtomicBool, Ordering};
+use core::fmt::{self, Write};
 
 use crate::sync::{Channel, Once, Receiver, Sender};
 
