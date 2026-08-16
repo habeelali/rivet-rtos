@@ -110,7 +110,10 @@ sudo install -m755 "$HERE/rivet-select" "$ROOT/usr/local/bin/rivet-select"
 sudo install -m755 "$HERE/rivet" "$ROOT/usr/local/bin/rivet"
 sudo install -m755 "$HERE/rivet-identity.sh" "$ROOT/usr/local/lib/rivet/"
 sudo mkdir -p "$ROOT/usr/local/share/doc/rivet"
-sudo cp "$HERE/../README.md" "$ROOT/usr/local/share/doc/rivet/" 2>/dev/null || true
+for d in "$HERE/../README.md" "$HERE/../../../docs/rpi3b-benchmarks.md" \
+         "$HERE/../../../docs/rpi3b-guarantees.md"; do
+    [ -f "$d" ] && sudo cp "$d" "$ROOT/usr/local/share/doc/rivet/"
+done
 
 # Images are installed under their own names and the one that boots is a
 # symlink, because a released core cannot be restarted in place: switching
@@ -137,13 +140,13 @@ done
 # Enable without systemctl, since the target root is not running.
 W="$ROOT/etc/systemd/system/multi-user.target.wants"
 sudo mkdir -p "$W"
-for u in rivet-build rivet rivet-console rivet-health rivet.target; do
+for u in rivet-build rivet rivet-console rivet-health rivet-perf rivet.target; do
     case "$u" in
       *.target) sudo ln -sf "/etc/systemd/system/$u" "$W/$u" ;;
       *)        sudo ln -sf "/etc/systemd/system/$u.service" "$W/$u.service" ;;
     esac
 done
-say "services enabled: rivet-build, rivet, rivet-console, rivet-health"
+say "services enabled: rivet-build, rivet, rivet-console, rivet-health, rivet-perf"
 
 echo "== identity =="
 sudo "$HERE/rivet-identity.sh" "$ROOT" "${RIVET_SYSTEM_VERSION:-0.3.0}"

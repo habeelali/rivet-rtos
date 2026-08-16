@@ -1,0 +1,16 @@
+[Unit]
+Description=Pin the cpufreq governor so the RTOS core clock is stable
+Documentation=file:///usr/local/share/doc/rivet/rpi3b-guarantees.md
+After=multi-user.target
+[Service]
+# BCM2837 has one clock domain for the whole cluster and Linux owns the
+# cpufreq driver, so without this the real-time core's speed is decided by
+# what the other three are doing. It matters for latency more than
+# throughput: a frequency transition stalls the core while the PLL
+# relocks, and those were the dominant source of worst-case interrupt
+# latency before force_turbo and this were both in place.
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c 'for g in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do echo performance > $g; done'
+[Install]
+WantedBy=multi-user.target
