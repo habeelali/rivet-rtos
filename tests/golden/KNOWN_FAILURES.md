@@ -152,6 +152,55 @@ falls back to the SysTick-derived (coarser, still monotonic) cycle
 source. Added to `mps2`'s `ignore_log_lines` in `xtask/src/main.rs`
 alongside the other documented mps2-model quirks above.
 
+## cm3 (lm3s6965evb): QEMU 10.2.1 surfaces the same mps2 quirks, a new PL011 line, and one unresolved anomaly
+
+Filed as [issue #4](https://github.com/habeelali/rivet-rtos/issues/4). On QEMU 10.2.1,
+`cargo xtask test --target cm3 --suite smoke` started failing with 449 undeclared
+`qemu.log` lines, while `mps2` (same QEMU build) still passes cleanly. `demo`'s golden
+guest-output assertions (`assert_ordered_golden`) still pass first, so this is not a
+kernel regression in the general sense: it's QEMU flagging additional guest-error/
+warning lines than before. Five distinct patterns were involved; four are understood
+and benign, one is not (see below).
+
+**Understood and benign**, all added to `cm3`'s `ignore_log_lines` in
+`xtask/src/main.rs`:
+
+- Three are the exact NVIC/misaligned-PC quirks already documented above for
+  `mps2-an385` (`NVIC: Bad read offset 0xdfc`, `NVIC: Bad write offset 0xdfc`, `M
+  profile return from interrupt with misaligned PC is UNPREDICTABLE on v7M`) — this
+  QEMU generation apparently closed the model gap that used to make `lm3s6965evb`
+  immune to them, so the "lm3s6965evb's model implements it fine" comment next to
+  those entries in `xtask/src/main.rs` is now stale (updated alongside this; no
+  longer true on QEMU >= 10.2.x).
+- The fourth, `PL011 data written to disabled UART`, is new: QEMU's `LOG_GUEST_ERROR`
+  for a `DR` write while `UARTEN` is clear. `rivet-bsp-lm3s6965` never writes the
+  PL011 `CR` register (only `IMSC`/`ICR`/`MIS`/`DR`/`FR`), so `UARTEN` sits at its
+  model reset value; this appears to be a QEMU-side check that simply didn't
+  exist/trigger in earlier releases. Confirmed benign: `demo` and the rest of the
+  smoke suite complete correctly (`SUCCESS`, expected exit codes) regardless.
+
+**Not confirmed benign — `DRBAR[7]: 0x...... misaligned to DRSR region size, mask =
+0xfff`**, seen on `respawn_test`, `soak_smoke`, `deadline_test`, and
+`embedded_hal_test` (4 of the suite's 17 tests). This is the same log line already in
+`mps2`'s `ignore_log_lines` (`"DRBAR[7]:"`, see below) and superficially looks like
+the same class of QEMU-model quirk. It is not: `mask = 0xfff` means QEMU is being
+asked to program a 4KB-sized MPU region at a base that isn't 4KB-aligned, but none of
+the four failing tests spawn a 4KB stack — they only use 512/1024-byte pool stacks,
+and `alloc_stack` guarantees size-alignment (`stack_base = (base + next + guard_size +
+size - 1) & !(size - 1)`). The only 4KB-sized stack anywhere in the kernel is the
+idle-task stack, which already carries its own `#[repr(align(4096))]` fix (see the
+"mps2-an385/demo" entry above) — so something is programming a misaligned 4KB region
+that neither of the known cases (pool stacks, the idle stack) explains. Per the
+project's own precedent, `DRBAR[7]:` messages are how the idle-stack misalignment bug
+was originally found; this is suspected to be a second, still-latent instance of the
+same underlying bug class, not a benign QEMU quirk, and is **not yet root-caused**.
+Allowlisted in `cm3`'s `ignore_log_lines` only to keep the harness green pending
+investigation; tracked in a follow-up issue linked from #4. Next step suggested: watch
+`MPU_RBAR`/`MPU_DRSR` (or trace `rivet-arch-cortex-m/src/mpu.rs::write_region`) to
+find which call site produces the `0x...4a00`/4096 (or `0x...8800`/4096,
+`0x...4400`/4096 — the exact base varies per test) write; suspect a non-pool-stack
+path (boot task or a test-owned static) rather than `alloc_stack`.
+
 ## Cortex-M interrupt-driven TX: ack-after-write self-limited the drain
 
 Found and fixed during the interrupt-driven console work, not a currently
