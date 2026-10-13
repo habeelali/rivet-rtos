@@ -78,5 +78,9 @@ latency-histograms = ["rivet/latency-histograms"]
 [dependencies]
 rivet = { path = "../rivet", version = "0.2.0", package = "rivet-rtos" }
 riscv = "0.12"
+# `portable-atomic` uses this provider when a RV32 target has no native
+# atomic extension and `rivet/atomics-polyfill` is enabled.  Preserve MIE
+# across nested sections instead of unconditionally re-enabling interrupts.
+critical-section = { version = "1", features = ["restore-state-bool"] }
 
 [lib]

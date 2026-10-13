@@ -67,7 +67,7 @@ presented as uniformly certain:
 - No MPU sandboxing beyond stack-overflow guard bands, no RTT/defmt logging.
 - No `embedded-hal` GPIO driver for `qemu-virt` (QEMU's RISC-V `virt` machine has no GPIO hardware to drive, not a closable gap) or `mps2-an385` (QEMU stubs its GPIO block as an unimplemented no-op device, nothing to verify against).
 - A provably-fair (FIFO) cross-hart lock, needed to close the ESP32-S3's one remaining hard-RT gap (see above); not needed on any single-hart board.
-- ESP32-C3 real-hardware support: architecturally blocked, not just untested. It lacks the RISC-V atomic extension the kernel's lock-free scheduler needs throughout (see `docs/DOCUMENTATION.md` §18).
+- ESP32-C3 real-hardware support: the RV32IMC atomic blocker is resolved by the `atomics-polyfill` feature and RISC-V critical-section backend, but a board-support crate and hardware validation are still missing (see `docs/DOCUMENTATION.md` §18).
 - Preemptive tasks are `fn(&'static Arg) -> !`, no return value, no join/await-a-preemptive-task. That's a deliberate simplicity tradeoff for v0.1, not an oversight, but it means a preemptive task can't cleanly signal "I'm done" to anything except through its own side effects (a semaphore, a shared flag).
 
 ## Architecture

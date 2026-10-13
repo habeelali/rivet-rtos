@@ -61,6 +61,24 @@ extern "Rust" {
 /// trampoline.
 pub const MIN_TASK_STACK: usize = 128 + 128;
 
+struct RiscvCriticalSection;
+
+critical_section::set_impl!(RiscvCriticalSection);
+
+// SAFETY: Rivet's RISC-V runtime parks every hart except hart 0 before any
+// kernel state is touched. On that single active hart, saving and clearing
+// MIE excludes every interrupt until `release` restores the captured state;
+// the boolean token also keeps nested critical sections composable.
+unsafe impl critical_section::Impl for RiscvCriticalSection {
+    unsafe fn acquire() -> critical_section::RawRestoreState {
+        irq_save()
+    }
+
+    unsafe fn release(was_enabled: critical_section::RawRestoreState) {
+        irq_restore(was_enabled);
+    }
+}
+
 // ── Dedicated ISR stack ─────────────────────────────────────────────
 //
 // The trap entry keeps the 128-byte register frame on the interrupted
@@ -278,20 +296,28 @@ extern "Rust" fn __rivet_arch_hart_id() -> usize {
 /// actually re-enable.
 #[no_mangle]
 extern "Rust" fn __rivet_arch_irq_save() -> usize {
+    irq_save() as usize
+}
+
+fn irq_save() -> bool {
     use riscv::register::mstatus;
     let was_enabled = mstatus::read().mie();
     // SAFETY: disabling the global interrupt-enable bit is always safe;
     // the caller is responsible for pairing with `__rivet_arch_irq_restore`.
     unsafe { mstatus::clear_mie() };
-    was_enabled as usize
+    was_enabled
 }
 
 #[no_mangle]
 extern "Rust" fn __rivet_arch_irq_restore(token: usize) {
+    irq_restore(token != 0);
+}
+
+fn irq_restore(was_enabled: bool) {
     // SAFETY: re-enabling MIE only if it was set at the matching
     // `__rivet_arch_irq_save` call (see that function's doc for why only
     // MIE, never the rest of mstatus, is touched).
-    if token != 0 {
+    if was_enabled {
         unsafe { riscv::register::mstatus::set_mie() };
     }
 }

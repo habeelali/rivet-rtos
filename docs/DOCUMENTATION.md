@@ -110,12 +110,11 @@ M0+/ARMv6-M, which has the identical problem, no LDREX/STREX) added an
 `core::sync::atomic` to `portable-atomic`, a byte-for-byte API-compatible
 drop-in that provides the missing `compare_exchange`/`fetch_or`/etc. via a
 critical-section-guarded fallback, with every call site elsewhere in the
-kernel unaffected. ESP32-C3 support would still need a RISC-V
-`critical_section::Impl` registered (the RP2040 port uses `cortex-m`'s
-ready-made one; ESP32-C3 has no equivalent off the shelf yet), real work,
-not zero work, but "switch to software-emulated atomics" is no longer a
-cross-cutting kernel change; it's enabling an existing feature plus writing
-one new critical-section backend. A good first issue for RISC-V experience.
+kernel unaffected. `rivet-arch-riscv` now registers the corresponding
+MIE-based `critical_section::Impl`, so an RV32IMC BSP can enable the existing
+feature without providing its own atomic backend. Full ESP32-C3 board bring-up
+(clocks, SYSTIMER, interrupt routing, console, and hardware validation) is
+still separate work.
 
 ## RP2040 (Raspberry Pi Pico): experimental, not yet validated
 
@@ -936,18 +935,19 @@ Documented here rather than discovered the hard way:
   (`-smp N > 1`) remains a safety guard only: every hart but 0 parks
   without touching kernel state (verified as a permanent regression check),
   not genuine concurrent SMP scheduling.
-- **ESP32-C3 (and any RV32IMC target without the atomic extension) is not
-  yet supported, though the blocker is narrower than it used to be.** The
+- **ESP32-C3 is not yet a supported board, though RV32IMC is no longer
+  blocked by missing atomic instructions.** The
   kernel's lock-free code needs `fetch_add`/`compare_exchange`, which
   don't exist on that ISA natively, verified by directly attempting it
   (`cargo check -p rivet-rtos --target riscv32imc-unknown-none-elf` fails
-  with 36 missing-method errors). The `atomics-polyfill` feature (added
+  with dozens of missing-method errors). The `atomics-polyfill` feature (added
   for the RP2040 port, which has the identical problem on ARMv6-M) now
   provides exactly the missing-method fallback via `portable-atomic`; what
-  ESP32-C3 still needs is a RISC-V `critical_section::Impl` for that
-  fallback to use (the RP2040 port gets this for free from `cortex-m`'s
-  `critical-section-single-core` feature; nothing equivalent exists yet
-  for this target). Good first issue.
+  RISC-V architecture crate now supplies the MIE-based
+  `critical_section::Impl` required by that fallback. What remains is a
+  board-support crate and real-hardware validation; the architecture-level
+  `riscv32imc-unknown-none-elf` build is available with
+  `rivet/atomics-polyfill`.
 - **The RP2040 port is experimental, not real-hardware-validated yet**,
   see [§3](#3-supported-hardware). Boots, brings up its own clock tree,
   and transmits real bytes over a USB CDC-ACM console; the scheduler/

@@ -44,15 +44,15 @@ cargo check -p rivet-rtos --target <your-target-triple>
 
 If this fails with `no method named 'fetch_or' found for struct 'Atomic<T>'`
 (or similar), your target's ISA doesn't have the atomic extension the
-`core::sync::atomic` RMW operations need. For example, `riscv32imc-unknown-none-elf`
-(RV32IMC, no `A` extension) fails this exact way, while `riscv32imac-unknown-none-elf`,
-with the `A` extension, passes. **This is not fixable from a BSP crate.** It
-would require the kernel to switch to `portable-atomic`-style software-emulated
-atomics (a critical-section-based RMW fallback), which is a real, cross-cutting
-kernel change, not a porting exercise. Confirmed by trying exactly this for an
-ESP32-C3 BSP: `rivet` fails to compile for `riscv32imc-unknown-none-elf` with
-36 missing-atomic-method errors. Tracked as a known limitation, not attempted
-further here.
+`core::sync::atomic` RMW operations need. For example, a plain
+`riscv32imc-unknown-none-elf` build (RV32IMC, no `A` extension) fails this
+way, while `riscv32imac-unknown-none-elf`, with the `A` extension, passes.
+For a single-hart target without native RMW atomics, enable Rivet's
+`atomics-polyfill` feature. It uses `portable-atomic`'s critical-section
+fallback; `rivet-arch-riscv` provides the matching MIE save/restore backend,
+and `rivet-arch-cortex-m0` obtains one from `cortex-m`. Do not use this local
+interrupt-masking backend as a substitute for a cross-hart lock on an SMP
+port.
 
 ## Step 1: pick (or write) an arch crate
 

@@ -48,9 +48,9 @@ trace = []
 # byte-for-byte API-compatible drop-in providing the missing methods via
 # a critical-section-guarded load-modify-store fallback — every call site
 # in this crate is unaffected; only the atomic *implementation* changes.
-# Enable this for any ARMv6-M board (`rivet-bsp-rp2040` does); leave it
-# off for ARMv7-M+/RISC-V boards, which have real hardware CAS and don't
-# need the fallback's overhead.
+# Enable this for any target without native atomic RMW instructions
+# (`rivet-bsp-rp2040` does, as should an RV32I/M/C-only RISC-V BSP); leave
+# it off where the ISA has real hardware CAS and does not need the fallback.
 atomics-polyfill = ["dep:portable-atomic"]
 
 [dependencies]
@@ -60,7 +60,8 @@ loom = { version = "0.7", optional = true }
 # (not `unsafe-assume-single-core`): the fallback needs a real
 # `critical_section::Impl` registered — the consuming board crate
 # provides one (`cortex-m`'s own `critical-section-single-core` feature is
-# the standard choice for a single-core Cortex-M target).
+# the standard choice for a single-core Cortex-M target;
+# `rivet-arch-riscv` provides the equivalent MIE-based implementation).
 portable-atomic = { version = "1", default-features = false, features = ["critical-section"], optional = true }
 
 [dev-dependencies]
